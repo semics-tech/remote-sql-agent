@@ -85,6 +85,7 @@ export async function getEstateOverview(db: Database): Promise<EstateRow[]> {
       jobActivity,
       and(eq(jobActivity.instanceId, instances.id), eq(jobActivity.jobUuid, jobs.jobUuid)),
     )
+    .where(isNull(instances.detachedAt))
     .groupBy(
       instances.id,
       instances.instanceName,

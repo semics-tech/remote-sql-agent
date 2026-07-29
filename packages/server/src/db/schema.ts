@@ -72,6 +72,16 @@ export const instances = pgTable(
     agentStatus: text('agent_status').notNull().default('unknown'),
     environmentTag: text('environment_tag'),
     lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
+    /**
+     * Set when an administrator stops monitoring this instance.
+     *
+     * Not a delete: the run history and version timeline are the reason this
+     * product exists, and destroying them because someone removed a
+     * configuration would be a surprising amount of data loss for a one-click
+     * action. The instance stops appearing as live and stops counting towards
+     * estate totals; its history stays queryable.
+     */
+    detachedAt: timestamp('detached_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex('instances_worker_name_key').on(t.workerId, t.instanceName)],

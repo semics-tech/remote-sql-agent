@@ -151,7 +151,13 @@ export async function getRunningJobs(db: Database, now: Date): Promise<RunningJo
       jobs,
       and(eq(jobs.instanceId, jobActivity.instanceId), eq(jobs.jobUuid, jobActivity.jobUuid)),
     )
-    .where(and(eq(jobActivity.state, 'executing'), isNull(jobs.deletedAt)))
+    .where(
+      and(
+        eq(jobActivity.state, 'executing'),
+        isNull(jobs.deletedAt),
+        isNull(instances.detachedAt),
+      ),
+    )
     .orderBy(asc(jobActivity.startedAt));
 
   if (rows.length === 0) return [];
@@ -264,6 +270,7 @@ export async function getRecentFailures(
         eq(jobHistory.runStatus, RUN_STATUS_FAILED),
         gte(jobHistory.runDatetime, since),
         isNull(jobs.deletedAt),
+        isNull(instances.detachedAt),
       ),
     )
     .orderBy(desc(jobHistory.runDatetime))
@@ -338,7 +345,10 @@ export async function getWorkerHealth(
       agentsNotRunning: sql<number>`COUNT(${instances.id}) FILTER (WHERE ${instances.agentStatus} <> 'running')`,
     })
     .from(workers)
-    .leftJoin(instances, eq(instances.workerId, workers.id))
+    .leftJoin(
+      instances,
+      and(eq(instances.workerId, workers.id), isNull(instances.detachedAt)),
+    )
     .groupBy(workers.id, workers.hostName, workers.version, workers.lastSeenAt)
     .orderBy(asc(workers.hostName));
 
@@ -364,14 +374,16 @@ async function getTotals(
       )`,
     })
     .from(jobs)
-    .where(isNull(jobs.deletedAt));
+    .innerJoin(instances, eq(instances.id, jobs.instanceId))
+    .where(and(isNull(jobs.deletedAt), isNull(instances.detachedAt)));
 
   const [instanceCounts] = await db
     .select({
       instances: sql<number>`COUNT(*)`,
       agentsStopped: sql<number>`COUNT(*) FILTER (WHERE ${instances.agentStatus} <> 'running')`,
     })
-    .from(instances);
+    .from(instances)
+    .where(isNull(instances.detachedAt));
 
   return {
     jobs: Number(jobCounts?.jobs ?? 0),
@@ -451,7 +463,7 @@ export async function groupJobs(
       jobActivity,
       and(eq(jobActivity.instanceId, jobs.instanceId), eq(jobActivity.jobUuid, jobs.jobUuid)),
     )
-    .where(isNull(jobs.deletedAt))
+    .where(and(isNull(jobs.deletedAt), isNull(instances.detachedAt)))
     .orderBy(asc(jobs.name), asc(workers.hostName), asc(instances.instanceName))
     .limit(Math.min(options.limit ?? 5000, 20_000));
 

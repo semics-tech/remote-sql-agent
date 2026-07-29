@@ -289,6 +289,18 @@ export async function upsertInstanceConfig(
 
   if (!row) throw new WorkerConfigError(500, 'Internal', 'Failed to save the configuration.');
 
+  // Configuring an instance again un-detaches it, so its existing history and
+  // version timeline come back with it rather than starting over.
+  await db
+    .update(instances)
+    .set({ detachedAt: null })
+    .where(
+      and(
+        eq(instances.workerId, input.workerId),
+        eq(instances.instanceName, input.instanceName),
+      ),
+    );
+
   const configs = await listInstanceConfigs(db, input.workerId);
   const saved = configs.find((c) => c.id === row.id);
   if (!saved) throw new WorkerConfigError(500, 'Internal', 'Failed to read back the configuration.');
@@ -299,8 +311,24 @@ export async function deleteInstanceConfig(db: Database, configId: string): Prom
   const [row] = await db
     .delete(workerInstanceConfigs)
     .where(eq(workerInstanceConfigs.id, configId))
-    .returning({ workerId: workerInstanceConfigs.workerId });
-  return row?.workerId ?? null;
+    .returning({
+      workerId: workerInstanceConfigs.workerId,
+      instanceName: workerInstanceConfigs.instanceName,
+    });
+  if (!row) return null;
+
+  // Mark the mirrored instance detached rather than leaving it in the estate
+  // view reporting whatever it last said. Not a delete: its run history and
+  // version timeline are the point of the product, and losing them to a
+  // one-click Remove would be a nasty surprise.
+  await db
+    .update(instances)
+    .set({ detachedAt: new Date() })
+    .where(
+      and(eq(instances.workerId, row.workerId), eq(instances.instanceName, row.instanceName)),
+    );
+
+  return row.workerId;
 }
 
 /**
