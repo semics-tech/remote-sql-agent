@@ -1,0 +1,22 @@
+node_modules/
+dist/
+.turbo/
+*.tsbuildinfo
+.env
+.env.local
+coverage/
+.DS_Store
+
+# worker runtime state
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+/run/
+/packages/worker/run/
+
+# PKI material — never commit
+*.pem
+*.key
+*.crt
+!tests/**/fixtures/**/*.pem

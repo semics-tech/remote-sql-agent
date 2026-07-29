@@ -1,0 +1,53 @@
+# Development environment: Postgres (control plane store) + SQL Server 2022 with
+# SQL Server Agent enabled. Seeded with fixture Agent jobs by `pnpm dev:seed`.
+#
+# NOTE: mcr.microsoft.com/mssql/server is amd64-only. On Apple Silicon this runs
+# under emulation (Rosetta on Docker Desktop). It works but is slow to start —
+# allow ~60-90s before the healthcheck passes.
+
+name: rsagent-dev
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: rsagent
+      POSTGRES_PASSWORD: rsagent_dev_password
+      POSTGRES_DB: rsagent
+    ports:
+      - '5433:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U rsagent -d rsagent']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    platform: linux/amd64
+    environment:
+      ACCEPT_EULA: 'Y'
+      MSSQL_SA_PASSWORD: 'RsAgent_Dev_Pass123'
+      MSSQL_PID: 'Developer'
+      # SQL Server Agent must be explicitly enabled in the Linux container.
+      MSSQL_AGENT_ENABLED: 'true'
+    ports:
+      - '14330:1433'
+    volumes:
+      - mssqldata:/var/opt/mssql
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          '/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$$MSSQL_SA_PASSWORD" -C -Q "SELECT 1" || exit 1',
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 60s
+
+volumes:
+  pgdata:
+  mssqldata:

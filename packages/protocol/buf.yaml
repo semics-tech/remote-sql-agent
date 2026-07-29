@@ -1,0 +1,14 @@
+version: v2
+modules:
+  - path: proto
+lint:
+  use:
+    - STANDARD
+  ignore:
+    # Vendored well-known types are not ours to lint.
+    - proto/google
+breaking:
+  use:
+    - FILE
+  ignore:
+    - proto/google

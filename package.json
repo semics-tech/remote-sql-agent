@@ -1,0 +1,48 @@
+{
+  "name": "remote-sql-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Centrally view, monitor and manage SQL Server Agent jobs across firewalled estates via outbound-only workers.",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.23.0",
+  "scripts": {
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:unit": "vitest run --project protocol --project server --project worker",
+    "test:integration": "vitest run --project integration",
+    "proto:gen": "pnpm --filter @rsagent/protocol run proto:gen",
+    "proto:check": "pnpm --filter @rsagent/protocol run proto:check",
+    "db:generate": "pnpm --filter @rsagent/server run db:generate",
+    "db:migrate": "pnpm --filter @rsagent/server run db:migrate",
+    "dev:up": "docker compose -f deploy/docker-compose.dev.yml up -d",
+    "dev:down": "docker compose -f deploy/docker-compose.dev.yml down -v",
+    "dev:seed": "tsx scripts/seed-sql.ts"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@bufbuild/buf",
+      "argon2",
+      "better-sqlite3",
+      "esbuild",
+      "protobufjs"
+    ]
+  },
+  "devDependencies": {
+    "@bufbuild/buf": "^1.47.2",
+    "@eslint/js": "^9.17.0",
+    "@types/node": "^22.10.2",
+    "eslint": "^9.17.0",
+    "ts-proto": "^2.6.1",
+    "tsx": "^4.19.2",
+    "turbo": "^2.3.3",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.18.1",
+    "vitest": "^2.1.8"
+  }
+}

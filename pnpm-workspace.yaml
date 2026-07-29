@@ -1,0 +1,12 @@
+packages:
+  - 'packages/*'
+  - 'tests/*'
+
+# pnpm 10 blocks lifecycle scripts by default. These are the only packages that
+# legitimately need one (native builds / vendored binaries).
+onlyBuiltDependencies:
+  - '@bufbuild/buf'
+  - argon2
+  - better-sqlite3
+  - esbuild
+  - protobufjs

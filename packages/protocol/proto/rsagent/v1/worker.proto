@@ -1,0 +1,301 @@
+syntax = "proto3";
+
+package rsagent.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// The worker hub. A worker opens exactly one long-lived bidirectional stream and
+// keeps it open; all traffic in both directions is multiplexed over it. The
+// worker always dials out — the control plane never initiates a connection.
+service WorkerHub {
+  rpc Session(stream WorkerMessage) returns (stream ServerMessage);
+}
+
+// Enrolment is a separate unary RPC because it is the only call made *without* a
+// client certificate (the worker does not have one yet). It is authenticated by
+// a single-use, short-lived enrolment token instead.
+service Enrolment {
+  rpc Enrol(EnrolRequest) returns (EnrolResponse);
+}
+
+// ---------------------------------------------------------------------------
+// Worker -> Server
+// ---------------------------------------------------------------------------
+
+message WorkerMessage {
+  oneof msg {
+    Hello hello = 1;
+    Snapshot snapshot = 2;
+    DefinitionDelta definition = 3;
+    HistoryBatch history = 4;
+    ActivityUpdate activity = 5;
+    AgentLogBatch agent_log = 6;
+    CommandResult command_result = 7;
+    Heartbeat heartbeat = 8;
+  }
+}
+
+message Hello {
+  string worker_version = 1;
+  string host_name = 2;
+  // The worker's locally-configured ceiling. The control plane may grant fewer
+  // capabilities than this but must never act as though it can grant more.
+  string max_capability = 3;
+  repeated InstanceInfo instances = 4;
+}
+
+message InstanceInfo {
+  // Stable identity for an instance: host_name + instance_name.
+  string instance_name = 1;
+  string sql_version = 2;
+  string sql_edition = 3;
+  string agent_status = 4; // running | stopped | unknown
+  string server_name = 5;  // @@SERVERNAME as reported by the instance
+}
+
+// A full object graph for one instance. Sent on (re)connect. Chunked: a snapshot
+// with more_chunks=true is followed by further Snapshot messages with the same
+// snapshot_id. The server only commits when it sees more_chunks=false.
+message Snapshot {
+  string snapshot_id = 1;
+  string instance_name = 2;
+  bool more_chunks = 3;
+  repeated JobDefinitionBlob jobs = 4;
+  repeated ScheduleBlob schedules = 5;
+  repeated OperatorBlob operators = 6;
+  repeated AlertBlob alerts = 7;
+}
+
+// Canonical JobDefinition.v1 JSON plus its hash. The JSON is carried as an
+// opaque string rather than a protobuf message on purpose: the canonical zod
+// schema in packages/protocol is the single source of truth for job shape, and
+// the hash must be computed over exactly the bytes that are stored and diffed.
+// Modelling it twice (proto + zod) would create two schemas that can drift.
+message JobDefinitionBlob {
+  string job_uuid = 1;
+  string canonical_json = 2;
+  string definition_hash = 3; // sha256 hex of canonical_json
+  google.protobuf.Timestamp date_modified = 4;
+}
+
+message ScheduleBlob {
+  string schedule_uuid = 1;
+  string canonical_json = 2;
+  string definition_hash = 3;
+}
+
+message OperatorBlob {
+  int32 operator_id = 1;
+  string canonical_json = 2;
+  string definition_hash = 3;
+}
+
+message AlertBlob {
+  int32 alert_id = 1;
+  string canonical_json = 2;
+  string definition_hash = 3;
+}
+
+// An observed change to a single job definition, detected by hash comparison.
+message DefinitionDelta {
+  string instance_name = 1;
+  JobDefinitionBlob job = 2;
+  bool deleted = 3;
+  // Set when this change is the worker confirming a command it just applied, so
+  // the server can attribute the resulting version to origin=remote rather than
+  // misreporting the operator's own change as on-prem drift.
+  string applied_command_id = 4;
+}
+
+message HistoryBatch {
+  string instance_name = 1;
+  repeated HistoryRow rows = 2;
+}
+
+// Mirrors msdb.dbo.sysjobhistory. run_status: 0=Failed 1=Succeeded 2=Retry
+// 3=Cancelled 4=In Progress. step_id 0 is the job-level outcome row.
+message HistoryRow {
+  int64 instance_id = 1; // sysjobhistory.instance_id — the high-water mark key
+  string job_uuid = 2;
+  int32 step_id = 3;
+  string step_name = 4;
+  int32 run_status = 5;
+  google.protobuf.Timestamp run_datetime = 6;
+  int32 run_duration_seconds = 7;
+  string message = 8;
+  int32 retries_attempted = 9;
+  string server = 10;
+  int32 sql_severity = 11;
+  int32 sql_message_id = 12;
+}
+
+message ActivityUpdate {
+  string instance_name = 1;
+  repeated ActivityRow rows = 2;
+}
+
+message ActivityRow {
+  string job_uuid = 1;
+  string state = 2; // idle | executing | between_retries | suspended | done
+  int32 current_step_id = 3;
+  string current_step_name = 4;
+  google.protobuf.Timestamp start_execution_date = 5;
+  google.protobuf.Timestamp last_executed_step_date = 6;
+  google.protobuf.Timestamp next_scheduled_run_date = 7;
+  int32 last_run_outcome = 8;
+}
+
+message AgentLogBatch {
+  string instance_name = 1;
+  repeated AgentLogRow rows = 2;
+}
+
+message AgentLogRow {
+  google.protobuf.Timestamp logged_at = 1;
+  string severity = 2;
+  string message = 3;
+  string process_info = 4;
+}
+
+message Heartbeat {
+  google.protobuf.Timestamp sent_at = 1;
+  repeated InstanceInfo instances = 2;
+  int32 outbox_depth = 3;
+  int64 clock_skew_ms = 4;
+}
+
+message CommandResult {
+  string command_id = 1;
+  bool success = 2;
+  string error_code = 3; // Conflict | CapabilityDenied | SqlError | Invalid | ...
+  string error_detail = 4;
+  int32 sql_error_number = 5;
+  // Definition as it stands after applying, for immediate version attribution.
+  JobDefinitionBlob resulting_job = 6;
+  google.protobuf.Timestamp applied_at = 7;
+}
+
+// ---------------------------------------------------------------------------
+// Server -> Worker
+// ---------------------------------------------------------------------------
+
+message ServerMessage {
+  oneof msg {
+    HelloAck hello_ack = 1;
+    Command command = 2;
+    ConfigUpdate config = 3;
+  }
+}
+
+message HelloAck {
+  string worker_id = 1;
+  // Effective capabilities = min(server grant, worker-reported ceiling). The
+  // worker re-derives this itself and does not trust the server's arithmetic.
+  repeated string capabilities = 2;
+  ConfigUpdate config = 3;
+  string server_version = 4;
+  // PEM-encoded public key the worker uses to verify command signatures.
+  string command_signing_public_key = 5;
+}
+
+message ConfigUpdate {
+  int32 definition_poll_seconds = 1;
+  int32 history_poll_seconds = 2;
+  int32 activity_poll_seconds = 3;
+  int32 agent_log_poll_seconds = 4;
+  int32 heartbeat_seconds = 5;
+  int32 history_batch_size = 6;
+}
+
+// The closed command vocabulary. There is deliberately no "execute arbitrary
+// T-SQL" command: adding a command type is a protocol change and is reviewed as
+// one. Job *step bodies* are T-SQL, but they are installed as Agent job
+// definitions through the approval flow, never executed ad hoc by the worker.
+message Command {
+  string id = 1; // UUID, also the idempotency key
+  google.protobuf.Timestamp issued_at = 2;
+  string instance_name = 3;
+  // Server signature over canonical bytes of (id|type|payload_hash|issued_at|instance_name).
+  bytes signature = 4;
+
+  oneof payload {
+    ToggleJob toggle_job = 10;
+    RunJob run_job = 11;
+    StopJob stop_job = 12;
+    UpsertJob upsert_job = 13;
+    DeleteJob delete_job = 14;
+    UpsertSchedule upsert_schedule = 15;
+    DeleteSchedule delete_schedule = 16;
+    UpsertOperator upsert_operator = 17;
+    DeleteOperator delete_operator = 18;
+  }
+}
+
+message ToggleJob {
+  string job_uuid = 1;
+  bool enabled = 2;
+  string base_definition_hash = 3;
+}
+
+message RunJob {
+  string job_uuid = 1;
+  string step_name = 2; // optional: start at this step
+}
+
+message StopJob {
+  string job_uuid = 1;
+}
+
+message UpsertJob {
+  string job_uuid = 1;
+  string canonical_json = 2; // full JobDefinition.v1
+  // Hash of the definition the edit was made against. The worker re-reads live
+  // state and refuses with Conflict if it no longer matches. Empty = create.
+  string base_definition_hash = 3;
+  bool allow_overwrite = 4; // operator explicitly chose to overwrite live state
+}
+
+message DeleteJob {
+  string job_uuid = 1;
+  string base_definition_hash = 2;
+}
+
+message UpsertSchedule {
+  string schedule_uuid = 1;
+  string canonical_json = 2;
+  string base_definition_hash = 3;
+}
+
+message DeleteSchedule {
+  string schedule_uuid = 1;
+  string base_definition_hash = 2;
+}
+
+message UpsertOperator {
+  int32 operator_id = 1;
+  string canonical_json = 2;
+  string base_definition_hash = 3;
+}
+
+message DeleteOperator {
+  int32 operator_id = 1;
+  string base_definition_hash = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Enrolment
+// ---------------------------------------------------------------------------
+
+message EnrolRequest {
+  string enrolment_token = 1;
+  string host_name = 2;
+  string worker_version = 3;
+  string csr_pem = 4; // worker-generated; the private key never leaves the host
+}
+
+message EnrolResponse {
+  string worker_id = 1;
+  string certificate_pem = 2;
+  string ca_certificate_pem = 3;
+  google.protobuf.Timestamp not_after = 4;
+}

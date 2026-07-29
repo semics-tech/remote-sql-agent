@@ -1,0 +1,45 @@
+# Development worker configuration.
+#
+# Points at the SQL Server container from deploy/docker-compose.dev.yml and a
+# control plane running on localhost. Not a template for production: TLS is off
+# and the SA login is used, neither of which is acceptable on a real host.
+
+hostName: DEV-SQLHOST01
+
+controlPlane:
+  address: localhost:8443
+  tls:
+    enabled: false # M3 makes mTLS mandatory; local dev only.
+  reconnect:
+    initialDelayMs: 1000
+    maxDelayMs: 60000
+    jitterRatio: 0.3
+
+# The local ceiling. Never overridable from the control plane (§6.3).
+maxCapability: readOnly
+
+instances:
+  - name: MSSQLSERVER
+    server: localhost
+    port: 14330
+    database: msdb
+    user: sa
+    # Also settable via RSAGENT_SQL_PASSWORD so the file can be committed.
+    password: RsAgent_Dev_Pass123
+    encrypt: true
+    trustServerCertificate: true # container uses a self-signed cert
+
+outbox:
+  path: ./run/outbox.sqlite
+  maxRows: 100000
+
+polling:
+  definitionSeconds: 15
+  historySeconds: 5
+  activitySeconds: 5
+  agentLogSeconds: 60
+  heartbeatSeconds: 15
+  historyBatchSize: 500
+
+logLevel: info
+healthFilePath: ./run/health
