@@ -11,19 +11,24 @@ import {
   stepAction,
 } from '../format.js';
 import { describeSchedule } from '@rsagent/protocol/browser';
+import { useAuth } from '../auth.jsx';
+import { JobActions } from './JobActions.jsx';
+import { JobEditor } from './JobEditor.jsx';
 
 // Monaco is ~2 MB; it only appears on the Versions tab, so it must not be in
 // the bundle that renders the estate grid.
 const MonacoDiff = lazy(() => import('../MonacoDiff.jsx'));
 
-type Tab = 'steps' | 'history' | 'versions';
+type Tab = 'steps' | 'history' | 'versions' | 'edit';
 
 /** §9.3 Job detail — Steps, History (SSMS "View History"), Versions. */
 export function Job() {
   const { instanceId, jobUuid } = useParams();
   const [tab, setTab] = useState<Tab>('steps');
+  const [notice, setNotice] = useState<string | null>(null);
   const job = useJob(instanceId, jobUuid);
   const history = useJobHistory(instanceId, jobUuid);
+  const { can } = useAuth();
 
   const definition = job.data?.definition ?? null;
 
@@ -50,7 +55,24 @@ export function Job() {
           <RunTape runs={history.data?.runs ?? []} />
         </p>
         {job.data?.description ? <p className="page-sub">{job.data.description}</p> : null}
+
+        {job.data && instanceId ? (
+          <JobActions
+            instanceId={instanceId}
+            job={job.data}
+            onIssued={(message) => setNotice(message)}
+          />
+        ) : null}
       </QueryState>
+
+      {notice ? (
+        <div className="notice">
+          {notice}
+          <button className="action" onClick={() => setNotice(null)}>
+            Dismiss
+          </button>
+        </div>
+      ) : null}
 
       <div className="tabs">
         <button className={tab === 'steps' ? 'active' : ''} onClick={() => setTab('steps')}>
@@ -62,15 +84,34 @@ export function Job() {
         <button className={tab === 'versions' ? 'active' : ''} onClick={() => setTab('versions')}>
           Versions
         </button>
+        {can('job.write') ? (
+          <button className={tab === 'edit' ? 'active' : ''} onClick={() => setTab('edit')}>
+            Edit
+          </button>
+        ) : null}
       </div>
 
       {tab === 'steps' ? (
         <StepsTab definition={definition} />
       ) : tab === 'history' ? (
         <HistoryTab runs={history.data?.runs ?? []} isLoading={history.isLoading} error={history.error} />
-      ) : (
+      ) : tab === 'versions' ? (
         <VersionsTab instanceId={instanceId} jobUuid={jobUuid} />
-      )}
+      ) : job.data && instanceId ? (
+        <JobEditor
+          // Remounting on the current hash discards a stale draft once the job
+          // has moved underneath the form, rather than letting the operator keep
+          // editing a version that no longer exists.
+          key={job.data.currentDefinitionHash ?? 'none'}
+          instanceId={instanceId}
+          job={job.data}
+          onSaved={(message) => {
+            setNotice(message);
+            setTab('steps');
+          }}
+          onCancel={() => setTab('steps')}
+        />
+      ) : null}
     </div>
   );
 }

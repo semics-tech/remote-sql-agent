@@ -7,9 +7,28 @@ import { runMigrations } from '@rsagent/server/src/db/migrate.js';
 import { createGrpcServer } from '@rsagent/server/src/hub/hub.js';
 import { WorkerRegistry } from '@rsagent/server/src/hub/registry.js';
 import { loadConfig } from '@rsagent/server/src/config.js';
-import { getEstateOverview, listJobs, getJobHistory, searchJobs } from '@rsagent/server/src/domain/queries.js';
+import {
+  getEstateOverview,
+  listJobs,
+  getJob,
+  getJobHistory,
+  searchJobs,
+} from '@rsagent/server/src/domain/queries.js';
 import { getJobVersions } from '@rsagent/server/src/domain/versioning.js';
-import { generateCommandSigningKeyPair } from '@rsagent/protocol';
+import {
+  CommandService,
+  buildProtoCommand,
+} from '@rsagent/server/src/domain/commands.js';
+import { commands as commandsTable, users } from '@rsagent/server/src/db/schema.js';
+import { eq } from 'drizzle-orm';
+import {
+  canonicaliseJobWithHash,
+  generateCommandSigningKeyPair,
+  signCommand,
+  type CommandSigningKeyPair,
+  type JobDefinition,
+} from '@rsagent/protocol';
+import { handleCommand } from '@rsagent/worker/src/command-handler.js';
 import { WorkerAuthenticator } from '@rsagent/server/src/worker-auth/authenticate.js';
 import {
   createEnrolmentToken,
@@ -54,6 +73,10 @@ let session: ControlPlaneSession;
 let outbox: Outbox;
 let outboxDir: string;
 let pool: sql.ConnectionPool;
+let commandService: CommandService;
+let signingKeys: CommandSigningKeyPair;
+/** A real user row, so command.issued_by satisfies its foreign key. */
+let ISSUER_ID: string;
 
 const logger = pino({ level: process.env.RSAGENT_TEST_LOG_LEVEL ?? 'silent' });
 
@@ -107,13 +130,35 @@ beforeAll(async () => {
   ({ db, close: closeDb } = createDatabase(testDbUrl(), { max: 6 }));
 
   const registry = new WorkerRegistry();
-  const signingKey = generateCommandSigningKeyPair();
+  signingKeys = generateCommandSigningKeyPair();
   const serverConfig = loadConfig({
     ...process.env,
     RSAGENT_DATABASE_URL: testDbUrl(),
     // The hub is bound to loopback with an ephemeral port for the test.
     RSAGENT_GRPC_REQUIRE_TLS: 'false',
+    // Exercise the command path itself here; the two-person rule is covered by
+    // unit tests and would need a second user for every case.
+    RSAGENT_REQUIRE_APPROVAL_JOB_WRITE: 'false',
   });
+
+  commandService = new CommandService(
+    db,
+    serverConfig,
+    registry,
+    signingKeys.privateKeyPem,
+    logger,
+  );
+
+  const [issuer] = await db
+    .insert(users)
+    .values({
+      username: 'integration-test',
+      passwordHash: null,
+      role: 'Admin',
+      identityProvider: 'local',
+    })
+    .returning({ id: users.id });
+  ISSUER_ID = issuer!.id;
 
   grpcServer = createGrpcServer({
     db,
@@ -121,7 +166,8 @@ beforeAll(async () => {
     logger,
     registry,
     authenticator: new WorkerAuthenticator(db, serverConfig),
-    commandSigningPublicKey: signingKey.publicKeyPem,
+    commands: commandService,
+    commandSigningPublicKey: signingKeys.publicKeyPem,
   });
 
   grpcPort = await new Promise<number>((resolve, reject) => {
@@ -139,7 +185,7 @@ beforeAll(async () => {
   const enrolment = await createEnrolmentToken(db, {
     hostName: HOST_NAME,
     credentialMode: 'token',
-    intendedCapabilities: [],
+    intendedCapabilities: ['job.toggle', 'job.run', 'schedule.write', 'job.write'],
     createdBy: null,
     ttlMinutes: 60,
   });
@@ -158,7 +204,9 @@ beforeAll(async () => {
       auth: { mode: 'token', keyFile },
       tls: { enabled: false },
     },
-    maxCapability: 'readOnly',
+    // The write-path tests need a worker that is actually allowed to write; the
+    // ceiling itself is asserted separately by pinning it back to observe-only.
+    maxCapability: 'full',
     instances: [instanceConfig],
     outbox: { path: join(outboxDir, 'outbox.sqlite'), maxRows: 10_000 },
     polling: {
@@ -204,7 +252,30 @@ beforeAll(async () => {
           ready();
         })();
       },
-      onCommand: () => undefined,
+      onCommand: (message) => {
+        if (message.msg?.$case !== 'command') return;
+        const command = message.msg.command;
+        void (async () => {
+          // Mirrors the real worker: application is held against definition
+          // polling, and the change is attributed to the command that made it.
+          const result = await monitor.runExclusive(async () => {
+            const outcome = await handleCommand(command, {
+              pool: monitor.connectionPool!,
+              instanceName: command.instanceName,
+              capabilities: session.capabilities,
+              outbox,
+              logger,
+              commandSigningPublicKey: session.commandSigningPublicKey,
+            });
+            if (outcome.success && outcome.resultingJob) {
+              monitor.noteAppliedCommand(outcome.resultingJob.jobUuid, command.id);
+            }
+            return outcome;
+          });
+          session.send({ msg: { $case: 'commandResult', commandResult: result } });
+          await monitor.pollDefinitions().catch(() => undefined);
+        })();
+      },
       onDisconnect: () => undefined,
     },
     () => ({
@@ -213,7 +284,7 @@ beforeAll(async () => {
         hello: {
           workerVersion: '0.1.0-test',
           hostName: HOST_NAME,
-          maxCapability: 'readOnly',
+          maxCapability: 'full',
           instances: [
             {
               instanceName: INSTANCE_NAME,
@@ -427,4 +498,276 @@ describe('cross-estate search', () => {
   it('escapes LIKE wildcards rather than matching everything', async () => {
     expect(await searchJobs(db, '%')).toHaveLength(0);
   });
+});
+
+// ---------------------------------------------------------------------------
+// M4 — the write path
+// ---------------------------------------------------------------------------
+
+describe('write path', () => {
+  /** Issue a command directly through the service and wait for its outcome. */
+  async function issueAndSettle(
+    kind: Parameters<CommandService['create']>[0]['kind'],
+    jobUuid: string,
+    payload: Record<string, unknown>,
+    baseDefinitionHash?: string,
+  ) {
+    const [instance] = await getEstateOverview(db);
+    const created = await commandService.create({
+      instanceId: instance!.instanceId,
+      kind,
+      jobUuid,
+      payload,
+      baseDefinitionHash: baseDefinitionHash ?? null,
+      issuedBy: ISSUER_ID,
+      issuedByUsername: 'integration-test',
+    });
+
+    const settled = await eventually(
+      async () => {
+        const [row] = await db
+          .select()
+          .from(commandsTable)
+          .where(eq(commandsTable.id, created.id));
+        return row!;
+      },
+      (row) => row.state === 'succeeded' || row.state === 'failed' || row.state === 'expired',
+      { timeoutMs: 60_000 },
+    );
+    return settled;
+  }
+
+  it('enables a disabled job and records it as a remote change, not drift', async () => {
+    const [instance] = await getEstateOverview(db);
+    const jobs = await listJobs(db, instance!.instanceId);
+    const target = jobs.find((j) => j.name === 'RSAgent Fixture - Monthly Archive')!;
+
+    const settled = await issueAndSettle('toggleJob', target.jobUuid, {
+      jobUuid: target.jobUuid,
+      enabled: !target.enabled,
+      baseDefinitionHash: '',
+    });
+    expect(settled.state).toBe('succeeded');
+
+    // msdb is the truth; assert against it rather than our own mirror.
+    const live = await pool
+      .request()
+      .input('jobUuid', sql.UniqueIdentifier, target.jobUuid)
+      .query<{ enabled: number }>('SELECT enabled FROM msdb.dbo.sysjobs WHERE job_id = @jobUuid');
+    expect(live.recordset[0]!.enabled === 1).toBe(!target.enabled);
+
+    const versions = await getJobVersions(db, instance!.instanceId, target.jobUuid);
+    expect(versions[0]!.origin).toBe('remote');
+    expect(versions[0]!.commandId).toBe(settled.id);
+
+    const after = await listJobs(db, instance!.instanceId);
+    // The operator's own change must never come back flagged as on-prem drift.
+    expect(after.find((j) => j.jobUuid === target.jobUuid)!.isDrifted).toBe(false);
+  }, 120_000);
+
+  it('round-trips a full job definition byte for byte', async () => {
+    // The most important assertion in the project: what the dashboard sends is
+    // exactly what msdb holds afterwards, branching and schedules included.
+    const [instance] = await getEstateOverview(db);
+    const jobs = await listJobs(db, instance!.instanceId);
+    const target = jobs.find((j) => j.name === 'RSAgent Fixture - Nightly Maintenance')!;
+    const detail = await getJob(db, instance!.instanceId, target.jobUuid);
+
+    const edited = structuredClone(detail!.definition) as JobDefinition;
+    edited.description = `Round-trip test ${process.pid}`;
+    edited.steps[1]!.command = `EXEC dbo.usp_RebuildIndexes; -- round trip ${process.pid}`;
+    edited.steps[1]!.retryAttempts = 3;
+
+    const { canonicalJson, hash: sentHash } = canonicaliseJobWithHash(edited);
+
+    const settled = await issueAndSettle(
+      'upsertJob',
+      target.jobUuid,
+      {
+        jobUuid: target.jobUuid,
+        canonicalJson,
+        baseDefinitionHash: detail!.currentDefinitionHash,
+        allowOverwrite: false,
+      },
+      detail!.currentDefinitionHash ?? undefined,
+    );
+    expect(settled.state).toBe('succeeded');
+
+    const reSnapshot = await eventually(
+      () => getJob(db, instance!.instanceId, target.jobUuid),
+      (job) => job?.currentDefinitionHash === sentHash,
+      { timeoutMs: 60_000 },
+    );
+
+    // Identical canonical hash means every field survived the trip through
+    // msdb's stored procedures unchanged.
+    expect(reSnapshot!.currentDefinitionHash).toBe(sentHash);
+    const got = reSnapshot!.definition as JobDefinition;
+    expect(got.steps).toHaveLength(4);
+    expect(got.steps[0]!.onFailStepId).toBe(4);
+    expect(got.schedules).toHaveLength(1);
+  }, 180_000);
+
+  it('refuses an edit made against a stale version and leaves the job untouched', async () => {
+    const [instance] = await getEstateOverview(db);
+    const jobs = await listJobs(db, instance!.instanceId);
+    const target = jobs.find((j) => j.name === 'RSAgent Fixture - Quarterly Reconciliation')!;
+    const detail = await getJob(db, instance!.instanceId, target.jobUuid);
+
+    const edited = structuredClone(detail!.definition) as JobDefinition;
+    edited.description = 'Should never be applied.';
+    const { canonicalJson } = canonicaliseJobWithHash(edited);
+
+    const settled = await issueAndSettle(
+      'upsertJob',
+      target.jobUuid,
+      {
+        jobUuid: target.jobUuid,
+        canonicalJson,
+        baseDefinitionHash: '0'.repeat(64),
+        allowOverwrite: false,
+      },
+      '0'.repeat(64),
+    );
+
+    expect(settled.state).toBe('failed');
+    expect(settled.resultCode).toBe('Conflict');
+
+    // Flag and ask, never last-write-wins: msdb must be unchanged.
+    const live = await pool
+      .request()
+      .input('jobUuid', sql.UniqueIdentifier, target.jobUuid)
+      .query<{ description: string }>(
+        'SELECT description FROM msdb.dbo.sysjobs WHERE job_id = @jobUuid',
+      );
+    expect(live.recordset[0]!.description).not.toBe('Should never be applied.');
+  }, 120_000);
+
+  it('applies the same edit when the operator explicitly overwrites', async () => {
+    const [instance] = await getEstateOverview(db);
+    const jobs = await listJobs(db, instance!.instanceId);
+    const target = jobs.find((j) => j.name === 'RSAgent Fixture - Quarterly Reconciliation')!;
+    const detail = await getJob(db, instance!.instanceId, target.jobUuid);
+
+    const edited = structuredClone(detail!.definition) as JobDefinition;
+    edited.description = `Deliberate overwrite ${process.pid}`;
+    const { canonicalJson } = canonicaliseJobWithHash(edited);
+
+    const settled = await issueAndSettle('upsertJob', target.jobUuid, {
+      jobUuid: target.jobUuid,
+      canonicalJson,
+      baseDefinitionHash: '0'.repeat(64),
+      allowOverwrite: true,
+    });
+
+    expect(settled.state).toBe('succeeded');
+  }, 120_000);
+
+  it('ignores a redelivered command rather than applying it twice', async () => {
+    const [instance] = await getEstateOverview(db);
+    const jobs = await listJobs(db, instance!.instanceId);
+    const target = jobs.find((j) => j.name === 'RSAgent Fixture - Startup Warmup')!;
+
+    const created = await commandService.create({
+      instanceId: instance!.instanceId,
+      kind: 'toggleJob',
+      jobUuid: target.jobUuid,
+      payload: { jobUuid: target.jobUuid, enabled: false, baseDefinitionHash: '' },
+      issuedBy: ISSUER_ID,
+      issuedByUsername: 'integration-test',
+    });
+
+    await eventually(
+      async () => {
+        const [row] = await db.select().from(commandsTable).where(eq(commandsTable.id, created.id));
+        return row!;
+      },
+      (row) => row.state === 'succeeded',
+      { timeoutMs: 60_000 },
+    );
+
+    // Re-dispatch the identical command. The worker's idempotency record should
+    // make it a no-op rather than a second application.
+    await db
+      .update(commandsTable)
+      .set({ state: 'approved', expiresAt: new Date(Date.now() + 600_000) })
+      .where(eq(commandsTable.id, created.id));
+    await commandService.dispatch(created.id);
+
+    const settled = await eventually(
+      async () => {
+        const [row] = await db.select().from(commandsTable).where(eq(commandsTable.id, created.id));
+        return row!;
+      },
+      (row) => row.state === 'succeeded' || row.state === 'failed',
+      { timeoutMs: 60_000 },
+    );
+    expect(settled.state).toBe('succeeded');
+    expect(settled.resultDetail).toMatch(/already applied/iu);
+  }, 120_000);
+
+  it('refuses a write the worker capability ceiling does not permit', async () => {
+    // The property that survives control-plane compromise: the ceiling lives in
+    // worker.yaml, so a command that skipped every server-side check is still
+    // refused at the point it would touch msdb.
+    const [instance] = await getEstateOverview(db);
+    const jobs = await listJobs(db, instance!.instanceId);
+    const target = jobs.find((j) => j.name === 'RSAgent Fixture - Heartbeat Log')!;
+
+    const restrictedContext = {
+      pool,
+      instanceName: INSTANCE_NAME,
+      capabilities: ['observe'] as const,
+      outbox,
+      logger,
+      commandSigningPublicKey: signingKeys.publicKeyPem,
+    };
+
+    const command = buildProtoCommand(
+      '99999999-9999-4999-8999-999999999999',
+      'toggleJob',
+      INSTANCE_NAME,
+      { jobUuid: target.jobUuid, enabled: false, baseDefinitionHash: '' },
+    );
+    command.signature = signCommand(command, signingKeys.privateKeyPem);
+
+    const result = await handleCommand(command, {
+      ...restrictedContext,
+      capabilities: [...restrictedContext.capabilities],
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.errorCode).toBe('CapabilityDenied');
+  }, 60_000);
+
+  it('refuses a command whose signature does not verify', async () => {
+    const [instance] = await getEstateOverview(db);
+    const jobs = await listJobs(db, instance!.instanceId);
+    const target = jobs.find((j) => j.name === 'RSAgent Fixture - Heartbeat Log')!;
+
+    const command = buildProtoCommand(
+      '88888888-8888-4888-8888-888888888888',
+      'toggleJob',
+      INSTANCE_NAME,
+      { jobUuid: target.jobUuid, enabled: false, baseDefinitionHash: '' },
+    );
+    command.signature = signCommand(command, signingKeys.privateKeyPem);
+    // Tamper after signing, exactly as an attacker on the path would.
+    command.payload = {
+      $case: 'toggleJob',
+      toggleJob: { jobUuid: target.jobUuid, enabled: true, baseDefinitionHash: '' },
+    };
+
+    const result = await handleCommand(command, {
+      pool,
+      instanceName: INSTANCE_NAME,
+      capabilities: ['observe', 'job.toggle'],
+      outbox,
+      logger,
+      commandSigningPublicKey: signingKeys.publicKeyPem,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.errorCode).toBe('BadSignature');
+  }, 60_000);
 });

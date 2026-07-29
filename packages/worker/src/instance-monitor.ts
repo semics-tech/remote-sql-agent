@@ -67,6 +67,22 @@ export class InstanceMonitor {
   #warnedUnknownSubsystems = new Set<string>();
   #stopped = false;
 
+  /**
+   * Serialises definition polling against command application.
+   *
+   * Without this, the scheduled poll can observe a change a command has just
+   * made and report it before the command's own result is processed — so the
+   * operator's edit comes back attributed as on-prem drift.
+   */
+  #exclusive: Promise<unknown> = Promise.resolve();
+
+  /**
+   * jobUuid -> commandId for changes this worker just made itself. Consumed by
+   * the next delta for that job so the control plane attributes it to the
+   * command rather than to someone editing in SSMS.
+   */
+  #pendingAttribution = new Map<string, string>();
+
   constructor(private readonly deps: InstanceMonitorDeps) {}
 
   get instanceName(): string {
@@ -75,6 +91,11 @@ export class InstanceMonitor {
 
   get identity(): InstanceIdentity | null {
     return this.#identity;
+  }
+
+  /** The live connection, for the command handler. Null while disconnected. */
+  get connectionPool(): sql.ConnectionPool | null {
+    return this.#pool;
   }
 
   async connect(): Promise<void> {
@@ -102,6 +123,26 @@ export class InstanceMonitor {
       },
       'Connected to SQL Server instance',
     );
+  }
+
+  /**
+   * Run something with definition polling held off, and with polling unable to
+   * start midway through it.
+   */
+  async runExclusive<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.#exclusive.then(fn, fn);
+    // Swallow on the chain itself so one failure does not poison every
+    // subsequent poll.
+    this.#exclusive = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  /** Attribute the next observed change to a job to the command that caused it. */
+  noteAppliedCommand(jobUuid: string, commandId: string): void {
+    this.#pendingAttribution.set(jobUuid.toLowerCase(), commandId);
   }
 
   async refreshIdentity(): Promise<InstanceIdentity | null> {
@@ -217,6 +258,10 @@ export class InstanceMonitor {
    * serialised and hashed every 30 seconds.
    */
   async pollDefinitions(): Promise<void> {
+    return this.runExclusive(() => this.#pollDefinitionsNow());
+  }
+
+  async #pollDefinitionsNow(): Promise<void> {
     if (!this.#pool) return;
 
     const fingerprint = await readJobsFingerprint(this.#pool);
@@ -242,6 +287,13 @@ export class InstanceMonitor {
 
       this.#definitionHashes.set(job.jobUuid, blob.definitionHash);
       changes += 1;
+
+      // If this worker made the change itself, say so: an unattributed delta
+      // would be recorded as on-prem drift and the operator would see their own
+      // edit flagged as someone else meddling.
+      const attributedTo = this.#pendingAttribution.get(job.jobUuid) ?? '';
+      this.#pendingAttribution.delete(job.jobUuid);
+
       this.deps.emit({
         msg: {
           $case: 'definition',
@@ -249,7 +301,7 @@ export class InstanceMonitor {
             instanceName: this.instanceName,
             job: blob,
             deleted: false,
-            appliedCommandId: '',
+            appliedCommandId: attributedTo,
           },
         },
       });

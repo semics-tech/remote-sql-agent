@@ -1,11 +1,15 @@
-import Fastify, { type FastifyBaseLogger, type FastifyError } from 'fastify';
+import Fastify, {
+  type FastifyBaseLogger,
+  type FastifyError,
+  type FastifyRequest,
+} from 'fastify';
 import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
 import { z } from 'zod';
 import type { Logger } from 'pino';
-import { ROLES, isCapability, type Role } from '@rsagent/protocol';
+import { ROLES, ROLE_PERMISSIONS, isCapability, type Role } from '@rsagent/protocol';
 import type { Database } from '../db/client.js';
 import type { ServerConfig } from '../config.js';
 import type { WorkerRegistry } from '../hub/registry.js';
@@ -33,7 +37,12 @@ import {
   rotateWorkerKey,
 } from '../worker-auth/enrolment.js';
 import { eq } from 'drizzle-orm';
-import { workers } from '../db/schema.js';
+import { commandState, workers } from '../db/schema.js';
+import {
+  CommandError,
+  prepareJobDefinition,
+  type CommandService,
+} from '../domain/commands.js';
 
 export interface AppDeps {
   db: Database;
@@ -41,6 +50,7 @@ export interface AppDeps {
   logger: Logger;
   registry: WorkerRegistry;
   entra: EntraClient | null;
+  commands: CommandService;
 }
 
 const instanceParam = z.object({ instanceId: z.string().uuid() });
@@ -79,6 +89,11 @@ export async function createApp(deps: AppDeps) {
   app.setErrorHandler((error: FastifyError, request, reply) => {
     if (error instanceof z.ZodError) {
       return reply.status(400).send({ error: 'ValidationError', detail: error.issues });
+    }
+    if (error instanceof CommandError) {
+      // These carry an operator-facing explanation of *why* a command was
+      // refused, which is the whole point — a bare 403 teaches nobody anything.
+      return reply.status(error.statusCode).send({ error: error.code, detail: error.message });
     }
     request.log.error({ err: error }, 'Unhandled API error');
     const status = error.statusCode ?? 500;
@@ -258,6 +273,185 @@ export async function createApp(deps: AppDeps) {
       return { acknowledged: true };
     },
   );
+
+  // -------------------------------------------------------------------------
+  // Write path (§6.4, M4)
+  //
+  // Every route here only *issues* a command. Nothing in the control plane
+  // touches a SQL Server; the worker applies it, after its own independent
+  // checks, and reports back.
+  // -------------------------------------------------------------------------
+
+  /** What the signed-in user could actually do to this instance right now. */
+  app.get(
+    '/api/instances/:instanceId/capabilities',
+    { preHandler: guard('instance.read') },
+    async (request) => {
+      const { instanceId } = instanceParam.parse(request.params);
+      const { capabilities, hostName } = await deps.commands.effectiveCapabilitiesFor(instanceId);
+      return {
+        hostName,
+        workerCapabilities: capabilities,
+        yourPermissions: request.user ? ROLE_PERMISSIONS[request.user.role] : [],
+        approvalRequiredForJobWrite: config.requireApprovalForJobWrite,
+      };
+    },
+  );
+
+  /**
+   * Issue a command on behalf of the signed-in user.
+   *
+   * `request.user` is always set here: every caller sits behind a
+   * `requirePermission` guard, which refuses the request before the handler
+   * runs if there is no session.
+   */
+  const issue = async (
+    request: FastifyRequest,
+    input: Omit<
+      Parameters<CommandService['create']>[0],
+      'issuedBy' | 'issuedByUsername' | 'remoteAddress'
+    >,
+  ) =>
+    deps.commands.create({
+      ...input,
+      issuedBy: request.user!.id,
+      issuedByUsername: request.user!.username,
+      remoteAddress: request.ip,
+    });
+
+  app.post(
+    '/api/instances/:instanceId/jobs/:jobUuid/toggle',
+    { preHandler: guard('job.toggle') },
+    async (request) => {
+      const { instanceId, jobUuid } = jobParams.parse(request.params);
+      const { enabled, baseDefinitionHash } = z
+        .object({ enabled: z.boolean(), baseDefinitionHash: z.string().optional() })
+        .parse(request.body);
+
+      return issue(request, {
+        instanceId,
+        kind: 'toggleJob',
+        jobUuid,
+        payload: { jobUuid, enabled, baseDefinitionHash: baseDefinitionHash ?? '' },
+        baseDefinitionHash: baseDefinitionHash ?? null,
+      });
+    },
+  );
+
+  app.post(
+    '/api/instances/:instanceId/jobs/:jobUuid/run',
+    { preHandler: guard('job.run') },
+    async (request) => {
+      const { instanceId, jobUuid } = jobParams.parse(request.params);
+      const { stepName } = z.object({ stepName: z.string().optional() }).parse(request.body ?? {});
+      return issue(request, {
+        instanceId,
+        kind: 'runJob',
+        jobUuid,
+        payload: { jobUuid, stepName: stepName ?? '' },
+      });
+    },
+  );
+
+  app.post(
+    '/api/instances/:instanceId/jobs/:jobUuid/stop',
+    { preHandler: guard('job.run') },
+    async (request) => {
+      const { instanceId, jobUuid } = jobParams.parse(request.params);
+      return issue(request, {
+        instanceId,
+        kind: 'stopJob',
+        jobUuid,
+        payload: { jobUuid },
+      });
+    },
+  );
+
+  /** Create or update a job from a full JobDefinition.v1. */
+  app.put(
+    '/api/instances/:instanceId/jobs/:jobUuid',
+    { preHandler: guard('job.write') },
+    async (request) => {
+      const { instanceId, jobUuid } = z
+        .object({
+          instanceId: z.string().uuid(),
+          // "new" is the sentinel for a job that does not exist yet: msdb
+          // allocates the id, so the dashboard cannot supply one.
+          jobUuid: z.union([z.string().uuid(), z.literal('new')]),
+        })
+        .parse(request.params);
+
+      const body = z
+        .object({
+          definition: z.unknown(),
+          baseDefinitionHash: z.string().optional(),
+          allowOverwrite: z.boolean().optional(),
+        })
+        .parse(request.body);
+
+      const { canonicalJson } = prepareJobDefinition(body.definition);
+
+      return issue(request, {
+        instanceId,
+        kind: 'upsertJob',
+        jobUuid: jobUuid === 'new' ? null : jobUuid,
+        payload: {
+          jobUuid: jobUuid === 'new' ? '' : jobUuid,
+          canonicalJson,
+          baseDefinitionHash: body.baseDefinitionHash ?? '',
+          allowOverwrite: body.allowOverwrite === true,
+        },
+        baseDefinitionHash: body.baseDefinitionHash ?? null,
+      });
+    },
+  );
+
+  app.delete(
+    '/api/instances/:instanceId/jobs/:jobUuid',
+    { preHandler: guard('job.write') },
+    async (request) => {
+      const { instanceId, jobUuid } = jobParams.parse(request.params);
+      const { baseDefinitionHash } = z
+        .object({ baseDefinitionHash: z.string().optional() })
+        .parse(request.body ?? {});
+
+      return issue(request, {
+        instanceId,
+        kind: 'deleteJob',
+        jobUuid,
+        payload: { jobUuid, baseDefinitionHash: baseDefinitionHash ?? '' },
+        baseDefinitionHash: baseDefinitionHash ?? null,
+      });
+    },
+  );
+
+  // --- Commands and approvals (§9.6) ---------------------------------------
+
+  app.get('/api/commands', { preHandler: guard('job.read') }, async (request) => {
+    const { state, limit } = z
+      .object({
+        state: z.enum(commandState).optional(),
+        limit: z.coerce.number().int().positive().optional(),
+      })
+      .parse(request.query);
+    return {
+      commands: await deps.commands.list({ state, limit }),
+      pendingApproval: await deps.commands.countPendingApproval(),
+    };
+  });
+
+  app.post('/api/commands/:commandId/approve', { preHandler: guard('command.approve') }, async (request) => {
+    const { commandId } = z.object({ commandId: z.string().uuid() }).parse(request.params);
+    await deps.commands.approve(commandId, request.user!.id, request.user!.username, request.ip);
+    return { approved: true };
+  });
+
+  app.post('/api/commands/:commandId/reject', { preHandler: guard('command.approve') }, async (request) => {
+    const { commandId } = z.object({ commandId: z.string().uuid() }).parse(request.params);
+    const { reason } = z.object({ reason: z.string().max(500) }).parse(request.body);
+    await deps.commands.reject(commandId, request.user!.username, reason, request.ip);
+    return { rejected: true };
+  });
 
   // -------------------------------------------------------------------------
   // Cross-estate search (§9.5)
@@ -494,7 +688,10 @@ export async function createApp(deps: AppDeps) {
   // -------------------------------------------------------------------------
 
   if (config.dashboardDir) {
-    await app.register(fastifyStatic, { root: config.dashboardDir, wildcard: false });
+    // Wildcard rather than an enumerated file list: the asset filenames are
+    // content-hashed, and enumerating at startup means a rebuilt dashboard 404s
+    // until the process is restarted.
+    await app.register(fastifyStatic, { root: config.dashboardDir });
     app.setNotFoundHandler((request, reply) => {
       if (request.url.startsWith('/api') || request.url.startsWith('/health')) {
         return reply.status(404).send({ error: 'NotFound' });

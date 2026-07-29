@@ -11,6 +11,7 @@ import { loadWorkerConfig, type WorkerConfig } from './config.js';
 import { Outbox } from './outbox.js';
 import { InstanceMonitor, type PollIntervals } from './instance-monitor.js';
 import { ControlPlaneSession } from './session.js';
+import { handleCommand } from './command-handler.js';
 
 const WORKER_VERSION = '0.1.0';
 const OUTBOX_DRAIN_BATCH = 50;
@@ -126,6 +127,7 @@ async function main(): Promise<void> {
   // Control plane session.
   // -------------------------------------------------------------------------
   let heartbeatTimer: NodeJS.Timeout | null = null;
+  let commandQueue: Promise<void> = Promise.resolve();
 
   const drainOutbox = (): void => {
     if (!session?.connected) return;
@@ -201,11 +203,83 @@ async function main(): Promise<void> {
         logger.info({ capabilities }, 'Worker ready');
       },
 
-      onCommand: () => {
-        // The write path lands in M4. Until then the command vocabulary exists
-        // on the wire but the worker applies nothing — a build that cannot
-        // write cannot be talked into writing.
-        logger.warn('Received a command from the control plane; this build is observe-only');
+      onCommand: (message) => {
+        if (message.msg?.$case !== 'command') return;
+        const command = message.msg.command;
+
+        // Serialised behind the same queue as everything else: two commands
+        // against one job applied concurrently would race on msdb state, and
+        // the second's conflict check would read a half-applied definition.
+        commandQueue = commandQueue
+          .then(async () => {
+            const monitor = monitors.get(command.instanceName);
+            if (!monitor) {
+              logger.warn(
+                { commandId: command.id, instanceName: command.instanceName },
+                'Command for an instance this worker does not manage',
+              );
+              session?.send({
+                msg: {
+                  $case: 'commandResult',
+                  commandResult: {
+                    commandId: command.id,
+                    success: false,
+                    errorCode: 'UnknownInstance',
+                    errorDetail: `This worker does not manage instance "${command.instanceName}".`,
+                    sqlErrorNumber: 0,
+                    appliedAt: toTimestamp(new Date()),
+                  },
+                },
+              });
+              return;
+            }
+
+            const pool = monitor.connectionPool;
+            if (!pool) {
+              session?.send({
+                msg: {
+                  $case: 'commandResult',
+                  commandResult: {
+                    commandId: command.id,
+                    success: false,
+                    errorCode: 'InstanceUnavailable',
+                    errorDetail: 'The worker is not currently connected to that SQL Server instance.',
+                    sqlErrorNumber: 0,
+                    appliedAt: toTimestamp(new Date()),
+                  },
+                },
+              });
+              return;
+            }
+
+            // Held against definition polling: a poll landing between the msdb
+            // write and the result being sent would report the change as drift.
+            const result = await monitor.runExclusive(async () => {
+              const outcome = await handleCommand(command, {
+                pool,
+                instanceName: command.instanceName,
+                capabilities: session?.capabilities ?? ['observe'],
+                outbox,
+                logger,
+                commandSigningPublicKey: session?.commandSigningPublicKey ?? '',
+              });
+
+              if (outcome.success && outcome.resultingJob) {
+                monitor.noteAppliedCommand(outcome.resultingJob.jobUuid, command.id);
+              }
+              return outcome;
+            });
+
+            session?.send({ msg: { $case: 'commandResult', commandResult: result } });
+
+            // Re-poll immediately so the change is mirrored now rather than at
+            // the next scheduled tick — an operator watching the screen should
+            // see their own edit land.
+            await monitor.pollDefinitions().catch(() => undefined);
+          })
+          .catch((err: unknown) => {
+            logger.error({ err, commandId: command.id }, 'Failed to process command');
+          });
       },
 
       onDisconnect: (reason) => {

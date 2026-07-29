@@ -33,10 +33,17 @@ services:
       MSSQL_PID: 'Developer'
       # SQL Server Agent must be explicitly enabled in the Linux container.
       MSSQL_AGENT_ENABLED: 'true'
+      # Without this SQL Server sizes its buffer pool against the whole host and
+      # is OOM-killed under emulation. 2 GB is ample for the fixture estate.
+      MSSQL_MEMORY_LIMIT_MB: '2048'
     ports:
       - '14330:1433'
     volumes:
       - mssqldata:/var/opt/mssql
+    deploy:
+      resources:
+        limits:
+          memory: 3g
     healthcheck:
       test:
         [

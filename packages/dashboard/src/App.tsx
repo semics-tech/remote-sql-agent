@@ -1,6 +1,7 @@
 import { NavLink, Route, Routes, useParams } from 'react-router-dom';
-import { useEstate } from './api.js';
+import { useCommands, useEstate } from './api.js';
 import { useAuth } from './auth.jsx';
+import { Commands } from './pages/Commands.jsx';
 import { Estate } from './pages/Estate.jsx';
 import { Instance } from './pages/Instance.jsx';
 import { Job } from './pages/Job.jsx';
@@ -10,6 +11,10 @@ import { SignIn } from './pages/SignIn.jsx';
 
 export function App() {
   const { user, loading, can, signOut } = useAuth();
+  // Surfaced in the nav so an approver notices work waiting for them without
+  // having to go looking for it.
+  const commands = useCommands('pending_approval');
+  const pendingApproval = user ? (commands.data?.pendingApproval ?? 0) : 0;
 
   if (loading) {
     return <div className="empty">Loading…</div>;
@@ -33,6 +38,10 @@ export function App() {
           </NavLink>
           <NavLink to="/search" className={({ isActive }) => (isActive ? 'active' : '')}>
             Search
+          </NavLink>
+          <NavLink to="/commands" className={({ isActive }) => (isActive ? 'active' : '')}>
+            Commands
+            {pendingApproval > 0 ? <span className="nav-badge">{pendingApproval}</span> : null}
           </NavLink>
           {can('worker.admin') || can('user.admin') || can('audit.read') ? (
             <NavLink to="/admin" className={({ isActive }) => (isActive ? 'active' : '')}>
@@ -59,6 +68,7 @@ export function App() {
             <Route path="/instances/:instanceId" element={<Instance />} />
             <Route path="/instances/:instanceId/jobs/:jobUuid" element={<Job />} />
             <Route path="/search" element={<Search />} />
+            <Route path="/commands" element={<Commands />} />
             <Route path="/admin" element={<Admin />} />
             <Route
               path="*"

@@ -1,5 +1,6 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { JobDefinition } from '@rsagent/protocol/browser';
+import { apiFetch } from './auth.jsx';
 
 /** Typed client for the control plane read API. */
 
@@ -42,6 +43,9 @@ export interface JobSummary {
 
 export interface JobDetail extends JobSummary {
   instanceId: string;
+  /** Hash of the definition currently mirrored. Sent with every write as the
+   * base for conflict detection. */
+  currentDefinitionHash: string | null;
   definition: JobDefinition | null;
   activity: {
     state: string;
@@ -267,6 +271,142 @@ export function useAudit() {
     queryKey: ['audit'],
     queryFn: () => get<{ entries: AuditEntry[] }>('/api/audit?limit=200'),
   });
+}
+
+// ---------------------------------------------------------------------------
+// Write path (M4)
+// ---------------------------------------------------------------------------
+
+export interface CommandRow {
+  id: string;
+  type: string;
+  state:
+    | 'pending_approval'
+    | 'approved'
+    | 'dispatched'
+    | 'succeeded'
+    | 'failed'
+    | 'expired'
+    | 'rejected';
+  instanceId: string;
+  instanceName: string;
+  hostName: string;
+  jobUuid: string | null;
+  jobName: string | null;
+  payload: Record<string, unknown>;
+  issuedBy: string | null;
+  approvedBy: string | null;
+  resultCode: string | null;
+  resultDetail: string | null;
+  issuedAt: string;
+  completedAt: string | null;
+  expiresAt: string | null;
+}
+
+export interface InstanceCapabilities {
+  hostName: string;
+  workerCapabilities: string[];
+  yourPermissions: string[];
+  approvalRequiredForJobWrite: boolean;
+}
+
+export interface IssuedCommand {
+  id: string;
+  state: string;
+  requiresApproval: boolean;
+}
+
+async function send<T>(path: string, method: string, body?: unknown): Promise<T> {
+  const res = await apiFetch(path, {
+    method,
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const detail = (await res.json().catch(() => ({}))) as { detail?: string; error?: string };
+    // The server's refusal messages explain *why* — surfacing them verbatim is
+    // more use than a generic failure toast.
+    throw new Error(detail.detail ?? detail.error ?? `Request failed (${res.status})`);
+  }
+  return (await res.json()) as T;
+}
+
+export function useInstanceCapabilities(instanceId: string | undefined) {
+  return useQuery({
+    queryKey: ['capabilities', instanceId],
+    queryFn: () => get<InstanceCapabilities>(`/api/instances/${instanceId}/capabilities`),
+    enabled: Boolean(instanceId),
+  });
+}
+
+export function useCommands(state?: CommandRow['state']) {
+  return useQuery({
+    queryKey: ['commands', state ?? 'all'],
+    queryFn: () =>
+      get<{ commands: CommandRow[]; pendingApproval: number }>(
+        `/api/commands?limit=100${state ? `&state=${state}` : ''}`,
+      ),
+    refetchInterval: LIVE_REFRESH_MS,
+  });
+}
+
+export function useJobActions(instanceId: string | undefined, jobUuid: string | undefined) {
+  const queryClient = useQueryClient();
+  const base = `/api/instances/${instanceId}/jobs/${jobUuid}`;
+
+  // Every action invalidates broadly: a command changes job state, version
+  // history, and the command queue, and the operator should see all three move.
+  const refresh = async (): Promise<void> => {
+    await queryClient.invalidateQueries();
+  };
+
+  return {
+    toggle: async (enabled: boolean, baseDefinitionHash?: string) => {
+      const result = await send<IssuedCommand>(`${base}/toggle`, 'POST', {
+        enabled,
+        baseDefinitionHash,
+      });
+      await refresh();
+      return result;
+    },
+    run: async (stepName?: string) => {
+      const result = await send<IssuedCommand>(`${base}/run`, 'POST', { stepName });
+      await refresh();
+      return result;
+    },
+    stop: async () => {
+      const result = await send<IssuedCommand>(`${base}/stop`, 'POST', {});
+      await refresh();
+      return result;
+    },
+    save: async (definition: unknown, baseDefinitionHash?: string, allowOverwrite = false) => {
+      const result = await send<IssuedCommand>(base, 'PUT', {
+        definition,
+        baseDefinitionHash,
+        allowOverwrite,
+      });
+      await refresh();
+      return result;
+    },
+    remove: async (baseDefinitionHash?: string) => {
+      const result = await send<IssuedCommand>(base, 'DELETE', { baseDefinitionHash });
+      await refresh();
+      return result;
+    },
+  };
+}
+
+export function useCommandApproval() {
+  const queryClient = useQueryClient();
+  return {
+    approve: async (commandId: string) => {
+      await send(`/api/commands/${commandId}/approve`, 'POST', {});
+      await queryClient.invalidateQueries();
+    },
+    reject: async (commandId: string, reason: string) => {
+      await send(`/api/commands/${commandId}/reject`, 'POST', { reason });
+      await queryClient.invalidateQueries();
+    },
+  };
 }
 
 export function useAgentLog(instanceId: string | undefined) {

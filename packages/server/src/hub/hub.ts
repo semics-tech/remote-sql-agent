@@ -15,6 +15,9 @@ import {
   toTimestamp,
 } from '@rsagent/protocol';
 import { EnrolmentError, redeemEnrolmentToken } from '../worker-auth/enrolment.js';
+import type { CommandService } from '../domain/commands.js';
+import { commands } from '../db/schema.js';
+import { eq } from 'drizzle-orm';
 import type { Database } from '../db/client.js';
 import type { ServerConfig } from '../config.js';
 import { type WorkerRegistry, type LiveWorker } from './registry.js';
@@ -48,6 +51,7 @@ export interface HubDeps {
   logger: Logger;
   registry: WorkerRegistry;
   authenticator: WorkerAuthenticator;
+  commands: CommandService;
   commandSigningPublicKey: string;
 }
 
@@ -231,6 +235,13 @@ async function handleSession(
             { hostName, workerId: worker.id, instances: hello.instances.length, capabilities },
             'Worker connected',
           );
+
+          // Anything approved while this worker was offline goes out now,
+          // provided it has not passed its TTL.
+          const dispatched = await deps.commands.dispatchPendingFor(worker.id);
+          if (dispatched > 0) {
+            log.info({ hostName, dispatched }, 'Dispatched commands queued while the worker was offline');
+          }
           break;
         }
 
@@ -328,25 +339,50 @@ async function handleSession(
         }
 
         case 'commandResult': {
-          // Write path lands in M4; results are recorded for audit in the
-          // meantime so nothing is silently dropped if a command is ever sent.
           const result = msg.commandResult;
           log.info(
-            { hostName, commandId: result.commandId, success: result.success },
+            { hostName, commandId: result.commandId, success: result.success, code: result.errorCode },
             'Command result received',
           );
-          await writeAudit(db, {
-            actorType: 'worker',
-            actor: hostName,
-            action: 'command.result',
-            target: result.commandId,
-            detail: {
-              success: result.success,
-              errorCode: result.errorCode,
-              errorDetail: result.errorDetail,
-            },
-            remoteAddress,
+
+          await deps.commands.recordResult({
+            commandId: result.commandId,
+            success: result.success,
+            errorCode: result.errorCode,
+            errorDetail: result.errorDetail,
+            sqlErrorNumber: result.sqlErrorNumber,
+            hostName,
           });
+
+          // The worker returns live state alongside the result. On success that
+          // is the applied definition and belongs in the timeline attributed to
+          // this command — recording it here rather than waiting for the next
+          // poll is what stops an operator's own change coming back moments
+          // later flagged as on-prem drift.
+          //
+          // On a Conflict it is the *current* on-prem definition, which is
+          // exactly what the three-way view needs, so it is recorded as drift.
+          if (result.resultingJob) {
+            const instanceId = [...instanceIds.values()][0];
+            const [commandRow] = await db
+              .select({ instanceId: commands.instanceId, issuedBy: commands.issuedBy })
+              .from(commands)
+              .where(eq(commands.id, result.commandId));
+
+            const targetInstance = commandRow?.instanceId ?? instanceId;
+            if (targetInstance) {
+              verifyBlobHash(result.resultingJob, log);
+              await recordJobVersion(db, {
+                instanceId: targetInstance,
+                jobUuid: result.resultingJob.jobUuid,
+                canonicalJson: result.resultingJob.canonicalJson,
+                definitionHash: result.resultingJob.definitionHash,
+                origin: result.success ? 'remote' : 'local',
+                commandId: result.success ? result.commandId : null,
+                createdBy: result.success ? commandRow?.issuedBy ?? null : null,
+              });
+            }
+          }
           break;
         }
       }

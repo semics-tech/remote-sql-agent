@@ -38,6 +38,10 @@ export class ControlPlaneSession {
   /** Effective capabilities, re-derived locally rather than trusted from the server. */
   #capabilities: Capability[] = ['observe'];
 
+  /** PEM public key used to verify that a command really came from the control
+   * plane. Delivered in HelloAck over the authenticated channel. */
+  #commandSigningPublicKey = '';
+
   constructor(
     private readonly config: WorkerConfig,
     private readonly logger: Logger,
@@ -57,6 +61,10 @@ export class ControlPlaneSession {
 
   get capabilities(): Capability[] {
     return this.#capabilities;
+  }
+
+  get commandSigningPublicKey(): string {
+    return this.#commandSigningPublicKey;
   }
 
   start(): void {
@@ -148,6 +156,16 @@ export class ControlPlaneSession {
           this.logger.warn(
             { granted: ack.capabilities, effective: this.#capabilities, ceiling },
             'Control plane granted capabilities beyond this worker local ceiling; the extra grants are ignored',
+          );
+        }
+
+        this.#commandSigningPublicKey = ack.commandSigningPublicKey;
+        if (!this.#commandSigningPublicKey && this.#capabilities.length > 1) {
+          // Without it, no command can be verified — and an unverifiable command
+          // must never be applied, so say why now rather than at apply time.
+          this.logger.error(
+            'The control plane granted write capabilities but sent no command signing key. ' +
+              'Commands cannot be verified and will all be refused.',
           );
         }
 

@@ -243,6 +243,9 @@ importers:
       '@rsagent/worker':
         specifier: workspace:*
         version: link:../../packages/worker
+      drizzle-orm:
+        specifier: ^0.38.4
+        version: 0.38.4(@opentelemetry/api@1.9.1)(@types/better-sqlite3@7.6.13)(@types/react@18.3.31)(better-sqlite3@11.10.0)(postgres@3.4.9)(react@18.3.1)
       mssql:
         specifier: ^11.0.1
         version: 11.0.1

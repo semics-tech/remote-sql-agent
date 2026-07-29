@@ -12,6 +12,7 @@ import { WorkerRegistry } from './hub/registry.js';
 import { pruneRetention } from './domain/ingest.js';
 import { AuditExporter } from './domain/audit-export.js';
 import { WorkerAuthenticator } from './worker-auth/authenticate.js';
+import { CommandService } from './domain/commands.js';
 import { loadOrCreateCa } from './worker-auth/ca.js';
 import { EntraClient } from './auth/entra.js';
 import { ensureBootstrapAdmin } from './auth/users.js';
@@ -144,6 +145,14 @@ async function main(): Promise<void> {
   const authenticator = new WorkerAuthenticator(db, config);
   logger.info({ modes: authenticator.enabledModes }, 'Worker authentication modes');
 
+  const commandService = new CommandService(
+    db,
+    config,
+    registry,
+    signingKey.privateKeyPem,
+    logger,
+  );
+
   const auditExporter = new AuditExporter(db, config, logger);
   auditExporter.start();
 
@@ -155,6 +164,7 @@ async function main(): Promise<void> {
     logger,
     registry,
     authenticator,
+    commands: commandService,
     commandSigningPublicKey: signingKey.publicKeyPem,
   });
 
@@ -171,7 +181,7 @@ async function main(): Promise<void> {
   });
 
   // ---- REST API + dashboard ------------------------------------------------
-  const app = await createApp({ db, config, logger, registry, entra });
+  const app = await createApp({ db, config, logger, registry, entra, commands: commandService });
   await app.listen({ host: config.httpHost, port: config.httpPort });
   logger.info({ port: config.httpPort, publicUrl: config.publicUrl }, 'API listening');
 
@@ -189,6 +199,16 @@ async function main(): Promise<void> {
   );
   retentionTimer.unref();
 
+  // Commands expire far faster than the retention window, so they get their own
+  // tick. A command that has been queued past its TTL is not something to apply
+  // later "when convenient" — the estate has moved on (§5.4).
+  const expiryTimer = setInterval(() => {
+    commandService.expireStale().catch((err: unknown) => {
+      logger.error({ err }, 'Command expiry sweep failed');
+    });
+  }, 30_000);
+  expiryTimer.unref();
+
   // ---- Shutdown ------------------------------------------------------------
   let shuttingDown = false;
   const shutdown = (signal: string): void => {
@@ -196,6 +216,7 @@ async function main(): Promise<void> {
     shuttingDown = true;
     logger.info({ signal }, 'Shutting down');
     clearInterval(retentionTimer);
+    clearInterval(expiryTimer);
 
     grpcServer.tryShutdown(() => {
       void app
