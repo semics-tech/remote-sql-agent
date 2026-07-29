@@ -124,6 +124,13 @@ const configSchema = z.object({
   historyRetentionDays: z.coerce.number().int().positive(),
   /** Require a second approver for job.write commands (§6.4). */
   requireApprovalForJobWrite: z.coerce.boolean(),
+  /**
+   * Refuse workers older than this (semver). Lets an operator retire a version
+   * with a known defect across the estate without visiting every host — the
+   * refused worker logs exactly why and keeps retrying, so upgrading it fixes
+   * things with no further intervention.
+   */
+  minimumWorkerVersion: z.string().nullable(),
 });
 
 export type ServerConfig = z.infer<typeof configSchema>;
@@ -234,5 +241,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     commandTtlSeconds: env.RSAGENT_COMMAND_TTL_SECONDS ?? 900,
     historyRetentionDays: env.RSAGENT_HISTORY_RETENTION_DAYS ?? 90,
     requireApprovalForJobWrite: bool(env.RSAGENT_REQUIRE_APPROVAL_JOB_WRITE, true),
+    minimumWorkerVersion: env.RSAGENT_MINIMUM_WORKER_VERSION ?? null,
   });
 }

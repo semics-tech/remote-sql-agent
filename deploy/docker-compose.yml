@@ -1,0 +1,79 @@
+# Remote SQL Agent control plane — production deployment.
+#
+#   cp .env.example .env      # then edit it
+#   docker compose up -d
+#
+# One container plus Postgres. The dashboard is served by the API process.
+#
+# Ports: 8080 is the dashboard and REST API, 8443 is the worker hub. Workers
+# dial *out* to 8443, so that is the only port that needs to be reachable from
+# the SQL Server network segments — and nothing needs to reach the workers.
+
+name: rsagent
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-rsagent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-rsagent}
+    volumes:
+      # Job definitions routinely contain connection strings. Put this on an
+      # encrypted volume and encrypt your backups — see docs/security.md.
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-rsagent} -d ${POSTGRES_DB:-rsagent}']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # Not published: only the control plane needs it.
+    expose:
+      - '5432'
+
+  server:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: ghcr.io/${GITHUB_REPOSITORY:-semics/remote-sql-agent}/control-plane:${RSAGENT_VERSION:-latest}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      RSAGENT_DATABASE_URL: postgres://${POSTGRES_USER:-rsagent}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-rsagent}
+      RSAGENT_PUBLIC_URL: ${RSAGENT_PUBLIC_URL:?set RSAGENT_PUBLIC_URL in .env}
+      RSAGENT_LOG_LEVEL: ${RSAGENT_LOG_LEVEL:-info}
+
+      # --- Dashboard identity (docs/authentication.md §1) ---
+      RSAGENT_AUTH_MODE: ${RSAGENT_AUTH_MODE:-local}
+      RSAGENT_BOOTSTRAP_ADMIN: ${RSAGENT_BOOTSTRAP_ADMIN:-admin}
+      RSAGENT_BOOTSTRAP_ADMIN_PASSWORD: ${RSAGENT_BOOTSTRAP_ADMIN_PASSWORD:-}
+      RSAGENT_ENTRA_TENANT_ID: ${RSAGENT_ENTRA_TENANT_ID:-}
+      RSAGENT_ENTRA_CLIENT_ID: ${RSAGENT_ENTRA_CLIENT_ID:-}
+      RSAGENT_ENTRA_CLIENT_SECRET: ${RSAGENT_ENTRA_CLIENT_SECRET:-}
+
+      # --- Worker authentication (docs/authentication.md §2) ---
+      RSAGENT_WORKER_AUTH_MODES: ${RSAGENT_WORKER_AUTH_MODES:-token}
+      RSAGENT_GRPC_TLS_CERT: /etc/rsagent/tls/server.crt
+      RSAGENT_GRPC_TLS_KEY: /etc/rsagent/tls/server.key
+
+      # --- Audit export (docs/authentication.md §3) ---
+      RSAGENT_AUDIT_OTLP_ENABLED: ${RSAGENT_AUDIT_OTLP_ENABLED:-false}
+      RSAGENT_AUDIT_OTLP_ENDPOINT: ${RSAGENT_AUDIT_OTLP_ENDPOINT:-}
+      RSAGENT_AUDIT_OTLP_HEADERS: ${RSAGENT_AUDIT_OTLP_HEADERS:-}
+
+      RSAGENT_REQUIRE_APPROVAL_JOB_WRITE: ${RSAGENT_REQUIRE_APPROVAL_JOB_WRITE:-true}
+      RSAGENT_HISTORY_RETENTION_DAYS: ${RSAGENT_HISTORY_RETENTION_DAYS:-90}
+    volumes:
+      # Server certificate for the worker hub. Without it the control plane
+      # refuses to start, because in token mode TLS is the only thing keeping
+      # worker API keys off the wire.
+      - ${RSAGENT_TLS_DIR:-./tls}:/etc/rsagent/tls:ro
+    ports:
+      - '${RSAGENT_HTTP_PORT:-8080}:8080'
+      - '${RSAGENT_GRPC_PORT:-8443}:8443'
+
+volumes:
+  pgdata:

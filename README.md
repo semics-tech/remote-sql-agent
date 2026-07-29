@@ -18,8 +18,9 @@ Apache 2.0. CLI/binary name: `rsagent`.
 
 ## Status
 
-This repository implements **milestones M0–M3** of `docs/remote-sql-agent-architecture.md`: the
-contract, the read-only vertical slice, versioning/drift/search, and security hardening.
+This repository implements **all six milestones** of
+`docs/remote-sql-agent-architecture.md`: contract, read-only slice,
+versioning/drift/search, security hardening, the write path, and packaging.
 
 **Working today**
 
@@ -36,16 +37,24 @@ contract, the read-only vertical slice, versioning/drift/search, and security ha
 - **Worker enrolment** with a choice of API key, mTLS client certificate, or Azure managed identity
 - **Audit log** of every sign-in, administrative change and worker session, exportable to any
   OpenTelemetry-compatible backend
+- **Make changes and have them applied**: enable/disable, start/stop, and full job
+  editing with a Monaco step editor — every change signed, capability-checked,
+  conflict-checked and audited, with a second-approver rule on job edits
+- **Deploy it**: production Dockerfile and Compose for the control plane, WinSW
+  service wrapper and `install.ps1` for Windows workers, systemd unit for
+  SQL-on-Linux
 
-**Not built yet**
+**Known gaps**
 
-- **M4 — the write path.** No command is applied by the worker. The vocabulary exists on the wire
-  and is signed; nothing acts on it. No approval workflow, no job editor.
-- **M5 — packaging.** No MSI, no WinSW service wrapper, no production Compose deployment.
-- Certificate auto-rotation at 2/3 lifetime — rotation is currently manual.
+- Worker certificate auto-rotation at 2/3 lifetime is not implemented — rotation
+  is manual (token-mode keys rotate from the dashboard)
+- No MSI; the worker ships as a zip plus `install.ps1`. The WinSW binary and a
+  pinned Node runtime are fetched at packaging time rather than vendored
+- Deleting an *operator* is explicitly refused: the command carries an
+  instance-local id, which is not a safe thing to delete by
+- No control-plane HA — the worker registry is in-memory
 
-> Not production-ready: the write path and packaging do not exist. But the control plane is no
-> longer open — read `docs/security.md` and `docs/authentication.md` before deploying anywhere.
+> Read `docs/security.md` and `docs/quick-start.md` before deploying anywhere.
 
 ---
 
@@ -106,6 +115,17 @@ Within the definition poll interval the job shows a **drift** badge, and its Ver
 
 ---
 
+## Documentation
+
+| | |
+|---|---|
+| [quick-start.md](docs/quick-start.md) | Nothing to a working estate view in 30 minutes |
+| [capabilities.md](docs/capabilities.md) | What a worker may do, and how to choose |
+| [authentication.md](docs/authentication.md) | Entra sign-in, worker auth modes, audit export |
+| [security.md](docs/security.md) | What is enforced, and the deployment checklist |
+| [threat-model.md](docs/threat-model.md) | Scenarios, mitigations and residual risk |
+| [faq.md](docs/faq.md) | Including "does this replace SQL Agent?" (no) |
+
 ## Layout
 
 ```
@@ -117,9 +137,11 @@ packages/worker      Node daemon: msdb readers, canonical hashing, incremental
 packages/server      Control plane: gRPC worker hub, Drizzle/Postgres persistence,
                      versioning and drift, Fastify read API, Prometheus metrics
 packages/dashboard   React SPA (Vite, TanStack Query, Monaco for diffs)
-deploy/              Docker Compose dev stack, SQL fixture seed, dev worker.yaml
-docs/                architecture spec, security guide, threat model,
-                     authentication and audit guide
+deploy/              production Dockerfile + Compose, dev stack, SQL fixture seed,
+                     worker service wrapper (WinSW / systemd) and install.ps1
+docs/                architecture spec, quick start, capabilities guide,
+                     authentication and audit guide, security guide,
+                     threat model, FAQ
 ```
 
 The `.proto` files are the single source of truth for the wire contract. Generated output is checked
@@ -138,9 +160,18 @@ pnpm lint
 pnpm typecheck
 ```
 
-The server tests run against a real Postgres, created as `rsagent_test` on first run. Version
-allocation under concurrency, `ON CONFLICT` idempotency and high-water-mark monotonicity are not
-meaningfully testable against a mock.
+The server tests each provision their own Postgres database on first run. Version allocation under
+concurrency, `ON CONFLICT` idempotency and high-water-mark monotonicity are not meaningfully
+testable against a mock.
+
+```bash
+pnpm test:integration   # needs the dev stack: pnpm dev:up && pnpm dev:seed
+```
+
+The integration suite drives a real worker against a real SQL Server: it starts jobs and waits for
+their step-level history, edits a job the way SSMS would and asserts drift attribution, and proves
+round-trip fidelity — a definition sent from the dashboard is byte-for-byte identical when read back
+from `msdb`.
 
 ## Configuration
 

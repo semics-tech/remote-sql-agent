@@ -40,10 +40,9 @@ services:
       - '14330:1433'
     volumes:
       - mssqldata:/var/opt/mssql
-    deploy:
-      resources:
-        limits:
-          memory: 3g
+    # mem_limit, not deploy.resources: the latter is swarm-only and Compose
+    # silently ignores it, which is how this container kept being OOM-killed.
+    mem_limit: 3g
     healthcheck:
       test:
         [

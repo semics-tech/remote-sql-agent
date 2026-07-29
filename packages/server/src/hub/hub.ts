@@ -16,6 +16,7 @@ import {
 } from '@rsagent/protocol';
 import { EnrolmentError, redeemEnrolmentToken } from '../worker-auth/enrolment.js';
 import type { CommandService } from '../domain/commands.js';
+import { checkWorkerVersion } from './version-gate.js';
 import { commands } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import type { Database } from '../db/client.js';
@@ -145,6 +146,34 @@ async function handleSession(
       switch (msg.$case) {
         case 'hello': {
           const hello = msg.hello;
+
+          const versionCheck = checkWorkerVersion(
+            hello.workerVersion,
+            config.minimumWorkerVersion,
+          );
+          if (!versionCheck.allowed) {
+            log.warn(
+              { hostName: authenticated.hostName, version: hello.workerVersion },
+              versionCheck.reason,
+            );
+            await writeAudit(db, {
+              actorType: 'worker',
+              actor: authenticated.hostName,
+              action: 'worker.rejected.version',
+              target: authenticated.workerId,
+              detail: {
+                version: hello.workerVersion,
+                minimum: config.minimumWorkerVersion,
+              },
+              remoteAddress,
+            });
+            call.emit('error', {
+              code: grpc.status.FAILED_PRECONDITION,
+              details: versionCheck.reason,
+            } as grpc.ServiceError);
+            call.end();
+            return;
+          }
 
           // The identity comes from the credential, never from the message. A
           // worker that claims a different host name in Hello is logged and

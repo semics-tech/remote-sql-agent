@@ -1,0 +1,64 @@
+<!--
+  WinSW service definition for the Remote SQL Agent worker.
+
+  WinSW is used rather than a bespoke service host because it is
+  battle-tested (Jenkins ships it), handles restart-on-failure and log
+  rotation, and needs no code from us.
+
+  Place alongside rsagent-worker.exe (a renamed copy of WinSW) and run:
+      rsagent-worker.exe install
+      rsagent-worker.exe start
+-->
+<service>
+  <id>rsagent-worker</id>
+  <name>Remote SQL Agent Worker</name>
+  <description>
+    Mirrors this host's SQL Server Agent jobs to the Remote SQL Agent control
+    plane and applies approved changes. Connects outbound only; opens no
+    listening port.
+  </description>
+
+  <executable>%BASE%\node\node.exe</executable>
+  <arguments>"%BASE%\rsagent-worker.mjs" "%BASE%\worker.yaml"</arguments>
+
+  <workingdirectory>%BASE%</workingdirectory>
+
+  <!--
+    The worker exits deliberately on an unrecoverable fault (no reachable SQL
+    instance, uncaught exception) and expects the service manager to restart
+    it. Backoff rather than immediate retry so a genuinely broken
+    configuration does not spin.
+  -->
+  <onfailure action="restart" delay="10 sec"/>
+  <onfailure action="restart" delay="30 sec"/>
+  <onfailure action="restart" delay="60 sec"/>
+  <resetfailure>1 hour</resetfailure>
+
+  <log mode="roll-by-size-time">
+    <sizeThreshold>10240</sizeThreshold>
+    <pattern>yyyyMMdd</pattern>
+    <autoRollAtTime>00:00:00</autoRollAtTime>
+    <keepFiles>14</keepFiles>
+  </log>
+
+  <!--
+    Runs as LocalSystem by default so integrated auth to a local SQL instance
+    works with no stored credential. Change to a dedicated service account if
+    your policy requires it, and grant that account SQLAgentReaderRole in msdb.
+  -->
+  <serviceaccount>
+    <username>NT AUTHORITY\LocalSystem</username>
+    <allowservicelogon>true</allowservicelogon>
+  </serviceaccount>
+
+  <startmode>Automatic</startmode>
+  <delayedAutoStart>true</delayedAutoStart>
+
+  <!-- The worker is useless before the local SQL Server is up. -->
+  <depend>MSSQLSERVER</depend>
+
+  <env name="NODE_ENV" value="production"/>
+  <env name="RSAGENT_WORKER_CONFIG" value="%BASE%\worker.yaml"/>
+
+  <stoptimeout>30 sec</stoptimeout>
+</service>

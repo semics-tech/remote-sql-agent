@@ -1,0 +1,52 @@
+# systemd unit for the Remote SQL Agent worker on SQL Server for Linux hosts.
+#
+#   sudo cp rsagent-worker.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now rsagent-worker
+
+[Unit]
+Description=Remote SQL Agent Worker
+Documentation=https://github.com/semics/remote-sql-agent
+# The worker is useless before the local SQL Server is up, but must not be
+# blocked forever if SQL Server is on another host.
+After=network-online.target mssql-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rsagent
+Group=rsagent
+WorkingDirectory=/opt/rsagent
+ExecStart=/usr/bin/node /opt/rsagent/rsagent-worker.mjs /etc/rsagent/worker.yaml
+
+# The worker exits deliberately on an unrecoverable fault and expects to be
+# restarted. Backoff so a broken configuration does not spin.
+Restart=always
+RestartSec=10s
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# It reads msdb and writes its own state directory. Nothing else.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/rsagent
+StateDirectory=rsagent
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# The worker never listens; it only dials out.
+RestrictNamespaces=true
+LockPersonality=true
+
+Environment=NODE_ENV=production
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=rsagent-worker
+
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
