@@ -1,12 +1,26 @@
 import { NavLink, Route, Routes, useParams } from 'react-router-dom';
 import { useEstate } from './api.js';
+import { useAuth } from './auth.jsx';
 import { Estate } from './pages/Estate.jsx';
 import { Instance } from './pages/Instance.jsx';
 import { Job } from './pages/Job.jsx';
 import { Search } from './pages/Search.jsx';
 import { Admin } from './pages/Admin.jsx';
+import { SignIn } from './pages/SignIn.jsx';
 
 export function App() {
+  const { user, loading, can, signOut } = useAuth();
+
+  if (loading) {
+    return <div className="empty">Loading…</div>;
+  }
+
+  // Everything behind the sign-in wall. The server enforces this independently;
+  // this only avoids rendering screens that would return 401 on every request.
+  if (!user) {
+    return <SignIn />;
+  }
+
   return (
     <div className="app">
       <header className="titlebar">
@@ -20,10 +34,21 @@ export function App() {
           <NavLink to="/search" className={({ isActive }) => (isActive ? 'active' : '')}>
             Search
           </NavLink>
-          <NavLink to="/admin" className={({ isActive }) => (isActive ? 'active' : '')}>
-            Administration
-          </NavLink>
+          {can('worker.admin') || can('user.admin') || can('audit.read') ? (
+            <NavLink to="/admin" className={({ isActive }) => (isActive ? 'active' : '')}>
+              Administration
+            </NavLink>
+          ) : null}
         </nav>
+        <div className="titlebar-user">
+          <span className="badge neutral" title={`Signed in via ${user.identityProvider}`}>
+            {user.role}
+          </span>
+          <span className="muted">{user.displayName ?? user.username}</span>
+          <button className="action" onClick={() => void signOut()}>
+            Sign out
+          </button>
+        </div>
       </header>
 
       <div className="shell">

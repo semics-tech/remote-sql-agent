@@ -1,31 +1,36 @@
-import * as grpc from '@grpc/grpc-js';
+import { readFileSync } from 'node:fs';
 import { eq } from 'drizzle-orm';
 import { generateCommandSigningKeyPair } from '@rsagent/protocol';
-import { loadConfig } from './config.js';
-import { createDatabase } from './db/client.js';
+import { loadConfig, type ServerConfig } from './config.js';
+import { createDatabase, type Database } from './db/client.js';
 import { runMigrations } from './db/migrate.js';
 import { serverKeys } from './db/schema.js';
 import { createLogger } from './logger.js';
 import { createApp } from './api/app.js';
-import { createGrpcServer } from './hub/hub.js';
+import { createGrpcServer, createServerCredentials } from './hub/hub.js';
 import { WorkerRegistry } from './hub/registry.js';
 import { pruneRetention } from './domain/ingest.js';
+import { AuditExporter } from './domain/audit-export.js';
+import { WorkerAuthenticator } from './worker-auth/authenticate.js';
+import { loadOrCreateCa } from './worker-auth/ca.js';
+import { EntraClient } from './auth/entra.js';
+import { ensureBootstrapAdmin } from './auth/users.js';
+import { pruneExpiredSessions } from './auth/sessions.js';
+import { generateSecret } from './auth/passwords.js';
 
 const COMMAND_SIGNING_KEY_ID = 'command-signing';
+const COOKIE_SECRET_KEY_ID = 'cookie-secret';
 
 /**
- * Load the command-signing keypair, generating it on first boot. Keeping it in
- * the database rather than an env var means a fresh Compose deployment works
- * with no key ceremony, and the public half can be handed to workers in
- * HelloAck so they can verify commands independently of the transport (§6.4).
+ * Load a persisted keypair, generating it on first boot. Keeping these in the
+ * database rather than env vars means a fresh Compose deployment works with no
+ * key ceremony, and sessions survive a restart.
  */
-async function loadOrCreateSigningKey(
-  db: ReturnType<typeof createDatabase>['db'],
+async function loadOrCreateKeyPair(
+  db: Database,
+  id: string,
 ): Promise<{ privateKeyPem: string; publicKeyPem: string }> {
-  const [existing] = await db
-    .select()
-    .from(serverKeys)
-    .where(eq(serverKeys.id, COMMAND_SIGNING_KEY_ID));
+  const [existing] = await db.select().from(serverKeys).where(eq(serverKeys.id, id));
   if (existing) {
     return { privateKeyPem: existing.privateKeyPem, publicKeyPem: existing.publicKeyPem };
   }
@@ -33,19 +38,73 @@ async function loadOrCreateSigningKey(
   const pair = generateCommandSigningKeyPair();
   await db
     .insert(serverKeys)
-    .values({
-      id: COMMAND_SIGNING_KEY_ID,
-      privateKeyPem: pair.privateKeyPem,
-      publicKeyPem: pair.publicKeyPem,
-    })
+    .values({ id, privateKeyPem: pair.privateKeyPem, publicKeyPem: pair.publicKeyPem })
     .onConflictDoNothing();
 
-  const [row] = await db
-    .select()
-    .from(serverKeys)
-    .where(eq(serverKeys.id, COMMAND_SIGNING_KEY_ID));
-  if (!row) throw new Error('Failed to persist command signing key');
+  const [row] = await db.select().from(serverKeys).where(eq(serverKeys.id, id));
+  if (!row) throw new Error(`Failed to persist key ${id}`);
   return { privateKeyPem: row.privateKeyPem, publicKeyPem: row.publicKeyPem };
+}
+
+async function loadOrCreateCookieSecret(db: Database): Promise<string> {
+  const [existing] = await db.select().from(serverKeys).where(eq(serverKeys.id, COOKIE_SECRET_KEY_ID));
+  if (existing) return existing.privateKeyPem;
+
+  const secret = generateSecret(32);
+  await db
+    .insert(serverKeys)
+    .values({ id: COOKIE_SECRET_KEY_ID, privateKeyPem: secret, publicKeyPem: '' })
+    .onConflictDoNothing();
+
+  const [row] = await db.select().from(serverKeys).where(eq(serverKeys.id, COOKIE_SECRET_KEY_ID));
+  return row?.privateKeyPem ?? secret;
+}
+
+/**
+ * Resolve TLS material for the worker hub.
+ *
+ * Refuses to start without it unless explicitly overridden: in token mode TLS is
+ * the only thing keeping the worker's API key off the wire in clear, so a silent
+ * fallback to plaintext would quietly undo the whole credential design.
+ */
+async function resolveHubTls(
+  db: Database,
+  config: ServerConfig,
+  logger: ReturnType<typeof createLogger>,
+) {
+  const { tlsCertPath, tlsKeyPath, tlsClientCaPath, requireTls, enabledModes } = config.workerAuth;
+
+  if (!tlsCertPath || !tlsKeyPath) {
+    if (requireTls) {
+      throw new Error(
+        'The worker hub has no TLS certificate. Set RSAGENT_GRPC_TLS_CERT and RSAGENT_GRPC_TLS_KEY.\n' +
+          'Without TLS, worker API keys travel in clear text.\n' +
+          'For local development only, set RSAGENT_GRPC_REQUIRE_TLS=false.',
+      );
+    }
+    logger.warn(
+      'The worker hub is running WITHOUT TLS. Worker credentials will be sent in clear text. ' +
+        'This is acceptable only on a trusted local network.',
+    );
+    return { tlsCert: undefined, tlsKey: undefined, clientCa: undefined };
+  }
+
+  let clientCa: Buffer | undefined;
+  if (enabledModes.includes('mtls')) {
+    if (tlsClientCaPath) {
+      clientCa = readFileSync(tlsClientCaPath);
+    } else {
+      // Use the embedded CA we issue worker certificates from.
+      const ca = await loadOrCreateCa(db);
+      clientCa = Buffer.from(ca.certificatePem, 'utf8');
+    }
+  }
+
+  return {
+    tlsCert: readFileSync(tlsCertPath),
+    tlsKey: readFileSync(tlsKeyPath),
+    clientCa,
+  };
 }
 
 async function main(): Promise<void> {
@@ -57,41 +116,73 @@ async function main(): Promise<void> {
 
   const { db, close } = createDatabase(config.databaseUrl);
   const registry = new WorkerRegistry();
-  const signingKey = await loadOrCreateSigningKey(db);
+
+  const signingKey = await loadOrCreateKeyPair(db, COMMAND_SIGNING_KEY_ID);
+  if (!config.auth.cookieSecret) {
+    config.auth.cookieSecret = await loadOrCreateCookieSecret(db);
+  }
+
+  await ensureBootstrapAdmin(
+    db,
+    config.auth.bootstrapAdminUsername,
+    config.auth.bootstrapAdminPassword,
+    logger,
+  );
+
+  const entra =
+    config.auth.entra && (config.auth.mode === 'entra' || config.auth.mode === 'both')
+      ? new EntraClient(config.auth.entra)
+      : null;
+
+  if (entra) {
+    logger.info(
+      { tenantId: config.auth.entra?.tenantId, mode: config.auth.mode },
+      'Microsoft Entra sign-in enabled',
+    );
+  }
+
+  const authenticator = new WorkerAuthenticator(db, config);
+  logger.info({ modes: authenticator.enabledModes }, 'Worker authentication modes');
+
+  const auditExporter = new AuditExporter(db, config, logger);
+  auditExporter.start();
 
   // ---- gRPC worker hub -----------------------------------------------------
-  // M1 runs plain TLS-less gRPC for local development; mTLS enforcement is
-  // wired in M3 along with the embedded CA and enrolment flow.
+  const tls = await resolveHubTls(db, config, logger);
   const grpcServer = createGrpcServer({
     db,
     config,
     logger,
     registry,
+    authenticator,
     commandSigningPublicKey: signingKey.publicKeyPem,
   });
 
   await new Promise<void>((resolve, reject) => {
     grpcServer.bindAsync(
       `${config.grpcHost}:${config.grpcPort}`,
-      grpc.ServerCredentials.createInsecure(),
+      createServerCredentials(tls),
       (err, port) => {
         if (err) return reject(err);
-        logger.info({ port }, 'Worker hub listening');
+        logger.info({ port, tls: Boolean(tls.tlsCert) }, 'Worker hub listening');
         resolve();
       },
     );
   });
 
   // ---- REST API + dashboard ------------------------------------------------
-  const app = await createApp({ db, config, logger, registry });
+  const app = await createApp({ db, config, logger, registry, entra });
   await app.listen({ host: config.httpHost, port: config.httpPort });
-  logger.info({ port: config.httpPort }, 'API listening');
+  logger.info({ port: config.httpPort, publicUrl: config.publicUrl }, 'API listening');
 
-  // ---- Retention -----------------------------------------------------------
+  // ---- Background maintenance ----------------------------------------------
   const retentionTimer = setInterval(
     () => {
       pruneRetention(db, config.historyRetentionDays).catch((err: unknown) => {
         logger.error({ err }, 'Retention prune failed');
+      });
+      pruneExpiredSessions(db).catch((err: unknown) => {
+        logger.error({ err }, 'Session prune failed');
       });
     },
     6 * 60 * 60 * 1000,
@@ -105,14 +196,15 @@ async function main(): Promise<void> {
     shuttingDown = true;
     logger.info({ signal }, 'Shutting down');
     clearInterval(retentionTimer);
+
     grpcServer.tryShutdown(() => {
       void app
         .close()
+        .then(() => auditExporter.stop())
         .then(() => close())
         .then(() => process.exit(0))
         .catch(() => process.exit(1));
     });
-    // Do not let a wedged connection hold the process open forever.
     setTimeout(() => process.exit(1), 10_000).unref();
   };
 

@@ -8,8 +8,11 @@ hostName: DEV-SQLHOST01
 
 controlPlane:
   address: localhost:8443
+  auth:
+    mode: token
+    keyFile: ./run/worker.key
   tls:
-    enabled: false # M3 makes mTLS mandatory; local dev only.
+    enabled: false # Local dev only. Token mode sends a bearer key: use TLS anywhere real.
   reconnect:
     initialDelayMs: 1000
     maxDelayMs: 60000

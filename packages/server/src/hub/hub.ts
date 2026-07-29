@@ -2,6 +2,9 @@ import * as grpc from '@grpc/grpc-js';
 import type { Logger } from 'pino';
 import {
   WorkerHubService,
+  EnrolmentService,
+  type EnrolRequest,
+  type EnrolResponse,
   type ServerMessage,
   type WorkerMessage,
   type Snapshot,
@@ -9,7 +12,9 @@ import {
   effectiveCapabilities,
   isMaxCapabilityTier,
   hashCanonical,
+  toTimestamp,
 } from '@rsagent/protocol';
+import { EnrolmentError, redeemEnrolmentToken } from '../worker-auth/enrolment.js';
 import type { Database } from '../db/client.js';
 import type { ServerConfig } from '../config.js';
 import { type WorkerRegistry, type LiveWorker } from './registry.js';
@@ -17,13 +22,18 @@ import {
   ingestAgentLog,
   ingestHistory,
   markWorkerDisconnected,
+  recordWorkerHello,
   touchWorker,
   upsertActivity,
   upsertInstances,
-  upsertWorker,
 } from '../domain/ingest.js';
 import { markJobsMissingFromSnapshot, recordJobVersion } from '../domain/versioning.js';
 import { writeAudit } from '../domain/audit.js';
+import {
+  WorkerAuthError,
+  type AuthenticatedWorker,
+  type WorkerAuthenticator,
+} from '../worker-auth/authenticate.js';
 
 const SERVER_VERSION = '0.1.0';
 
@@ -37,6 +47,7 @@ export interface HubDeps {
   config: ServerConfig;
   logger: Logger;
   registry: WorkerRegistry;
+  authenticator: WorkerAuthenticator;
   commandSigningPublicKey: string;
 }
 
@@ -67,6 +78,7 @@ async function handleSession(
   let workerId: string | null = null;
   let hostName = '(unknown)';
   const instanceIds = new Map<string, string>();
+  let identity: AuthenticatedWorker | null = null;
   // Snapshots arrive chunked; only commit once more_chunks is false, so a
   // half-received snapshot can never soft-delete jobs it simply hasn't seen yet.
   const pendingSnapshots = new Map<string, PendingSnapshot>();
@@ -77,6 +89,39 @@ async function handleSession(
     if (!call.writable) return;
     call.write(message);
   };
+
+  // Authenticate before a single message is processed. A stream that cannot
+  // prove who it is never reaches the ingestion path at all.
+  try {
+    identity = await deps.authenticator.authenticate(call);
+    hostName = identity.hostName;
+    workerId = identity.workerId;
+    log.info(
+      { hostName, workerId, mode: identity.mode },
+      'Worker authenticated',
+    );
+  } catch (err) {
+    const code = err instanceof WorkerAuthError ? err.code : 'AuthFailed';
+    const message = err instanceof Error ? err.message : 'Authentication failed';
+    log.warn({ err, code }, 'Rejected worker session');
+
+    await writeAudit(db, {
+      actorType: 'system',
+      actor: remoteAddress,
+      action: 'worker.auth.failed',
+      detail: { code, message },
+      remoteAddress,
+    }).catch(() => undefined);
+
+    call.emit('error', {
+      code: grpc.status.UNAUTHENTICATED,
+      details: message,
+    } as grpc.ServiceError);
+    call.end();
+    return;
+  }
+
+  const authenticated = identity;
 
   // Message handling is serialised through a promise chain: gRPC delivers
   // messages as fast as they arrive, and concurrent ingestion of two snapshot
@@ -96,15 +141,25 @@ async function handleSession(
       switch (msg.$case) {
         case 'hello': {
           const hello = msg.hello;
-          hostName = hello.hostName;
 
-          const worker = await upsertWorker(db, {
-            hostName: hello.hostName,
+          // The identity comes from the credential, never from the message. A
+          // worker that claims a different host name in Hello is logged and
+          // ignored rather than allowed to adopt another worker's instances.
+          if (hello.hostName && hello.hostName !== authenticated.hostName) {
+            log.warn(
+              { claimed: hello.hostName, authenticated: authenticated.hostName },
+              'Worker reported a host name that does not match its credential; using the credential',
+            );
+          }
+
+          const worker = await recordWorkerHello(db, {
+            workerId: authenticated.workerId,
             version: hello.workerVersion,
             maxCapabilityReported: hello.maxCapability,
             remoteAddress,
           });
           workerId = worker.id;
+          hostName = worker.hostName;
 
           const ids = await upsertInstances(db, worker.id, hello.instances);
           for (const [name, id] of ids) instanceIds.set(name, id);
@@ -126,7 +181,7 @@ async function handleSession(
 
           session = {
             workerId: worker.id,
-            hostName: hello.hostName,
+            hostName: worker.hostName,
             instanceIds,
             send,
             disconnect: (reason: string) => {
@@ -139,12 +194,13 @@ async function handleSession(
 
           await writeAudit(db, {
             actorType: 'worker',
-            actor: hello.hostName,
+            actor: worker.hostName,
             action: 'worker.connected',
             target: worker.id,
             detail: {
               version: hello.workerVersion,
               maxCapability: hello.maxCapability,
+              authMode: authenticated.mode,
               instances: hello.instances.map((i) => i.instanceName),
               effectiveCapabilities: capabilities,
             },
@@ -389,6 +445,85 @@ function verifyBlobHash(blob: JobDefinitionBlob, log: Logger): void {
   }
 }
 
+/**
+ * The enrolment service.
+ *
+ * Deliberately a separate service from WorkerHub: it is the one RPC a worker
+ * makes *before* it holds a durable credential, authenticated only by a
+ * single-use enrolment token. Keeping it separate means the hub's
+ * authenticator has no "except during enrolment" branch to get wrong.
+ */
+export function createEnrolmentServiceImpl(deps: HubDeps): grpc.UntypedServiceImplementation {
+  return {
+    enrol: (
+      call: grpc.ServerUnaryCall<EnrolRequest, EnrolResponse>,
+      callback: grpc.sendUnaryData<EnrolResponse>,
+    ) => {
+      void (async () => {
+        const peer = call.getPeer();
+        try {
+          const result = await redeemEnrolmentToken(deps.db, deps.config, {
+            token: call.request.enrolmentToken,
+            hostName: call.request.hostName,
+            workerVersion: call.request.workerVersion,
+            csrPem: call.request.csrPem || undefined,
+          });
+
+          await writeAudit(deps.db, {
+            actorType: 'system',
+            actor: call.request.hostName,
+            action: 'worker.enrolled',
+            target: result.workerId,
+            detail: { mode: result.mode },
+            remoteAddress: peer,
+          });
+
+          deps.logger.info(
+            { hostName: call.request.hostName, workerId: result.workerId, mode: result.mode },
+            'Worker enrolled',
+          );
+
+          callback(null, {
+            workerId: result.workerId,
+            workerKey: result.workerKey ?? '',
+            certificatePem: result.certificatePem ?? '',
+            caCertificatePem: result.caCertificatePem ?? '',
+            notAfter: result.notAfter ? toTimestamp(result.notAfter) : undefined,
+          });
+        } catch (err) {
+          const code = err instanceof EnrolmentError ? err.code : 'Internal';
+          const message = err instanceof Error ? err.message : 'Enrolment failed';
+          deps.logger.warn({ err, peer, code }, 'Enrolment rejected');
+
+          await writeAudit(deps.db, {
+            actorType: 'system',
+            actor: call.request.hostName || peer,
+            action: 'worker.enrolment.failed',
+            detail: { code, message },
+            remoteAddress: peer,
+          }).catch(() => undefined);
+
+          callback({
+            code:
+              code === 'InvalidToken' || code === 'TokenExpired'
+                ? grpc.status.UNAUTHENTICATED
+                : grpc.status.PERMISSION_DENIED,
+            details: message,
+          } as grpc.ServiceError);
+        }
+      })();
+    },
+  };
+}
+
+export interface GrpcServerOptions {
+  /** PEM server certificate chain and key. Without them the hub is plaintext. */
+  tlsCert?: Buffer | undefined;
+  tlsKey?: Buffer | undefined;
+  /** CA to verify worker client certificates against, for mTLS mode. */
+  clientCa?: Buffer | undefined;
+}
+
 export function createGrpcServer(deps: HubDeps): grpc.Server {
   const server = new grpc.Server({
     'grpc.max_receive_message_length': 32 * 1024 * 1024,
@@ -396,5 +531,25 @@ export function createGrpcServer(deps: HubDeps): grpc.Server {
     'grpc.keepalive_timeout_ms': 10_000,
   });
   server.addService(WorkerHubService, createWorkerHubService(deps));
+  server.addService(EnrolmentService, createEnrolmentServiceImpl(deps));
   return server;
+}
+
+/**
+ * Build channel credentials for the hub.
+ *
+ * Client certificates are *requested* but not *required* at the TLS layer even
+ * in mTLS mode, because enrolment legitimately arrives without one. Requiring a
+ * certificate is the authenticator's job, per-service, where it can tell the
+ * two cases apart.
+ */
+export function createServerCredentials(options: GrpcServerOptions): grpc.ServerCredentials {
+  if (!options.tlsCert || !options.tlsKey) {
+    return grpc.ServerCredentials.createInsecure();
+  }
+  return grpc.ServerCredentials.createSsl(
+    options.clientCa ?? null,
+    [{ private_key: options.tlsKey, cert_chain: options.tlsCert }],
+    false,
+  );
 }

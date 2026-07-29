@@ -295,7 +295,11 @@ message EnrolRequest {
 
 message EnrolResponse {
   string worker_id = 1;
+  // mTLS mode: the issued client certificate and the CA to pin.
   string certificate_pem = 2;
   string ca_certificate_pem = 3;
   google.protobuf.Timestamp not_after = 4;
+  // Token mode: a long-lived API key. Returned exactly once — the control plane
+  // stores only an argon2id hash and cannot reissue it.
+  string worker_key = 5;
 }

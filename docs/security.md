@@ -5,27 +5,39 @@ not yet enforce. Read the "Current status" table before deploying anything.
 
 ## Current status
 
-The build in this repository implements milestones M0–M2 of the architecture spec. The security
-model is **partially implemented**.
+The build in this repository implements milestones M0–M3 of the architecture spec.
 
 | Control | Spec | Status |
 |---|---|---|
 | Outbound-only worker connections | §3.2.1 | **Implemented.** No worker component opens a listening socket. |
 | Read-only by default | §6.1.1 | **Implemented.** No write command is applied by the worker in this build. |
-| Worker-local capability ceiling | §6.3 | **Implemented and tested.** |
+| Worker-local capability ceiling | §6.3 | **Implemented and tested**, including end to end: an enrolment granting `job.toggle` still resolves to `observe` for a worker pinned `readOnly`. |
 | Closed command vocabulary | §6.1.5 | **Implemented** as a protobuf enum. No "run arbitrary T-SQL" command exists. |
 | Command signing + replay window | §6.4 | **Implemented in the contracts package**, not yet exercised (no write path). |
-| Append-only audit log | §6.1.4 | **Implemented** for worker session events. User actions land with authentication. |
+| Append-only audit log | §6.1.4 | **Implemented** for authentication, administration and worker session events. No update or delete path exists. |
+| Audit export to a SIEM | backlog | **Implemented** via OTLP, queued with retry. See `authentication.md` §3. |
 | Parameterised SQL everywhere | §5.2 | **Implemented**, enforced by an eslint rule. |
-| mTLS between worker and control plane | §6.2 | **Not implemented.** M3. The channel is currently plaintext gRPC. |
-| Embedded CA, enrolment tokens, cert rotation/revocation | §6.2 | **Not implemented.** M3. |
-| Dashboard authentication and RBAC | §6.5 | **Not implemented.** M3. Every API route is currently unauthenticated. |
-| Approval workflow | §6.4 | **Not implemented.** M4. |
+| Worker authentication | §6.2 | **Implemented**: enrolment tokens plus API key, mTLS, or Entra workload identity. |
+| Embedded CA, cert issuance/revocation | §6.2 | **Implemented** for mTLS mode. Revocation checked per connection. |
+| TLS on the worker hub | §6.2 | **Implemented**; the control plane refuses to start without it unless explicitly overridden. |
+| Dashboard authentication | §6.5 | **Implemented**: local argon2id accounts and/or Entra OIDC with app-role mapping. |
+| Server-side RBAC on every route | §6.5 | **Implemented.** Every route declares a permission; there is no unguarded data route. |
+| CSRF protection | §6.5 | **Implemented** (double-submit token bound to the session). |
+| Automatic certificate rotation at 2/3 lifetime | §6.2 | **Not implemented.** Rotation is manual. |
+| Approval workflow | §6.4 | **Not implemented.** M4, along with the write path. |
 
-> **Do not expose this build to an untrusted network.** With no transport security and no
-> authentication, anyone who can reach the control plane can read every mirrored job definition —
-> which routinely contain connection strings — and anyone who can reach the gRPC port can register
-> as a worker. It is safe to run against a lab instance on a trusted network, and nothing more.
+> **Still not production-ready.** The write path (M4) and packaging (M5) do not exist, and
+> certificate auto-rotation is manual. But the control plane is no longer open: it requires
+> authentication for every data route, and workers must present an enrolled credential.
+
+### Deployment checklist
+
+- [ ] `RSAGENT_PUBLIC_URL` set to the real https origin (this also makes session cookies `Secure`)
+- [ ] `RSAGENT_GRPC_TLS_CERT` / `RSAGENT_GRPC_TLS_KEY` set — never run the hub without TLS
+- [ ] Bootstrap admin password changed, or Entra configured
+- [ ] Each worker's `maxCapability` set to the minimum that site needs (default `readOnly`)
+- [ ] Postgres on an encrypted volume, and backups encrypted
+- [ ] Audit export configured to a system outside this host
 
 ## What a worker can and cannot do
 
@@ -72,26 +84,22 @@ Job step bodies routinely contain connection strings, credentials and other secr
 both the worker and the control plane, by explicit pino redaction paths. They are never written to
 disk by the worker other than as SHA-256 hashes in the outbox.
 
-**Deliberate deviation from §6.6 — read this before deploying.** The spec calls for job definitions
-to be encrypted at rest in Postgres with app-level AES-GCM. This build stores them as plaintext
-`jsonb` instead. The reason is a genuine, unresolvable conflict inside the spec:
+**Resolved deviation from §6.6 — definitions are deliberately not encrypted at rest.** The spec
+originally called for app-level AES-GCM encryption of job definitions. That conflicts directly with
+§9.5, which wants cross-estate search over step-body text and calls it a killer feature: encrypted
+blobs cannot be searched by the database, and decrypting every definition in the application on
+every search neither scales nor keeps the plaintext out of memory.
 
-- §6.6 wants definitions encrypted at rest.
-- §9.5 wants cross-estate search over step-body text — "which servers still reference server X in a
-  step?" — and calls it a killer feature to prioritise.
+**Decision: keep definitions as searchable `jsonb`.** Cross-estate search is load-bearing for the
+product and encryption at rest is delegated to the platform. Deploy accordingly:
 
-Encrypted blobs cannot be searched by the database. Satisfying both would require either a
-searchable-encryption scheme (which leaks enough to be of questionable value here) or decrypting
-every definition in the application on every search (which does not scale past a few hundred jobs
-and puts the plaintext in application memory anyway).
+- enable Postgres transparent disk encryption, or run the data directory on an encrypted volume;
+- restrict direct database access to the control-plane service account;
+- treat a Postgres backup as containing credentials, and encrypt backups.
 
-I built the searchable version, because §9.5 is load-bearing for the product's differentiation.
-**This is a decision that should be made deliberately rather than inherited from me.** The practical
-mitigations available today are Postgres transparent disk encryption, filesystem encryption on the
-control-plane host, and restricting direct database access. If encryption-at-rest of definitions
-matters more than cross-estate search for your environment, the change is contained: encrypt
-`job_versions.definition` on write and drop or reimplement `searchJobs` in
-`packages/server/src/domain/queries.ts`.
+Redaction rules in the UI (regex masking of `Password=…` and similar) remain worth adding and are
+tracked separately — they protect against shoulder-surfing and over-broad dashboard access, which is
+a different threat from at-rest compromise.
 
 ## SQL injection
 

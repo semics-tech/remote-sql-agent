@@ -8,6 +8,13 @@
       "when": 1785349447759,
       "tag": "0000_third_cammi",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1785352723645,
+      "tag": "0001_giant_riptide",
+      "breakpoints": true
     }
   ]
 }

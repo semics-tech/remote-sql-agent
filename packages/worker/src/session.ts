@@ -1,5 +1,4 @@
-import * as grpc from '@grpc/grpc-js';
-import { readFileSync } from 'node:fs';
+import type * as grpc from '@grpc/grpc-js';
 import type { Logger } from 'pino';
 import {
   WorkerHubClient,
@@ -12,6 +11,7 @@ import {
 } from '@rsagent/protocol';
 import type { WorkerConfig } from './config.js';
 import { Backoff } from './backoff.js';
+import { buildCallMetadata, buildChannelCredentials, CredentialError } from './credentials.js';
 
 /**
  * The persistent outbound session to the control plane.
@@ -86,36 +86,49 @@ export class ControlPlaneSession {
     }
   }
 
-  #credentials(): grpc.ChannelCredentials {
-    const tls = this.config.controlPlane.tls;
-    if (!tls.enabled) {
-      // Development only. M3 makes mTLS mandatory and removes this path.
-      this.logger.warn(
-        'Control plane connection is NOT using TLS. This is acceptable only for local development.',
-      );
-      return grpc.credentials.createInsecure();
-    }
-
-    const rootCert = tls.caCertPath ? readFileSync(tls.caCertPath) : null;
-    const clientCert = tls.clientCertPath ? readFileSync(tls.clientCertPath) : null;
-    const clientKey = tls.clientKeyPath ? readFileSync(tls.clientKeyPath) : null;
-    return grpc.credentials.createSsl(rootCert, clientKey, clientCert);
+  #connect(): void {
+    void this.#connectAsync();
   }
 
-  #connect(): void {
+  async #connectAsync(): Promise<void> {
     if (this.#stopped) return;
 
     const address = this.config.controlPlane.address;
-    this.logger.info({ address, attempt: this.#backoff.attempt }, 'Connecting to control plane');
+    this.logger.info(
+      { address, attempt: this.#backoff.attempt, authMode: this.config.controlPlane.auth.mode },
+      'Connecting to control plane',
+    );
 
-    this.#client = new WorkerHubClient(address, this.#credentials(), {
+    if (!this.config.controlPlane.tls.enabled) {
+      this.logger.warn(
+        'Control plane connection is NOT using TLS. This is acceptable only for local development.',
+      );
+    }
+
+    // Credentials are resolved per connection rather than once at startup: an
+    // Entra token is short-lived and a rotated API key must be picked up on the
+    // next reconnect without restarting the service.
+    let metadata: grpc.Metadata;
+    try {
+      metadata = await buildCallMetadata(this.config);
+    } catch (err) {
+      // A missing or unreadable credential is not transient. Log it plainly and
+      // keep retrying on the same backoff, so the operator sees the reason
+      // rather than a generic connection failure.
+      const message = err instanceof CredentialError ? err.message : String(err);
+      this.logger.error({ err }, `Cannot present a worker credential: ${message}`);
+      this.#scheduleReconnect('missing credential');
+      return;
+    }
+
+    this.#client = new WorkerHubClient(address, buildChannelCredentials(this.config), {
       'grpc.keepalive_time_ms': 30_000,
       'grpc.keepalive_timeout_ms': 10_000,
       'grpc.keepalive_permit_without_calls': 1,
       'grpc.max_receive_message_length': 32 * 1024 * 1024,
     });
 
-    const stream = this.#client.session();
+    const stream = this.#client.session(metadata);
     this.#stream = stream;
 
     stream.on('data', (message: ServerMessage) => {
@@ -173,6 +186,22 @@ export class ControlPlaneSession {
     this.events.onDisconnect(reason);
     if (this.#stopped) return;
 
+    // An authentication failure is a configuration problem, not a blip. Say so
+    // explicitly rather than burying it in a generic reconnect warning that an
+    // operator will read as a network issue.
+    if (/UNAUTHENTICATED|PERMISSION_DENIED/u.test(reason)) {
+      this.logger.error(
+        { reason, authMode: this.config.controlPlane.auth.mode },
+        'The control plane rejected this worker credential. Check that the worker is enrolled and ' +
+          'its key or certificate has not been revoked or expired.',
+      );
+    }
+
+    this.#scheduleReconnect(reason);
+  }
+
+  #scheduleReconnect(reason: string): void {
+    if (this.#stopped || this.#reconnectTimer) return;
     const delay = this.#backoff.next();
     this.logger.warn({ reason, retryInMs: delay }, 'Disconnected from control plane');
     this.#reconnectTimer = setTimeout(() => {

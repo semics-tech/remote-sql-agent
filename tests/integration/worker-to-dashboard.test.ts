@@ -10,9 +10,15 @@ import { loadConfig } from '@rsagent/server/src/config.js';
 import { getEstateOverview, listJobs, getJobHistory, searchJobs } from '@rsagent/server/src/domain/queries.js';
 import { getJobVersions } from '@rsagent/server/src/domain/versioning.js';
 import { generateCommandSigningKeyPair } from '@rsagent/protocol';
+import { WorkerAuthenticator } from '@rsagent/server/src/worker-auth/authenticate.js';
+import {
+  createEnrolmentToken,
+  redeemEnrolmentToken,
+} from '@rsagent/server/src/worker-auth/enrolment.js';
 import { InstanceMonitor } from '@rsagent/worker/src/instance-monitor.js';
 import { Outbox } from '@rsagent/worker/src/outbox.js';
 import { ControlPlaneSession } from '@rsagent/worker/src/session.js';
+import { writeWorkerKey } from '@rsagent/worker/src/credentials.js';
 import { workerConfigSchema, type InstanceConfig } from '@rsagent/worker/src/config.js';
 import type { WorkerMessage } from '@rsagent/protocol';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -102,11 +108,19 @@ beforeAll(async () => {
 
   const registry = new WorkerRegistry();
   const signingKey = generateCommandSigningKeyPair();
+  const serverConfig = loadConfig({
+    ...process.env,
+    RSAGENT_DATABASE_URL: testDbUrl(),
+    // The hub is bound to loopback with an ephemeral port for the test.
+    RSAGENT_GRPC_REQUIRE_TLS: 'false',
+  });
+
   grpcServer = createGrpcServer({
     db,
-    config: loadConfig({ ...process.env, RSAGENT_DATABASE_URL: testDbUrl() }),
+    config: serverConfig,
     logger,
     registry,
+    authenticator: new WorkerAuthenticator(db, serverConfig),
     commandSigningPublicKey: signingKey.publicKeyPem,
   });
 
@@ -119,9 +133,31 @@ beforeAll(async () => {
   outboxDir = mkdtempSync(join(tmpdir(), 'rsagent-integration-'));
   outbox = new Outbox(join(outboxDir, 'outbox.sqlite'), 10_000);
 
+  // Enrol exactly as an installer would: mint a single-use token, exchange it
+  // for an API key, then connect with that key. A worker with no credential is
+  // rejected, so there is no way to skip this step in the test either.
+  const enrolment = await createEnrolmentToken(db, {
+    hostName: HOST_NAME,
+    credentialMode: 'token',
+    intendedCapabilities: [],
+    createdBy: null,
+    ttlMinutes: 60,
+  });
+  const enrolResult = await redeemEnrolmentToken(db, serverConfig, {
+    token: enrolment.token,
+    hostName: HOST_NAME,
+    workerVersion: '0.1.0-test',
+  });
+  const keyFile = join(outboxDir, 'worker.key');
+  writeWorkerKey(keyFile, enrolResult.workerKey!);
+
   const workerConfig = workerConfigSchema.parse({
     hostName: HOST_NAME,
-    controlPlane: { address: `127.0.0.1:${grpcPort}`, tls: { enabled: false } },
+    controlPlane: {
+      address: `127.0.0.1:${grpcPort}`,
+      auth: { mode: 'token', keyFile },
+      tls: { enabled: false },
+    },
     maxCapability: 'readOnly',
     instances: [instanceConfig],
     outbox: { path: join(outboxDir, 'outbox.sqlite'), maxRows: 10_000 },
@@ -283,13 +319,40 @@ describe('run history', () => {
     const jobs = await listJobs(db, instance!.instanceId);
     const failing = jobs.find((j) => j.name === 'RSAgent Fixture - Known Failure')!;
 
+    // Produce a fresh failure rather than relying on one already being in
+    // msdb: a new worker deliberately seeds its high-water mark near the
+    // current maximum instead of replaying the instance's whole history, so
+    // old rows are legitimately never shipped.
+    //
+    // Retries are dropped to zero first: the fixture's two one-minute retries
+    // would otherwise make this a two-minute test for no extra coverage.
+    await pool
+      .request()
+      .input('jobName', sql.NVarChar, 'RSAgent Fixture - Known Failure')
+      .query(
+        'EXEC msdb.dbo.sp_update_jobstep @job_name = @jobName, @step_id = 1, @retry_attempts = 0',
+      );
+
+    await pool
+      .request()
+      .input('jobName', sql.NVarChar, 'RSAgent Fixture - Known Failure')
+      .query('EXEC msdb.dbo.sp_start_job @job_name = @jobName');
+
+    // Wait for a *completed* run, not merely a new one: while a job is
+    // executing it has step rows but no job-outcome row yet, and the History
+    // view reports that as status 4 (In progress).
     const runs = await eventually(
       () => getJobHistory(db, instance!.instanceId, failing.jobUuid),
-      (r) => r.length > 0,
+      (r) => r.some((run) => run.runStatus === 0),
+      { timeoutMs: 90_000 },
     );
+
     expect(runs[0]!.runStatus).toBe(0); // Failed
+    // Severity 16 is what RAISERROR(..., 16, 1) produces; capturing it is how a
+    // DBA tells a genuine error from a cancelled run.
     expect(runs[0]!.steps.some((s) => s.sqlSeverity === 16)).toBe(true);
-  });
+    expect(runs[0]!.message).toMatch(/failed/iu);
+  }, 120_000);
 });
 
 describe('drift detection', () => {

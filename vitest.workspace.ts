@@ -15,6 +15,11 @@ export default defineWorkspace([
       root: './packages/server',
       environment: 'node',
       include: ['test/**/*.test.ts'],
+      // Each test file provisions its own Postgres database (see
+      // test/helpers/db.ts), so files are isolated. The generous timeouts cover
+      // migration on first run and argon2id hashing, which is slow by design.
+      testTimeout: 20_000,
+      hookTimeout: 60_000,
     },
   },
   {

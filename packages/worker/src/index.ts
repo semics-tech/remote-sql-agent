@@ -16,6 +16,26 @@ const WORKER_VERSION = '0.1.0';
 const OUTBOX_DRAIN_BATCH = 50;
 
 async function main(): Promise<void> {
+  // `rsagent enrol --token <t> [config]` is the one-time registration path.
+  if (process.argv[2] === 'enrol') {
+    const args = process.argv.slice(3);
+    const tokenIndex = args.indexOf('--token');
+    const token = tokenIndex >= 0 ? args[tokenIndex + 1] : undefined;
+    const configPath =
+      args.find((a) => !a.startsWith('--') && a !== token) ??
+      process.env.RSAGENT_WORKER_CONFIG ??
+      './worker.yaml';
+
+    if (!token) {
+      console.error('Usage: rsagent enrol --token <enrolment-token> [path/to/worker.yaml]');
+      process.exit(2);
+    }
+
+    const { enrol } = await import('./enrol.js');
+    await enrol({ configPath, token });
+    process.exit(0);
+  }
+
   const configPath = process.argv[2] ?? process.env.RSAGENT_WORKER_CONFIG ?? './worker.yaml';
   const config = loadWorkerConfig(configPath);
   const logger = pino({

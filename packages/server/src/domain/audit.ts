@@ -1,6 +1,6 @@
 import { and, desc, eq, gte, lte, type SQL } from 'drizzle-orm';
 import type { Database } from '../db/client.js';
-import { auditLog } from '../db/schema.js';
+import { auditExportQueue, auditLog } from '../db/schema.js';
 
 /**
  * Append-only audit log (§6.1.4).
@@ -20,14 +20,28 @@ export interface AuditEntry {
   remoteAddress?: string | null;
 }
 
+/**
+ * Record an audit event.
+ *
+ * The database write and the export enqueue happen in one transaction, so an
+ * event can never be exported without being recorded, nor recorded and silently
+ * never queued.
+ */
 export async function writeAudit(db: Database, entry: AuditEntry): Promise<void> {
-  await db.insert(auditLog).values({
-    actorType: entry.actorType,
-    actor: entry.actor,
-    action: entry.action,
-    target: entry.target ?? null,
-    detail: (entry.detail ?? null) as never,
-    remoteAddress: entry.remoteAddress ?? null,
+  await db.transaction(async (tx) => {
+    const [row] = await tx
+      .insert(auditLog)
+      .values({
+        actorType: entry.actorType,
+        actor: entry.actor,
+        action: entry.action,
+        target: entry.target ?? null,
+        detail: (entry.detail ?? null) as never,
+        remoteAddress: entry.remoteAddress ?? null,
+      })
+      .returning({ id: auditLog.id });
+
+    if (row) await tx.insert(auditExportQueue).values({ auditLogId: row.id });
   });
 }
 

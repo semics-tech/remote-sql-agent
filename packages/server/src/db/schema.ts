@@ -313,14 +313,105 @@ export const users = pgTable(
   {
     id: uuid('id').primaryKey().defaultRandom(),
     username: text('username').notNull(),
-    passwordHash: text('password_hash').notNull(),
+    /** Null for Entra-backed users: they have no local credential by design. */
+    passwordHash: text('password_hash'),
     role: text('role').notNull().default('Viewer'),
     displayName: text('display_name'),
+    email: text('email'),
+    /** 'local' | 'entra' */
+    identityProvider: text('identity_provider').notNull().default('local'),
+    /** Entra `oid` claim — immutable per user per tenant, unlike UPN or email. */
+    externalId: text('external_id'),
+    /** True when the role came from an Entra app role rather than local admin
+     * assignment; such roles are re-synced on every sign-in and must not be
+     * edited in the dashboard, or the next sign-in would silently revert it. */
+    roleFromIdp: boolean('role_from_idp').notNull().default(false),
     disabledAt: timestamp('disabled_at', { withTimezone: true }),
     lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex('users_username_key').on(t.username)],
+  (t) => [
+    uniqueIndex('users_username_key').on(t.username),
+    uniqueIndex('users_external_id_key').on(t.externalId),
+  ],
+);
+
+/**
+ * Worker credentials (§6.2, extended).
+ *
+ * Three authentication modes share one enrolment flow and one credential table:
+ *
+ *   token  — a high-entropy API key, stored only as an argon2id hash. Simplest
+ *            to operate; the default.
+ *   mtls   — an X.509 client certificate issued by the embedded CA. Strongest,
+ *            but the site carries CA custody and rotation.
+ *   entra  — no stored secret at all: the worker presents an Entra token from
+ *            its managed identity and we pin the principal's object id.
+ *
+ * A worker may hold more than one credential (e.g. during a key rotation, or
+ * while migrating from token to mtls), so this is a separate table rather than
+ * columns on `workers`.
+ */
+export const workerCredentialMode = ['token', 'mtls', 'entra'] as const;
+export type WorkerCredentialMode = (typeof workerCredentialMode)[number];
+
+export const workerCredentials = pgTable(
+  'worker_credentials',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    workerId: uuid('worker_id')
+      .notNull()
+      .references(() => workers.id, { onDelete: 'cascade' }),
+    mode: text('mode').$type<WorkerCredentialMode>().notNull(),
+    /** token mode: argon2id hash of the API key. The key itself is shown once. */
+    secretHash: text('secret_hash'),
+    /** token mode: first 8 chars of the key, so the dashboard can identify it
+     * without holding anything usable. */
+    secretPrefix: text('secret_prefix'),
+    /** mtls mode: serial and fingerprint of the issued client certificate. */
+    certSerial: text('cert_serial'),
+    certFingerprint: text('cert_fingerprint'),
+    certPem: text('cert_pem'),
+    /** entra mode: the managed identity's object id (`oid`) and tenant. */
+    entraObjectId: text('entra_object_id'),
+    entraTenantId: text('entra_tenant_id'),
+    label: text('label'),
+    createdBy: uuid('created_by'),
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    revokedReason: text('revoked_reason'),
+    lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('worker_credentials_worker_idx').on(t.workerId),
+    index('worker_credentials_mode_idx').on(t.mode),
+    uniqueIndex('worker_credentials_cert_serial_key').on(t.certSerial),
+    uniqueIndex('worker_credentials_entra_oid_key').on(t.entraObjectId),
+  ],
+);
+
+/**
+ * Outbound audit delivery queue.
+ *
+ * The database is the source of truth for the audit trail. Export to an
+ * external sink (OpenTelemetry logs) is asynchronous and queued, so a collector
+ * outage can never fail a user's request or silently drop the trail. Rows are
+ * deleted only once the exporter has accepted them.
+ */
+export const auditExportQueue = pgTable(
+  'audit_export_queue',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    auditLogId: uuid('audit_log_id')
+      .notNull()
+      .references(() => auditLog.id, { onDelete: 'cascade' }),
+    attempts: integer('attempts').notNull().default(0),
+    lastError: text('last_error'),
+    nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('audit_export_queue_next_idx').on(t.nextAttemptAt)],
 );
 
 export const sessions = pgTable(
@@ -332,6 +423,8 @@ export const sessions = pgTable(
       .references(() => users.id, { onDelete: 'cascade' }),
     /** sha256 of the session token; the token itself is never stored. */
     tokenHash: text('token_hash').notNull(),
+    /** sha256 of the double-submit CSRF token bound to this session. */
+    csrfTokenHash: text('csrf_token_hash').notNull(),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
@@ -351,6 +444,11 @@ export const enrolmentTokens = pgTable(
     tokenHash: text('token_hash').notNull(),
     /** The token is bound to a host name so it cannot enrol an arbitrary box. */
     hostName: text('host_name').notNull(),
+    /** Which credential the admin intends this worker to end up holding. */
+    credentialMode: text('credential_mode').$type<WorkerCredentialMode>().notNull().default('token'),
+    /** Ceiling the admin intends for this worker. The worker's own worker.yaml
+     * can still be lower; it can never be higher. */
+    intendedCapabilities: jsonb('intended_capabilities').$type<string[]>().notNull().default([]),
     createdBy: uuid('created_by'),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     usedAt: timestamp('used_at', { withTimezone: true }),

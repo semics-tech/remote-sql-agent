@@ -314,9 +314,17 @@ export interface EnrolRequest {
 
 export interface EnrolResponse {
   workerId: string;
+  /** mTLS mode: the issued client certificate and the CA to pin. */
   certificatePem: string;
   caCertificatePem: string;
-  notAfter?: Timestamp | undefined;
+  notAfter?:
+    | Timestamp
+    | undefined;
+  /**
+   * Token mode: a long-lived API key. Returned exactly once — the control plane
+   * stores only an argon2id hash and cannot reissue it.
+   */
+  workerKey: string;
 }
 
 function createBaseWorkerMessage(): WorkerMessage {
@@ -4443,7 +4451,7 @@ export const EnrolRequest: MessageFns<EnrolRequest> = {
 };
 
 function createBaseEnrolResponse(): EnrolResponse {
-  return { workerId: "", certificatePem: "", caCertificatePem: "", notAfter: undefined };
+  return { workerId: "", certificatePem: "", caCertificatePem: "", notAfter: undefined, workerKey: "" };
 }
 
 export const EnrolResponse: MessageFns<EnrolResponse> = {
@@ -4459,6 +4467,9 @@ export const EnrolResponse: MessageFns<EnrolResponse> = {
     }
     if (message.notAfter !== undefined) {
       Timestamp.encode(message.notAfter, writer.uint32(34).fork()).join();
+    }
+    if (message.workerKey !== "") {
+      writer.uint32(42).string(message.workerKey);
     }
     return writer;
   },
@@ -4502,6 +4513,14 @@ export const EnrolResponse: MessageFns<EnrolResponse> = {
           message.notAfter = Timestamp.decode(reader, reader.uint32());
           continue;
         }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.workerKey = reader.string();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -4533,6 +4552,11 @@ export const EnrolResponse: MessageFns<EnrolResponse> = {
         : isSet(object.not_after)
         ? fromJsonTimestamp(object.not_after)
         : undefined,
+      workerKey: isSet(object.workerKey)
+        ? globalThis.String(object.workerKey)
+        : isSet(object.worker_key)
+        ? globalThis.String(object.worker_key)
+        : "",
     };
   },
 
@@ -4550,6 +4574,9 @@ export const EnrolResponse: MessageFns<EnrolResponse> = {
     if (message.notAfter !== undefined) {
       obj.notAfter = fromTimestamp(message.notAfter).toISOString();
     }
+    if (message.workerKey !== "") {
+      obj.workerKey = message.workerKey;
+    }
     return obj;
   },
 
@@ -4564,6 +4591,7 @@ export const EnrolResponse: MessageFns<EnrolResponse> = {
     message.notAfter = (object.notAfter !== undefined && object.notAfter !== null)
       ? Timestamp.fromPartial(object.notAfter)
       : undefined;
+    message.workerKey = object.workerKey ?? "";
     return message;
   },
 };

@@ -17,7 +17,7 @@ const JOB_A = '11111111-1111-4111-8111-111111111111';
 const JOB_B = '22222222-2222-4222-8222-222222222222';
 
 beforeAll(async () => {
-  const setup = await setupTestDatabase();
+  const setup = await setupTestDatabase('versioning');
   db = setup.db;
   close = setup.close;
 });

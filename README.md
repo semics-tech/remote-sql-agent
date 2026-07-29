@@ -18,8 +18,8 @@ Apache 2.0. CLI/binary name: `rsagent`.
 
 ## Status
 
-This repository implements **milestones M0–M2** of `docs/remote-sql-agent-architecture.md`: the
-contract, the read-only vertical slice, and versioning/drift/search.
+This repository implements **milestones M0–M3** of `docs/remote-sql-agent-architecture.md`: the
+contract, the read-only vertical slice, versioning/drift/search, and security hardening.
 
 **Working today**
 
@@ -31,17 +31,21 @@ contract, the read-only vertical slice, and versioning/drift/search.
 - Cross-estate search over job names **and step body text**
 - Offline outbox with replay on reconnect; jittered exponential backoff
 - Dashboard: estate overview, instance view, job detail with History, Versions and diffs
+- **Sign-in with Microsoft Entra ID** (app-role mapping) and/or local accounts, with server-side
+  RBAC on every route
+- **Worker enrolment** with a choice of API key, mTLS client certificate, or Azure managed identity
+- **Audit log** of every sign-in, administrative change and worker session, exportable to any
+  OpenTelemetry-compatible backend
 
 **Not built yet**
 
-- **M3 — security hardening.** No mTLS, no embedded CA or enrolment, **no dashboard authentication
-  or RBAC**. Every API route is currently open.
-- **M4 — the write path.** No command is applied by the worker. The vocabulary exists on the wire;
-  nothing acts on it.
+- **M4 — the write path.** No command is applied by the worker. The vocabulary exists on the wire
+  and is signed; nothing acts on it. No approval workflow, no job editor.
 - **M5 — packaging.** No MSI, no WinSW service wrapper, no production Compose deployment.
+- Certificate auto-rotation at 2/3 lifetime — rotation is currently manual.
 
-> Run this on a trusted network against a lab instance. It is not deployable to production. Read
-> `docs/security.md` before doing anything else.
+> Not production-ready: the write path and packaging do not exist. But the control plane is no
+> longer open — read `docs/security.md` and `docs/authentication.md` before deploying anywhere.
 
 ---
 
@@ -61,13 +65,25 @@ pnpm dev:up
 # every schedule type, a deliberate failure, a disabled job.
 pnpm dev:seed
 
-# Control plane: REST API on :8080, worker hub on :8443
-pnpm --filter @rsagent/server dev
+# Control plane: REST API on :8080, worker hub on :8443.
+# TLS is required by default; disable it for local development only.
+RSAGENT_GRPC_REQUIRE_TLS=false pnpm --filter @rsagent/server dev
+```
 
-# Worker, in a second terminal
+On first boot the control plane creates an administrator and prints its generated password **once**.
+Copy it from the log — it is not recoverable.
+
+The worker must be enrolled before it can connect. Sign in at http://localhost:8080, go to
+**Administration → Workers**, generate an enrolment token for host `DEV-SQLHOST01`, then:
+
+```bash
+# One-time: exchange the token for a worker key
+pnpm --filter @rsagent/worker start enrol --token rsen_... ../../deploy/worker.dev.yaml
+
+# Run the worker
 pnpm --filter @rsagent/worker start ../../deploy/worker.dev.yaml
 
-# Dashboard, in a third
+# Dashboard with hot reload, in a third terminal
 pnpm --filter @rsagent/dashboard dev    # http://localhost:5173
 ```
 
@@ -102,7 +118,8 @@ packages/server      Control plane: gRPC worker hub, Drizzle/Postgres persistenc
                      versioning and drift, Fastify read API, Prometheus metrics
 packages/dashboard   React SPA (Vite, TanStack Query, Monaco for diffs)
 deploy/              Docker Compose dev stack, SQL fixture seed, dev worker.yaml
-docs/                architecture spec, security guide, threat model
+docs/                architecture spec, security guide, threat model,
+                     authentication and audit guide
 ```
 
 The `.proto` files are the single source of truth for the wire contract. Generated output is checked
@@ -127,8 +144,18 @@ meaningfully testable against a mock.
 
 ## Configuration
 
-The control plane is entirely environment-driven — see `packages/server/src/config.ts`.
-`RSAGENT_DATABASE_URL` is the only one you normally need.
+The control plane is entirely environment-driven — see `packages/server/src/config.ts`, and
+`docs/authentication.md` for the identity and audit settings in full. The essentials:
+
+```bash
+RSAGENT_DATABASE_URL=postgres://...
+RSAGENT_PUBLIC_URL=https://rsagent.example.com   # also makes session cookies Secure
+RSAGENT_AUTH_MODE=both                           # local | entra | both
+RSAGENT_GRPC_TLS_CERT=/etc/rsagent/server.crt    # required unless explicitly overridden
+RSAGENT_GRPC_TLS_KEY=/etc/rsagent/server.key
+RSAGENT_WORKER_AUTH_MODES=token                  # token | mtls | entra
+RSAGENT_AUDIT_OTLP_ENDPOINT=http://collector:4318/v1/logs   # optional
+```
 
 The worker reads a YAML file (`deploy/worker.dev.yaml` is a commented example). The security-critical
 setting is:

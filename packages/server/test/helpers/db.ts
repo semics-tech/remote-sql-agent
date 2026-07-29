@@ -12,28 +12,37 @@ const ADMIN_URL =
   process.env.RSAGENT_TEST_ADMIN_URL ??
   'postgres://rsagent:rsagent_dev_password@localhost:5433/rsagent';
 
-const TEST_DB = process.env.RSAGENT_TEST_DB_NAME ?? 'rsagent_test';
-
-export function testDatabaseUrl(): string {
+export function testDatabaseUrl(name: string): string {
   const url = new URL(ADMIN_URL);
-  url.pathname = `/${TEST_DB}`;
+  url.pathname = `/${name}`;
   return url.toString();
 }
 
-/** Create the test database if it does not exist, then migrate it. */
-export async function setupTestDatabase(): Promise<{ db: Database; close: () => Promise<void> }> {
+/**
+ * Create and migrate a database for one test file.
+ *
+ * Each file gets its own database, keyed by a caller-supplied name. Sharing one
+ * would make the per-test TRUNCATE in one file wipe another file's fixtures the
+ * moment vitest scheduled them concurrently — a failure that looks like a
+ * product bug and is not.
+ */
+export async function setupTestDatabase(
+  suite: string,
+): Promise<{ db: Database; close: () => Promise<void> }> {
+  const name = `rsagent_test_${suite.replace(/[^a-z0-9_]/giu, '_').toLowerCase()}`;
+
   const admin = postgres(ADMIN_URL, { max: 1 });
   try {
-    const existing = await admin`SELECT 1 FROM pg_database WHERE datname = ${TEST_DB}`;
+    const existing = await admin`SELECT 1 FROM pg_database WHERE datname = ${name}`;
     if (existing.length === 0) {
       // CREATE DATABASE cannot be parameterised or run inside a transaction.
-      await admin.unsafe(`CREATE DATABASE "${TEST_DB.replaceAll('"', '""')}"`);
+      await admin.unsafe(`CREATE DATABASE "${name.replaceAll('"', '""')}"`);
     }
   } finally {
     await admin.end({ timeout: 5 });
   }
 
-  const url = testDatabaseUrl();
+  const url = testDatabaseUrl(name);
   await runMigrations(url);
   const { db, close } = createDatabase(url, { max: 4 });
   return { db, close };

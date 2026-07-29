@@ -35,15 +35,34 @@ export const workerConfigSchema = z.object({
   hostName: z.string().min(1).default(hostname()),
   controlPlane: z.object({
     address: z.string().min(1),
-    /** Plain TLS for M1 development; mTLS material lands in M3. */
+    /**
+     * How this worker proves who it is (§6.2).
+     *
+     *   token — an API key obtained once at enrolment. Simplest to operate and
+     *           the default; requires TLS, since the key is a bearer secret.
+     *   mtls  — a client certificate issued by the control plane's CA.
+     *   entra — an Azure managed identity token. No secret is stored at all.
+     */
+    auth: z
+      .object({
+        mode: z.enum(['token', 'mtls', 'entra']).default('token'),
+        /** token mode: file holding the API key. Never the key itself, so the
+         * config can be committed and the secret provisioned separately. */
+        keyFile: z.string().optional(),
+        /** entra mode: the control plane's application ID URI. */
+        audience: z.string().optional(),
+        /** entra mode: pin a specific user-assigned managed identity. */
+        clientId: z.string().optional(),
+      })
+      .default({ mode: 'token' }),
     tls: z
       .object({
-        enabled: z.boolean().default(false),
+        enabled: z.boolean().default(true),
         caCertPath: z.string().optional(),
         clientCertPath: z.string().optional(),
         clientKeyPath: z.string().optional(),
       })
-      .default({ enabled: false }),
+      .default({ enabled: true }),
     reconnect: z
       .object({
         initialDelayMs: z.number().int().positive().default(1_000),
@@ -85,6 +104,15 @@ export type WorkerConfig = z.infer<typeof workerConfigSchema>;
 export function loadWorkerConfig(path: string): WorkerConfig {
   const raw = parseYaml(readFileSync(path, 'utf8')) as unknown;
   const config = workerConfigSchema.parse(raw);
+
+  if (config.controlPlane.auth.mode === 'token' && !config.controlPlane.tls.enabled) {
+    // The API key is a bearer secret: without TLS it is readable by anything on
+    // the path, and possession is all an attacker needs.
+    console.warn(
+      '[rsagent] WARNING: token authentication is in use but TLS is disabled. ' +
+        'The worker API key will be sent in clear text. Enable TLS unless this is a local test.',
+    );
+  }
 
   // Passwords may be supplied via environment rather than the file, so the
   // config can be committed and the secret injected by the installer.

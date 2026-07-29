@@ -21,39 +21,41 @@ import { fromTimestamp } from '@rsagent/protocol';
  * is the normal case, not an edge case.
  */
 
-export async function upsertWorker(
+/**
+ * Record a Hello against an already-authenticated worker.
+ *
+ * The worker row is created at enrolment, not here, and is looked up by the id
+ * the authenticator established. Nothing self-reported in Hello is used to
+ * decide *which* worker this is — otherwise any authenticated worker could
+ * claim another's host name and take over its instances.
+ */
+export async function recordWorkerHello(
   db: Database,
   params: {
-    hostName: string;
+    workerId: string;
     version: string;
     maxCapabilityReported: string;
     remoteAddress?: string | null;
   },
-): Promise<{ id: string; capabilities: string[] }> {
+): Promise<{ id: string; hostName: string; capabilities: string[] }> {
   const now = new Date();
   const [row] = await db
-    .insert(workers)
-    .values({
-      hostName: params.hostName,
+    .update(workers)
+    .set({
       version: params.version,
       maxCapabilityReported: params.maxCapabilityReported,
       connectedAt: now,
       lastSeenAt: now,
       lastRemoteAddress: params.remoteAddress ?? null,
     })
-    .onConflictDoUpdate({
-      target: workers.hostName,
-      set: {
-        version: params.version,
-        maxCapabilityReported: params.maxCapabilityReported,
-        connectedAt: now,
-        lastSeenAt: now,
-        lastRemoteAddress: params.remoteAddress ?? null,
-      },
-    })
-    .returning({ id: workers.id, capabilities: workers.capabilities });
+    .where(eq(workers.id, params.workerId))
+    .returning({
+      id: workers.id,
+      hostName: workers.hostName,
+      capabilities: workers.capabilities,
+    });
 
-  if (!row) throw new Error('Failed to upsert worker');
+  if (!row) throw new Error(`Authenticated worker ${params.workerId} no longer exists`);
   return row;
 }
 
