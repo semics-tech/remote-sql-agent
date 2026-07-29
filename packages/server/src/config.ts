@@ -40,6 +40,14 @@ const configSchema = z.object({
   logLevel: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']),
   /** Serve the built dashboard from the API process (single-container deploy). */
   dashboardDir: z.string().optional(),
+  /**
+   * Worker installer scripts and packages, served at /install.sh, /install.ps1
+   * and /downloads/. Serving these from the control plane rather than the
+   * internet is what makes the one-line install work on a segmented network: a
+   * SQL host can always reach the control plane, and usually cannot reach
+   * GitHub. Unset disables the endpoints and the wizard says so.
+   */
+  workerPackageDir: z.string().optional(),
 
   /** Public origin of the dashboard; used to build the OIDC redirect URI and to
    * decide whether cookies may be marked Secure. */
@@ -122,8 +130,22 @@ const configSchema = z.object({
   /** How long a dispatched command may wait before auto-expiring (§5.4). */
   commandTtlSeconds: z.coerce.number().int().positive(),
   historyRetentionDays: z.coerce.number().int().positive(),
-  /** Require a second approver for job.write commands (§6.4). */
+  /**
+   * Require a second approver for job.write commands (§6.4).
+   *
+   * Off by default. A four-eyes rule is the right control for a change-managed
+   * estate, and the wrong one for a lone DBA looking after their own servers —
+   * for them it is an approval that can never be granted. Sites that need it
+   * turn it on, and the mechanism is unchanged when they do.
+   */
   requireApprovalForJobWrite: z.coerce.boolean(),
+  /**
+   * Roles exempt from that rule when it is on. Admins are exempt by default:
+   * an Admin can grant themselves any role and revoke anyone else's, so
+   * requiring their changes to be countersigned is procedure rather than
+   * control. Set to an empty list to make the rule apply to everyone.
+   */
+  approvalExemptRoles: z.array(z.enum(ROLES)),
   /**
    * Refuse workers older than this (semver). Lets an operator retire a version
    * with a known defect across the estate without visiting every host — the
@@ -180,6 +202,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     grpcPort: env.RSAGENT_GRPC_PORT ?? 8443,
     logLevel: env.RSAGENT_LOG_LEVEL ?? 'info',
     dashboardDir: env.RSAGENT_DASHBOARD_DIR,
+    workerPackageDir: env.RSAGENT_WORKER_PACKAGE_DIR,
     publicUrl: env.RSAGENT_PUBLIC_URL ?? 'http://localhost:8080',
 
     auth: {
@@ -240,7 +263,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     historyBatchSize: env.RSAGENT_HISTORY_BATCH_SIZE ?? 500,
     commandTtlSeconds: env.RSAGENT_COMMAND_TTL_SECONDS ?? 900,
     historyRetentionDays: env.RSAGENT_HISTORY_RETENTION_DAYS ?? 90,
-    requireApprovalForJobWrite: bool(env.RSAGENT_REQUIRE_APPROVAL_JOB_WRITE, true),
+    requireApprovalForJobWrite: bool(env.RSAGENT_REQUIRE_APPROVAL_JOB_WRITE, false),
+    approvalExemptRoles: list(env.RSAGENT_APPROVAL_EXEMPT_ROLES, ['Admin']).filter((r) =>
+      (ROLES as readonly string[]).includes(r),
+    ),
     minimumWorkerVersion: env.RSAGENT_MINIMUM_WORKER_VERSION ?? null,
   });
 }

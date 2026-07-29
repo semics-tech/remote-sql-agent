@@ -82,7 +82,6 @@ export function Search() {
                         </td>
                         <td className="nowrap">
                           <Link to={`/instances/${h.instanceId}/jobs/${h.jobUuid}`}>{h.jobName}</Link>{' '}
-                          {h.isDrifted ? <span className="badge drift">drift</span> : null}
                           {!h.enabled ? <span className="badge neutral">disabled</span> : null}
                         </td>
                         <td>

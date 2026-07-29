@@ -16,10 +16,12 @@ export default function MonacoEditorPane({
   value,
   language,
   onChange,
+  readOnly = false,
 }: {
   value: string;
   language: string;
   onChange: (value: string) => void;
+  readOnly?: boolean;
 }) {
   const dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
   const lines = value.split('\n').length;
@@ -34,6 +36,10 @@ export default function MonacoEditorPane({
         theme={dark ? 'vs-dark' : 'vs'}
         onChange={(next) => onChange(next ?? '')}
         options={{
+          readOnly,
+          // Without this, a read-only editor still shows a text cursor and
+          // invites typing that silently does nothing.
+          domReadOnly: readOnly,
           minimap: { enabled: false },
           scrollBeyondLastLine: false,
           fontSize: 12,

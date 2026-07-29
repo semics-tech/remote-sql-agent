@@ -11,6 +11,7 @@ import { createGrpcServer, createServerCredentials } from './hub/hub.js';
 import { WorkerRegistry } from './hub/registry.js';
 import { pruneRetention } from './domain/ingest.js';
 import { AuditExporter } from './domain/audit-export.js';
+import { NotificationService } from './domain/notifications/service.js';
 import { WorkerAuthenticator } from './worker-auth/authenticate.js';
 import { CommandService } from './domain/commands.js';
 import { loadOrCreateCa } from './worker-auth/ca.js';
@@ -156,6 +157,9 @@ async function main(): Promise<void> {
   const auditExporter = new AuditExporter(db, config, logger);
   auditExporter.start();
 
+  const notifications = new NotificationService(db, config, logger);
+  notifications.start();
+
   // ---- gRPC worker hub -----------------------------------------------------
   const tls = await resolveHubTls(db, config, logger);
   const grpcServer = createGrpcServer({
@@ -166,6 +170,7 @@ async function main(): Promise<void> {
     authenticator,
     commands: commandService,
     commandSigningPublicKey: signingKey.publicKeyPem,
+    notifications,
   });
 
   await new Promise<void>((resolve, reject) => {
@@ -181,7 +186,15 @@ async function main(): Promise<void> {
   });
 
   // ---- REST API + dashboard ------------------------------------------------
-  const app = await createApp({ db, config, logger, registry, entra, commands: commandService });
+  const app = await createApp({
+    db,
+    config,
+    logger,
+    registry,
+    entra,
+    commands: commandService,
+    notifications,
+  });
   await app.listen({ host: config.httpHost, port: config.httpPort });
   logger.info({ port: config.httpPort, publicUrl: config.publicUrl }, 'API listening');
 
@@ -209,6 +222,21 @@ async function main(): Promise<void> {
   }, 30_000);
   expiryTimer.unref();
 
+  // Long-running jobs and offline workers are states rather than events: no
+  // worker message announces them, so they are noticed by looking. A minute is
+  // frequent enough to be useful and far below any sensible throttle window.
+  const detectorTimer = setInterval(() => {
+    notifications.sweepLongRunning().catch((err: unknown) => {
+      logger.error({ err }, 'Long-running job sweep failed');
+    });
+    notifications.sweepOfflineWorkers((workerId) => registry.isOnline(workerId)).catch(
+      (err: unknown) => {
+        logger.error({ err }, 'Offline worker sweep failed');
+      },
+    );
+  }, 60_000);
+  detectorTimer.unref();
+
   // ---- Shutdown ------------------------------------------------------------
   let shuttingDown = false;
   const shutdown = (signal: string): void => {
@@ -217,6 +245,8 @@ async function main(): Promise<void> {
     logger.info({ signal }, 'Shutting down');
     clearInterval(retentionTimer);
     clearInterval(expiryTimer);
+    clearInterval(detectorTimer);
+    notifications.stop();
 
     grpcServer.tryShutdown(() => {
       void app

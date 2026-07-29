@@ -15,6 +15,13 @@
       "when": 1785352723645,
       "tag": "0001_giant_riptide",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1785360398005,
+      "tag": "0002_youthful_firebird",
+      "breakpoints": true
     }
   ]
 }

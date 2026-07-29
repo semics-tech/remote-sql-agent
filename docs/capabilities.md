@@ -110,6 +110,30 @@ observe. Raise maxCapability in worker.yaml if that is intended.
 Refusals are audited the same as successes. A worker refusing commands it should
 be accepting is a configuration problem you can see, not a silent failure.
 
+## Second-approver rule
+
+Editing a job definition can require a second person to approve it before it reaches msdb. It is
+**off by default**.
+
+A four-eyes rule is the right control for a change-managed estate and the wrong one for a lone DBA
+looking after their own servers — for them it is an approval that can never be granted, since the
+approver may not be the issuer. Sites that need it turn it on; the mechanism is unchanged when they
+do.
+
+```bash
+RSAGENT_REQUIRE_APPROVAL_JOB_WRITE=true
+# Roles exempt when it is on. Default: Admin.
+RSAGENT_APPROVAL_EXEMPT_ROLES=Admin
+```
+
+Admins are exempt by default because an Admin can grant themselves any role and revoke anyone
+else's, so requiring their changes to be countersigned is procedure rather than control. Set
+`RSAGENT_APPROVAL_EXEMPT_ROLES=` (empty) to apply it to everyone including Admins.
+
+It applies to `upsertJob`, `deleteJob`, `upsertOperator` and `deleteOperator` — the commands that
+change a definition. Enable, disable, start and stop are never gated: they are reversible, and
+gating them makes the tool useless for the thing it is most often opened for.
+
 ## What no capability permits
 
 There is no capability that lets the control plane run arbitrary T-SQL. The

@@ -31,6 +31,69 @@ restricted database access. See [security.md](security.md).
 **Consequence:** a Postgres backup contains every job definition in the estate,
 and job steps routinely contain connection strings. Treat backups accordingly.
 
+### SQL credentials are relayed, not held
+
+**Decided: the browser encrypts to the worker's public key; the control plane stores ciphertext it
+cannot open.**
+
+The requirement was to onboard a worker from the dashboard, including its SQL credentials, "in a
+secure way — ideally the worker should not be able to see the credentials". That last part cannot
+hold: a worker has to present a password to SQL Server, so it necessarily sees the plaintext. There
+is no arrangement in which it does not.
+
+The real risk was elsewhere. Storing credentials centrally in a form the control plane can decrypt
+would put working logins for **every instance in the estate** inside the single component that every
+network segment can reach by design — precisely the concentration this outbound-only architecture
+exists to avoid. A control-plane breach would hand over fifty SQL Servers.
+
+So the control plane became a courier. Each worker generates an RSA keypair on its own host at
+enrolment and publishes only the public half. The dashboard encrypts a password in the operator's
+browser (RSA-OAEP-SHA256, WebCrypto); Postgres holds a blob only that one host can open.
+
+**Consequences:**
+
+- The dashboard must be served over **HTTPS** for the credential field to work at all. `crypto.subtle`
+  is undefined in an insecure context; the field is disabled with an explanation rather than falling
+  back to plaintext.
+- A host compromise still yields that host's own credential. Unavoidable, and why **integrated
+  authentication is the default** — with a service account or gMSA there is no password anywhere.
+- A reinstalled worker generates a new key, and stored ciphertext becomes unreadable. The control
+  plane detects the fingerprint change on `Hello`, marks configs `awaiting_credentials`, and the
+  dashboard asks for the password again rather than reporting a bad password.
+- Notification channel secrets are the exception: the control plane is the party that *uses* them,
+  so it holds them usably. They are never returned by the API.
+
+### The second-approver rule is off by default
+
+**Decided: default off, Admins exempt when on.**
+
+It shipped on. In use that made it an approval that a single DBA looking after their own estate
+could never obtain, because the approver may not be the issuer — the control was blocking the
+product rather than protecting anything.
+
+The mechanism is unchanged and the tests still cover it. Only the default moved, plus
+`RSAGENT_APPROVAL_EXEMPT_ROLES` (default `Admin`), because an Admin can grant themselves any role
+anyway, so countersigning their changes is procedure rather than control.
+
+**Consequence:** a change-managed site must now opt in with
+`RSAGENT_REQUIRE_APPROVAL_JOB_WRITE=true`. Called out in the upgrade notes below.
+
+### Drift is history, not an alarm
+
+**Decided: keep the versioning, drop the alarm.**
+
+Every observed definition still becomes an immutable version attributed `initial` / `local` /
+`remote`, and conflict detection on write is untouched — that is the part that prevents an edit
+silently clobbering someone else's.
+
+What went was the presentation. A "Drifted" badge on every job that had ever been edited in SSMS,
+plus a count in the estate grid, told operators that normal administration was a fault condition.
+Badges are now reserved for states that need a response: running, failing, conflicted. Where a
+change came from is still recorded, and lives on the Versions tab where history belongs.
+
+**Consequence:** `jobs.is_drifted` and the `rsagent_jobs_drifted` metric are still populated, so
+external monitoring built on them keeps working. Only the UI changed.
+
 ### Audit export is OTLP, not a vendor SDK
 
 **Decided: OpenTelemetry logs, database as the source of truth.**
@@ -91,7 +154,10 @@ Ordered by how likely they are to matter.
 | No MSI | The worker ships as a zip plus `install.ps1`. Fine for hand or script installation; awkward for SCCM/Intune, which want an MSI. | Medium |
 | Deleting an operator | Explicitly refused. The command carries an instance-local operator id, which is not a safe identifier to delete by — the same id means different operators on different instances. Needs a protocol change to carry the name. | Small |
 | Non-TSQL subsystem fidelity | Steps using a subsystem this version does not model are mirrored as `CmdExec` with a warning. Reading is safe; writing such a job back would change it. | Small |
-| Approval notifications | Commands awaiting approval are shown in the dashboard but no one is emailed. An approver has to be looking. | Small |
+| Approval notifications | Commands awaiting approval are shown in the dashboard but do not raise a notification. An approver has to be looking. The notification pipeline exists, so this is now wiring rather than design. | Small |
+| Windows worker package not served | The control plane serves `rsagent-worker-linux.tar.gz`, so the Linux one-liner is self-contained. The Windows zip needs the Node runtime and WinSW, which the release workflow assembles — the container does not bundle it, so `Install-RsAgentWorker` needs `-PackageUrl` pointing at the release asset until it does. | Small |
+| Schedule editing | Schedules can be enabled and disabled in the job editor, but their timing cannot be changed there. The schedule codec round-trips faithfully; only the editing UI is missing. | Medium |
+| No credential key rotation on demand | A worker's credential key rotates only when the key file is removed and the worker restarts. There is no dashboard button for it. | Small |
 | Retention partitioning | History and log tables are pruned by a scheduled delete, not partitioned. Fine to ~10M rows; large estates with long retention will want monthly partitions. | Medium |
 
 ### Control-plane HA, specifically
@@ -122,6 +188,10 @@ Must happen before the first tagged release.
 - [ ] **Enable branch protection on `main`** — see §5.
 - [ ] **Decide the support commitment** before people depend on it. `0.x`
       versions currently signal that breaking changes may land in minors.
+- [ ] **Serve the dashboard over HTTPS in any deployment that will use SQL
+      logins.** `crypto.subtle` is unavailable in an insecure context, so
+      credential onboarding is disabled over plain HTTP by design. Integrated
+      authentication is unaffected.
 
 Not blocking, but worth doing early:
 
@@ -163,6 +233,25 @@ RSAGENT_MINIMUM_WORKER_VERSION=0.2.0
 
 Older workers are refused at the hub, log exactly why, and keep retrying — so
 upgrading the host is the entire fix.
+
+### Upgrading to 0.2.0 specifically
+
+Two defaults changed. Both are deliberate; neither is silent.
+
+- **`RSAGENT_REQUIRE_APPROVAL_JOB_WRITE` now defaults to `false`.** If you were
+  relying on the four-eyes rule without setting it explicitly, set it to `true`
+  before upgrading. Check `RSAGENT_APPROVAL_EXEMPT_ROLES` too — it defaults to
+  `Admin`, so set it empty if Admins must also be countersigned.
+- **Workers now enrol with no instances.** Existing `worker.yaml` files are
+  unaffected: anything listed there is still monitored, and the control plane
+  never removes it. The dashboard-configured set is managed separately.
+
+New, and optional:
+
+- `RSAGENT_WORKER_PACKAGE_DIR` — set in the container image already. Enables
+  `/install.sh`, `/install.ps1` and `/downloads/`.
+- Serve the dashboard over HTTPS if you intend to use SQL logins rather than
+  integrated authentication. See §1.
 
 ### Suggested order
 

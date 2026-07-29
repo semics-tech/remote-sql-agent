@@ -1,6 +1,9 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import Fastify, {
   type FastifyBaseLogger,
   type FastifyError,
+  type FastifyReply,
   type FastifyRequest,
 } from 'fastify';
 import cookie from '@fastify/cookie';
@@ -37,12 +40,36 @@ import {
   rotateWorkerKey,
 } from '../worker-auth/enrolment.js';
 import { eq } from 'drizzle-orm';
-import { commandState, workers } from '../db/schema.js';
+import { commandState, sqlAuthMode, workers } from '../db/schema.js';
 import {
   CommandError,
   prepareJobDefinition,
   type CommandService,
 } from '../domain/commands.js';
+import { GROUP_KEYS, getOverview, groupJobs } from '../domain/overview.js';
+import { getJobStats } from '../domain/stats.js';
+import {
+  WorkerConfigError,
+  deleteInstanceConfig,
+  getCredentialKey,
+  listInstanceConfigs,
+  listWorkersAwaitingSetup,
+  pushInstanceConfigs,
+  upsertInstanceConfig,
+} from '../domain/worker-config.js';
+import type { NotificationService } from '../domain/notifications/service.js';
+import {
+  NotificationConfigError,
+  channelInputSchema,
+  deleteChannel,
+  deleteRule,
+  listChannels,
+  listDeliveries,
+  listRules,
+  ruleInputSchema,
+  saveChannel,
+  saveRule,
+} from '../domain/notifications/store.js';
 
 export interface AppDeps {
   db: Database;
@@ -51,6 +78,7 @@ export interface AppDeps {
   registry: WorkerRegistry;
   entra: EntraClient | null;
   commands: CommandService;
+  notifications: NotificationService;
 }
 
 const instanceParam = z.object({ instanceId: z.string().uuid() });
@@ -90,7 +118,10 @@ export async function createApp(deps: AppDeps) {
     if (error instanceof z.ZodError) {
       return reply.status(400).send({ error: 'ValidationError', detail: error.issues });
     }
-    if (error instanceof CommandError) {
+    if (error instanceof NotificationConfigError) {
+      return reply.status(error.statusCode).send({ error: error.code, detail: error.message });
+    }
+    if (error instanceof WorkerConfigError || error instanceof CommandError) {
       // These carry an operator-facing explanation of *why* a command was
       // refused, which is the whole point — a bare 403 teaches nobody anything.
       return reply.status(error.statusCode).send({ error: error.code, detail: error.message });
@@ -149,6 +180,22 @@ export async function createApp(deps: AppDeps) {
     instances: await getEstateOverview(db),
   }));
 
+  /** The operations overview: what is running, what is late, what broke. */
+  app.get('/api/overview', { preHandler: guard('instance.read') }, async () =>
+    getOverview(db, (workerId) => registry.isOnline(workerId)),
+  );
+
+  /** Cross-estate job grouping — "is this job healthy on all thirty servers?" */
+  app.get('/api/jobs/groups', { preHandler: guard('job.read') }, async (request) => {
+    const { by, filter } = z
+      .object({
+        by: z.enum(GROUP_KEYS).default('name'),
+        filter: z.string().max(128).optional(),
+      })
+      .parse(request.query);
+    return { groupBy: by, groups: await groupJobs(db, by, { filter }) };
+  });
+
   app.get(
     '/api/instances/:instanceId',
     { preHandler: guard('instance.read') },
@@ -204,6 +251,16 @@ export async function createApp(deps: AppDeps) {
         .object({ limit: z.coerce.number().int().positive().optional() })
         .parse(request.query);
       return { runs: await getJobHistory(db, instanceId, jobUuid, limit ?? 50) };
+    },
+  );
+
+  /** Statistics and per-step baselines behind the job overview and step graph. */
+  app.get(
+    '/api/instances/:instanceId/jobs/:jobUuid/stats',
+    { preHandler: guard('history.read') },
+    async (request) => {
+      const { instanceId, jobUuid } = jobParams.parse(request.params);
+      return getJobStats(db, instanceId, jobUuid);
     },
   );
 
@@ -293,7 +350,12 @@ export async function createApp(deps: AppDeps) {
         hostName,
         workerCapabilities: capabilities,
         yourPermissions: request.user ? ROLE_PERMISSIONS[request.user.role] : [],
-        approvalRequiredForJobWrite: config.requireApprovalForJobWrite,
+        // Whether *this* user's saves will queue, not whether the rule exists:
+        // an exempt Admin should not be warned about an approval step that will
+        // never apply to them.
+        approvalRequiredForJobWrite: request.user
+          ? deps.commands.requiresApproval('upsertJob', request.user.role)
+          : false,
       };
     },
   );
@@ -309,13 +371,14 @@ export async function createApp(deps: AppDeps) {
     request: FastifyRequest,
     input: Omit<
       Parameters<CommandService['create']>[0],
-      'issuedBy' | 'issuedByUsername' | 'remoteAddress'
+      'issuedBy' | 'issuedByUsername' | 'issuedByRole' | 'remoteAddress'
     >,
   ) =>
     deps.commands.create({
       ...input,
       issuedBy: request.user!.id,
       issuedByUsername: request.user!.username,
+      issuedByRole: request.user!.role,
       remoteAddress: request.ip,
     });
 
@@ -567,7 +630,14 @@ export async function createApp(deps: AppDeps) {
     return {
       token: created.token,
       expiresAt: created.expiresAt,
+      hostName: body.hostName,
       note: 'Single use. Copy it now — it is not shown again.',
+      install: installCommands({
+        token: created.token,
+        hostName: body.hostName,
+        hubAddress: hubAddress(config),
+        publicUrl: config.publicUrl,
+      }),
     };
   });
 
@@ -599,6 +669,227 @@ export async function createApp(deps: AppDeps) {
       capabilities,
       note: 'Takes effect on the worker\'s next session, capped by its local maxCapability.',
     };
+  });
+
+  // --- Worker onboarding (§9.7 extended) -----------------------------------
+
+  /** Workers that have enrolled but have nothing to monitor yet. */
+  app.get('/api/workers/awaiting-setup', { preHandler: guard('worker.admin') }, async () => ({
+    workers: (await listWorkersAwaitingSetup(db)).map((w) => ({
+      ...w,
+      online: registry.isOnline(w.workerId),
+    })),
+  }));
+
+  /**
+   * The worker's public key, so the browser can encrypt a SQL credential to it.
+   *
+   * This is the load-bearing half of "the control plane never holds a usable
+   * SQL login": the dashboard encrypts with this key, and only the worker on
+   * that host holds the private half.
+   */
+  app.get(
+    '/api/workers/:workerId/credential-key',
+    { preHandler: guard('worker.admin') },
+    async (request, reply) => {
+      const { workerId } = z.object({ workerId: z.string().uuid() }).parse(request.params);
+      const key = await getCredentialKey(db, workerId);
+      if (!key) {
+        return reply.status(409).send({
+          error: 'NoCredentialKey',
+          detail:
+            'This worker has not published an encryption key yet. It publishes one the first time it connects.',
+        });
+      }
+      return key;
+    },
+  );
+
+  app.get(
+    '/api/workers/:workerId/instance-configs',
+    { preHandler: guard('worker.admin') },
+    async (request) => {
+      const { workerId } = z.object({ workerId: z.string().uuid() }).parse(request.params);
+      return { configs: await listInstanceConfigs(db, workerId) };
+    },
+  );
+
+  app.put(
+    '/api/workers/:workerId/instance-configs',
+    { preHandler: guard('worker.admin') },
+    async (request) => {
+      const { workerId } = z.object({ workerId: z.string().uuid() }).parse(request.params);
+      const body = z
+        .object({
+          instanceName: z.string().min(1).max(128),
+          serverAddress: z.string().min(1).max(255),
+          authMode: z.enum(sqlAuthMode),
+          loginName: z.string().max(128).nullish(),
+          // Opaque here on purpose. The server has no key to check it with, and
+          // that is the property being preserved rather than a gap.
+          credentialCiphertext: z.string().max(4096).nullish(),
+          credentialKeyFingerprint: z.string().max(128).nullish(),
+          encryptTls: z.boolean().optional(),
+          trustServerCertificate: z.boolean().optional(),
+          environmentTag: z.string().max(64).nullish(),
+        })
+        .parse(request.body);
+
+      const saved = await upsertInstanceConfig(db, {
+        ...body,
+        workerId,
+        actorId: request.user?.id ?? null,
+      });
+
+      await writeAudit(db, {
+        actorType: 'user',
+        actor: actorOf(request),
+        action: 'worker.instance_config.saved',
+        target: `${workerId}/${body.instanceName}`,
+        // Never the ciphertext, and obviously never a credential — only whether
+        // one was supplied.
+        detail: {
+          serverAddress: body.serverAddress,
+          authMode: body.authMode,
+          loginName: body.loginName ?? null,
+          credentialSupplied: Boolean(body.credentialCiphertext),
+        },
+        remoteAddress: request.ip,
+      });
+
+      const delivered = await pushInstanceConfigs(db, registry, workerId);
+      return {
+        config: saved,
+        delivered,
+        note: delivered
+          ? 'Sent to the worker. It will report back once it has tried to connect.'
+          : 'Saved. The worker is offline, so it will pick this up when it next connects.',
+      };
+    },
+  );
+
+  app.delete(
+    '/api/workers/:workerId/instance-configs/:configId',
+    { preHandler: guard('worker.admin') },
+    async (request, reply) => {
+      const { workerId, configId } = z
+        .object({ workerId: z.string().uuid(), configId: z.string().uuid() })
+        .parse(request.params);
+
+      const owner = await deleteInstanceConfig(db, configId);
+      if (owner !== workerId) return reply.status(404).send({ error: 'NotFound' });
+
+      await writeAudit(db, {
+        actorType: 'user',
+        actor: actorOf(request),
+        action: 'worker.instance_config.removed',
+        target: `${workerId}/${configId}`,
+        remoteAddress: request.ip,
+      });
+
+      await pushInstanceConfigs(db, registry, workerId);
+      return { removed: true };
+    },
+  );
+
+  // --- Notifications (§9.8) -------------------------------------------------
+
+  app.get('/api/notifications/channels', { preHandler: guard('worker.admin') }, async () => ({
+    channels: await listChannels(db),
+  }));
+
+  app.post('/api/notifications/channels', { preHandler: guard('worker.admin') }, async (request) => {
+    const body = channelInputSchema.parse(request.body);
+    const channel = await saveChannel(db, { ...body, actorId: request.user?.id ?? null });
+    await writeAudit(db, {
+      actorType: 'user',
+      actor: actorOf(request),
+      action: 'notification.channel.saved',
+      target: channel.id,
+      detail: { name: body.name, kind: body.kind },
+      remoteAddress: request.ip,
+    });
+    return channel;
+  });
+
+  app.delete(
+    '/api/notifications/channels/:channelId',
+    { preHandler: guard('worker.admin') },
+    async (request) => {
+      const { channelId } = z.object({ channelId: z.string().uuid() }).parse(request.params);
+      await deleteChannel(db, channelId);
+      await writeAudit(db, {
+        actorType: 'user',
+        actor: actorOf(request),
+        action: 'notification.channel.removed',
+        target: channelId,
+        remoteAddress: request.ip,
+      });
+      return { removed: true };
+    },
+  );
+
+  /** Send a sample so a misconfiguration surfaces now, not during an incident. */
+  app.post(
+    '/api/notifications/channels/:channelId/test',
+    { preHandler: guard('worker.admin') },
+    async (request, reply) => {
+      const { channelId } = z.object({ channelId: z.string().uuid() }).parse(request.params);
+      try {
+        await deps.notifications.test(channelId, actorOf(request));
+      } catch (err) {
+        // The sender's own message names the failure precisely; a generic
+        // "test failed" would send the admin looking in the wrong place.
+        return reply.status(502).send({
+          error: 'DeliveryFailed',
+          detail: err instanceof Error ? err.message : 'Delivery failed.',
+        });
+      }
+      return { sent: true };
+    },
+  );
+
+  app.get('/api/notifications/rules', { preHandler: guard('worker.admin') }, async () => ({
+    rules: await listRules(db),
+  }));
+
+  app.post('/api/notifications/rules', { preHandler: guard('worker.admin') }, async (request) => {
+    const body = ruleInputSchema.parse(request.body);
+    const rule = await saveRule(db, { ...body, actorId: request.user?.id ?? null });
+    await writeAudit(db, {
+      actorType: 'user',
+      actor: actorOf(request),
+      action: 'notification.rule.saved',
+      target: rule.id,
+      detail: { name: body.name, events: body.events },
+      remoteAddress: request.ip,
+    });
+    return rule;
+  });
+
+  app.delete(
+    '/api/notifications/rules/:ruleId',
+    { preHandler: guard('worker.admin') },
+    async (request) => {
+      const { ruleId } = z.object({ ruleId: z.string().uuid() }).parse(request.params);
+      await deleteRule(db, ruleId);
+      await writeAudit(db, {
+        actorType: 'user',
+        actor: actorOf(request),
+        action: 'notification.rule.removed',
+        target: ruleId,
+        remoteAddress: request.ip,
+      });
+      return { removed: true };
+    },
+  );
+
+  /** What was sent, what was throttled, and what failed. */
+  app.get('/api/notifications/deliveries', { preHandler: guard('worker.admin') }, async (request) => {
+    const { limit } = z
+      .object({ limit: z.coerce.number().int().positive().optional() })
+      .parse(request.query);
+    return { deliveries: await listDeliveries(db, limit ?? 100) };
   });
 
   app.get('/api/audit', { preHandler: guard('audit.read') }, async (request) => {
@@ -684,6 +975,51 @@ export async function createApp(deps: AppDeps) {
   });
 
   // -------------------------------------------------------------------------
+  // Worker bootstrap
+  //
+  // Unauthenticated, and deliberately so: a SQL host running the install
+  // one-liner has no dashboard session. Neither the scripts nor the package are
+  // secret — the enrolment token is the credential, it is single-use, short
+  // lived, bound to a host name, and lives only in the command the admin pasted.
+  // -------------------------------------------------------------------------
+
+  if (config.workerPackageDir) {
+    const packageDir = config.workerPackageDir;
+
+    const serveScript = async (file: string, reply: FastifyReply, contentType: string) => {
+      const path = join(packageDir, file);
+      if (!existsSync(path)) {
+        return reply
+          .status(503)
+          .type('text/plain')
+          .send(
+            `The worker bootstrap script is not available on this control plane.\n` +
+              `Expected ${file} in ${packageDir}.\n` +
+              `Install the worker manually from the release page instead.\n`,
+          );
+      }
+      return reply.type(contentType).send(readFileSync(path, 'utf8'));
+    };
+
+    app.get('/install.ps1', async (_request, reply) =>
+      serveScript('bootstrap.ps1', reply, 'text/plain; charset=utf-8'),
+    );
+    app.get('/install.sh', async (_request, reply) =>
+      serveScript('bootstrap.sh', reply, 'text/x-shellscript; charset=utf-8'),
+    );
+
+    await app.register(fastifyStatic, {
+      root: packageDir,
+      prefix: '/downloads/',
+      decorateReply: false,
+      // No directory listing: the package names are in the install command, and
+      // an index only invites poking at whatever else lands in this directory.
+      index: false,
+      list: false,
+    });
+  }
+
+  // -------------------------------------------------------------------------
   // Dashboard static assets
   // -------------------------------------------------------------------------
 
@@ -705,4 +1041,51 @@ export async function createApp(deps: AppDeps) {
 
 function escapeLabel(value: string): string {
   return value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('\n', ' ');
+}
+
+/**
+ * Where a worker should dial.
+ *
+ * Derived from the dashboard's public URL rather than the bind address:
+ * `0.0.0.0` is what the process listens on, and pasting it into an install
+ * command on a SQL host produces a worker that connects to itself.
+ */
+function hubAddress(config: ServerConfig): string {
+  const host = (() => {
+    try {
+      return new URL(config.publicUrl).hostname;
+    } catch {
+      return config.grpcHost;
+    }
+  })();
+  return `${host}:${config.grpcPort}`;
+}
+
+/**
+ * The one-liner an admin pastes onto a SQL host.
+ *
+ * The token is a bearer credential with a short life, so these are shown once
+ * in the browser and never stored anywhere they could be read again. Both
+ * scripts install a service, enrol, and start — the admin then says which
+ * instances to monitor from the dashboard, so nobody has to hand-edit YAML on
+ * fifty boxes.
+ */
+function installCommands(params: {
+  token: string;
+  hostName: string;
+  hubAddress: string;
+  publicUrl: string;
+}): { windows: string; linux: string; manual: string } {
+  const base = params.publicUrl.replace(/\/+$/u, '');
+  return {
+    windows:
+      `iwr ${base}/install.ps1 -UseBasicParsing | iex; ` +
+      `Install-RsAgentWorker -ControlPlane '${params.hubAddress}' -Token '${params.token}'`,
+    linux:
+      `curl -fsSL ${base}/install.sh | sudo bash -s -- ` +
+      `--control-plane '${params.hubAddress}' --token '${params.token}'`,
+    manual:
+      `rsagent enrol --control-plane ${params.hubAddress} ` +
+      `--token ${params.token} /etc/rsagent/worker.yaml`,
+  };
 }

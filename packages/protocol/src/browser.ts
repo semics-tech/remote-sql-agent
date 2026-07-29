@@ -10,6 +10,7 @@
  * fails at build time rather than shipping a broken bundle.
  */
 export * from './job-definition.js';
+export * from './job-edit.js';
 export * from './schedule.js';
 export * from './capabilities.js';
 export * from './roles.js';

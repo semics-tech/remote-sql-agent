@@ -8,7 +8,58 @@ While at `0.x`, breaking changes may land in minor versions.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **Operations overview** as the landing page: what is running, what is running
+  longer than its own average, what failed in the last 24 hours, and worker
+  health — estate-wide, in one screen
+- **Cross-estate job grouping** by name, category, owner, schedule or instance,
+  with health rolled up per group. Answers "is this job healthy on all thirty
+  servers?", which the per-instance estate grid cannot
+- **Live step graph** on a running job: which step it is on, how long that step
+  has been going, and what it usually takes. Per-step baselines, so a step at
+  four minutes against a usual forty seconds is visible at a glance
+- **Job statistics**: success rate, typical and p95 duration, a duration trend
+  comparing recent runs against older ones, and a per-run chart
+- **Notifications** to email, Slack, Teams or a webhook, with rules scoped by
+  instance and job name, per-job throttling, queued delivery with backoff, and a
+  test-send. New event `job.long_running` compares each run against that job's
+  own history rather than a global threshold
+- **Worker onboarding from the dashboard**: an "Add a worker" wizard produces a
+  one-line install command for Windows or Linux carrying a single-use enrolment
+  token. The control plane serves the installer and package itself, so it works
+  on a network with no route to the internet
+- **SQL credentials configured from the dashboard**, encrypted in the operator's
+  browser to a public key the target worker generated on its own host. The
+  control plane stores ciphertext it has no key for — see
+  [docs/security.md](docs/security.md). Integrated authentication remains the
+  default, and stores nothing
+- **Worker capability editing** in Administration, showing the grant, the host's
+  own ceiling, and the effective intersection, with anything the host blocks
+  marked as such
+- Step **add, remove and reorder** in the job editor, with `Go to step N`
+  references repaired across renumbering and any repairs reported to the operator
+
+### Changed
+
+- **The job page opens straight into the editable definition**, the way SSMS
+  does. No separate edit screen; read-only is a state of the same page
+- **A started job shows as running immediately.** The worker polls activity as
+  soon as it applies the command instead of waiting for the next tick, and the
+  dashboard shows an optimistic state and polls faster while a run is live
+- **Drift is presented as history, not an alarm.** Version attribution is
+  unchanged and conflict detection is untouched; the badges and estate column
+  are gone. Badges are reserved for running, failing and conflicted
+- **The second-approver rule for job edits is off by default**, and exempts
+  configurable roles (`Admin`) when on. Set
+  `RSAGENT_REQUIRE_APPROVAL_JOB_WRITE=true` to restore the previous behaviour
+
+### Fixed
+
+- The container build referenced the old `@rsagent/*` package scope and would
+  have failed on the first release build
+- `tests/integration` had no `typecheck` script, so type errors there surfaced
+  as test timeouts rather than compile failures
 
 ## [0.1.0] — unreleased
 

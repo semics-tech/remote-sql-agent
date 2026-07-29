@@ -101,6 +101,50 @@ Redaction rules in the UI (regex masking of `Password=…` and similar) remain w
 tracked separately — they protect against shoulder-surfing and over-broad dashboard access, which is
 a different threat from at-rest compromise.
 
+## SQL credentials: the control plane is a courier, not a keyholder
+
+When an administrator configures a worker's instances from the dashboard, they may supply a SQL
+Server login and password. That password is **encrypted in the operator's browser** to a public key
+the target worker generated on its own SQL host at enrolment. The control plane receives base64
+ciphertext, stores it in `worker_instance_configs.credential_ciphertext`, and relays it — it holds
+no key that can open it.
+
+**Why not just store them centrally and decrypt on demand?** Because that would put working logins
+for every instance in the estate inside the single component that every network segment can reach by
+design. A control plane breach would hand an attacker fifty SQL Servers. This architecture exists
+specifically to avoid concentrating that kind of power in the reachable component, and a credential
+store would give it all back.
+
+The mechanics:
+
+| Where | What exists there |
+| --- | --- |
+| Browser | The plaintext, for as long as the form is open. Encrypted before submit, then discarded. |
+| Control plane / Postgres | RSA-OAEP-SHA256 ciphertext and the fingerprint of the key it was encrypted to. No private key. |
+| Worker host | The RSA private key, `0600`, at `credentialKeyFile`. Generated locally; never transmitted. |
+| Worker memory | The decrypted password, while a connection pool is open. Never written to disk. |
+
+Consequences worth being explicit about:
+
+- **A host compromise still yields that host's credential.** Anything able to read the worker's
+  private key can read its SQL password. This is unavoidable — a worker has to be able to log in —
+  and it is why **integrated authentication is the default the installer offers**: with a Windows
+  service account or gMSA there is no password anywhere.
+- **The dashboard must be served over HTTPS.** `crypto.subtle` is unavailable in an insecure
+  context, so on plain HTTP the credential field is disabled with an explanation rather than
+  silently falling back to sending the password in clear.
+- **A re-keyed worker invalidates stored ciphertext.** If a worker is reinstalled it generates a new
+  key; the control plane notices the fingerprint change on the next `Hello`, marks affected configs
+  `awaiting_credentials`, and the dashboard asks for the password again. It does not present this as
+  a bad password, because it is not one.
+- **Ciphertext is never returned by the API.** `GET /api/workers/:id/instance-configs` reports
+  `hasCredential: true` and nothing more.
+
+Notification channel secrets — Slack and Teams webhook URLs, SMTP passwords — are different: the
+control plane is the party that uses them, so it necessarily holds them in usable form. They are
+never returned by the API, only a `secretHint` (`hooks.slack.com/…/T0A9`) that is enough to tell two
+channels apart and useless to anyone who reads it.
+
 ## SQL injection
 
 No SQL statement anywhere in the worker or control plane is built by string concatenation or

@@ -285,6 +285,19 @@ table,
   letter-spacing: 0.03em;
   text-transform: uppercase;
   color: var(--fg-muted);
+  /* Nudged down to sit on the control's own text baseline. */
+  padding-top: 7px;
+}
+
+/* Fields that carry help text sit inside a wrapper div, which stops them
+   inheriting the grid cell's width. Without this they render narrower than the
+   fields beside them, for no reason a reader could infer. */
+.editor-grid > input[type='text'],
+.editor-grid > input[type='password'],
+.editor-grid > div > input[type='text'],
+.editor-grid > div > input[type='password'] {
+  width: 100%;
+  max-width: 420px;
 }
 
 .table-scroll {
@@ -813,7 +826,10 @@ button.action:disabled {
   display: grid;
   grid-template-columns: 150px minmax(0, 1fr);
   gap: 8px 14px;
-  align-items: center;
+  /* Start, not center: a field with help text below it makes its cell taller
+     than the label, and centring drops the label alongside the help text
+     instead of the control it names. */
+  align-items: start;
   padding: 11px;
   max-width: 720px;
 }
@@ -845,4 +861,356 @@ button.action:disabled {
   font-size: 10px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+}
+
+/* ---------------------------------------------------------------------------
+ * Overview: progress against a job's own baseline.
+ *
+ * The bar is not capped at 100%. A run at three times its usual duration should
+ * look wrong, and a bar sitting quietly at "full" would not.
+ * ------------------------------------------------------------------------ */
+
+.progress {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 100%;
+  min-width: 90px;
+  height: 8px;
+  background: var(--bg-hover);
+  border-radius: 2px;
+  overflow: visible;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--status-running);
+  transition: width 0.4s ease-out;
+}
+
+.progress-fill.near {
+  background: var(--status-retry);
+}
+
+.progress-fill.over {
+  background: var(--status-failed);
+}
+
+.progress-over {
+  margin-left: 6px;
+  font: 600 10.5px/1 var(--font-mono);
+  color: var(--status-failed);
+}
+
+/* --- Job summary: four numbers and a chart ------------------------------- */
+
+.job-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 18px;
+  padding: 11px 13px;
+  margin-bottom: 10px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.job-stat {
+  min-width: 96px;
+}
+
+.job-stat .n {
+  font: 600 20px/1.2 var(--font-ui);
+  font-variant-numeric: tabular-nums;
+}
+
+.job-stat .n.bad {
+  color: var(--status-failed);
+}
+
+.job-stat .l,
+.job-chart .l {
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+
+.job-chart {
+  flex: 1 1 260px;
+  min-width: 220px;
+}
+
+.duration-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 42px;
+  padding-bottom: 1px;
+  border-bottom: 1px solid var(--border);
+}
+
+.duration-bar {
+  flex: 1 1 auto;
+  min-width: 3px;
+  max-width: 14px;
+  background: var(--status-unknown);
+  border-radius: 1px 1px 0 0;
+}
+
+.duration-bar.succeeded {
+  background: var(--status-succeeded);
+}
+.duration-bar.failed {
+  background: var(--status-failed);
+}
+.duration-bar.retry {
+  background: var(--status-retry);
+}
+.duration-bar.cancelled {
+  background: var(--status-cancelled);
+}
+.duration-bar.running {
+  background: var(--status-running);
+}
+
+/* --- Live step graph ------------------------------------------------------ */
+
+.step-graph-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  font-size: 12.5px;
+}
+
+.step-flow {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.step-node {
+  position: relative;
+  padding-left: 14px;
+}
+
+/* The line joining one step to the next. Drawn from the node above so the
+   final step has no dangling tail. */
+.step-connector {
+  position: absolute;
+  left: 3px;
+  top: -8px;
+  width: 2px;
+  height: 12px;
+  background: var(--border-strong);
+}
+
+.step-node-body {
+  padding: 7px 10px;
+  margin-bottom: 6px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border-strong);
+  border-radius: var(--radius);
+}
+
+.step-node.succeeded .step-node-body {
+  border-left-color: var(--status-succeeded);
+}
+.step-node.failed .step-node-body {
+  border-left-color: var(--status-failed);
+}
+.step-node.skipped .step-node-body {
+  border-left-color: var(--status-cancelled);
+}
+.step-node.pending .step-node-body {
+  opacity: 0.62;
+}
+
+.step-node.running .step-node-body {
+  border-left-color: var(--status-running);
+  background: var(--bg-selected);
+}
+
+/* A slow pulse on the running step, so the eye lands on it without hunting.
+   Suppressed under reduced-motion: the colour already carries the meaning. */
+.step-node.running .step-node-body {
+  animation: step-pulse 2s ease-in-out infinite;
+}
+
+@keyframes step-pulse {
+  0%,
+  100% {
+    box-shadow: inset 2px 0 0 0 transparent;
+  }
+  50% {
+    box-shadow: inset 2px 0 0 0 var(--status-running);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .step-node.running .step-node-body {
+    animation: none;
+  }
+  .progress-fill {
+    transition: none;
+  }
+}
+
+.step-node-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+}
+
+.step-node-id {
+  min-width: 16px;
+  font: 600 11px/1 var(--font-mono);
+  color: var(--fg-faint);
+}
+
+.step-node-name {
+  font-weight: 600;
+}
+
+.step-node-timing {
+  margin-top: 2px;
+  padding-left: 15px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+
+.step-over {
+  color: var(--status-retry);
+  font-weight: 600;
+}
+
+.step-node-flow {
+  padding-left: 15px;
+  font-size: 11px;
+}
+
+.step-node-message {
+  margin-top: 5px;
+  padding: 5px 7px;
+  font: 11.5px/1.45 var(--font-mono);
+  white-space: pre-wrap;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--status-failed);
+}
+
+/* --- Editing ------------------------------------------------------------- */
+
+/* The save bar follows the page: on a job with twenty steps the controls would
+   otherwise be far below whatever was just edited. */
+.action-bar.sticky {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 -2px 8px rgb(0 0 0 / 8%);
+}
+
+.action.icon {
+  padding: 1px 6px;
+  margin-right: 2px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.action.danger {
+  color: var(--status-failed);
+}
+
+.action.danger:hover:not(:disabled) {
+  border-color: var(--status-failed);
+}
+
+.inline-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.inline-check {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12.5px;
+}
+
+.inline-check.blocked {
+  opacity: 0.55;
+}
+
+.check-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.capability-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 4px 0;
+}
+
+/* --- Grouping ------------------------------------------------------------ */
+
+.group-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+/* --- Worker onboarding --------------------------------------------------- */
+
+.copy-block {
+  position: relative;
+}
+
+.copy-block .code {
+  padding-right: 76px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.copy-block button {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+}
+
+.pending-worker {
+  border-top: 1px solid var(--border);
+}
+
+.pending-worker:first-child {
+  border-top: 0;
+}
+
+.pending-worker-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 11px;
+  font-size: 12.5px;
+}
+
+.instance-config {
+  padding: 0 11px 6px;
+}
+
+/* --- Tabs inside a page rather than at its head -------------------------- */
+
+.tabs.inline {
+  margin-top: 0;
 }

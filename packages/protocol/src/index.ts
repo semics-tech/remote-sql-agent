@@ -1,4 +1,5 @@
 export * from './job-definition.js';
+export * from './job-edit.js';
 export * from './schedule.js';
 export * from './canonical.js';
 export * from './capabilities.js';

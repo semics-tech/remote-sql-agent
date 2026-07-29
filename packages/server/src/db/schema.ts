@@ -40,6 +40,14 @@ export const workers = pgTable(
     capabilities: jsonb('capabilities').$type<string[]>().notNull().default([]),
     /** The ceiling the worker reported from its own worker.yaml (§6.3). */
     maxCapabilityReported: text('max_capability_reported'),
+    /**
+     * SPKI public key the worker generated at enrolment, in PEM. SQL
+     * credentials configured from the dashboard are encrypted to this in the
+     * operator's browser, so the private half never leaves the SQL host and the
+     * control plane stores ciphertext it cannot open.
+     */
+    credentialPublicKeyPem: text('credential_public_key_pem'),
+    credentialKeyFingerprint: text('credential_key_fingerprint'),
     connectedAt: timestamp('connected_at', { withTimezone: true }),
     lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
     lastRemoteAddress: text('last_remote_address'),
@@ -412,6 +420,206 @@ export const auditExportQueue = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('audit_export_queue_next_idx').on(t.nextAttemptAt)],
+);
+
+// ---------------------------------------------------------------------------
+// Notifications
+// ---------------------------------------------------------------------------
+
+export const notificationChannelKind = ['email', 'slack', 'teams', 'webhook'] as const;
+export type NotificationChannelKind = (typeof notificationChannelKind)[number];
+
+/**
+ * Where notifications go.
+ *
+ * `secret` holds the one piece of bearer material each kind needs — the Slack
+ * or Teams incoming-webhook URL, the SMTP password. It is never returned by the
+ * API; the dashboard sees only `secretHint`, which is enough to tell two
+ * channels apart and useless to anyone who reads it.
+ */
+export const notificationChannels = pgTable(
+  'notification_channels',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    name: text('name').notNull(),
+    kind: text('kind').$type<NotificationChannelKind>().notNull(),
+    /** Non-secret settings: SMTP host/port/from, recipient list, custom headers. */
+    config: jsonb('config').$type<Record<string, unknown>>().notNull().default({}),
+    secret: text('secret'),
+    /** e.g. "hooks.slack.com/…/T0A9" — recognisable, not reusable. */
+    secretHint: text('secret_hint'),
+    enabled: boolean('enabled').notNull().default(true),
+    lastDeliveredAt: timestamp('last_delivered_at', { withTimezone: true }),
+    lastError: text('last_error'),
+    lastErrorAt: timestamp('last_error_at', { withTimezone: true }),
+    createdBy: uuid('created_by'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('notification_channels_name_key').on(t.name)],
+);
+
+export const notificationEventKind = [
+  'job.failed',
+  'job.succeeded',
+  'job.recovered',
+  'job.long_running',
+  'worker.offline',
+  'command.failed',
+] as const;
+export type NotificationEventKind = (typeof notificationEventKind)[number];
+
+/**
+ * Which events go to which channels, and for which part of the estate.
+ *
+ * An empty `instanceIds` means every instance — including ones enrolled after
+ * the rule was written, which is the behaviour a growing estate needs.
+ */
+export const notificationRules = pgTable(
+  'notification_rules',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    name: text('name').notNull(),
+    enabled: boolean('enabled').notNull().default(true),
+    events: jsonb('events').$type<NotificationEventKind[]>().notNull().default([]),
+    instanceIds: jsonb('instance_ids').$type<string[]>().notNull().default([]),
+    /** Case-insensitive substring match on the job name; empty matches all. */
+    jobNameContains: text('job_name_contains'),
+    channelIds: jsonb('channel_ids').$type<string[]>().notNull().default([]),
+    /**
+     * Suppress repeats of the same event for the same job for this long. A job
+     * that fails every five minutes should page once, not 288 times a day.
+     */
+    throttleMinutes: integer('throttle_minutes').notNull().default(60),
+    createdBy: uuid('created_by'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('notification_rules_name_key').on(t.name)],
+);
+
+/**
+ * Events that have happened, recorded once.
+ *
+ * `dedupeKey` is what makes detection idempotent: the worker's outbox replays
+ * on reconnect, so the same failed run arrives more than once as a matter of
+ * course, and it must not notify twice.
+ */
+export const notificationEvents = pgTable(
+  'notification_events',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    kind: text('kind').$type<NotificationEventKind>().notNull(),
+    dedupeKey: text('dedupe_key').notNull(),
+    instanceId: uuid('instance_id').references(() => instances.id, { onDelete: 'cascade' }),
+    workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }),
+    jobUuid: uuid('job_uuid'),
+    /** Everything the message needs, denormalised so a deleted job still renders. */
+    payload: jsonb('payload').$type<Record<string, unknown>>().notNull(),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('notification_events_dedupe_key').on(t.dedupeKey),
+    index('notification_events_occurred_idx').on(t.occurredAt),
+  ],
+);
+
+export const notificationDeliveryState = ['pending', 'sent', 'failed', 'suppressed'] as const;
+export type NotificationDeliveryState = (typeof notificationDeliveryState)[number];
+
+/**
+ * One row per (event, channel). Queued rather than sent inline so that a dead
+ * SMTP server or a rate-limited Slack workspace delays a notification instead
+ * of failing the ingestion that produced it.
+ */
+export const notificationDeliveries = pgTable(
+  'notification_deliveries',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    eventId: uuid('event_id')
+      .notNull()
+      .references(() => notificationEvents.id, { onDelete: 'cascade' }),
+    ruleId: uuid('rule_id').references(() => notificationRules.id, { onDelete: 'set null' }),
+    channelId: uuid('channel_id')
+      .notNull()
+      .references(() => notificationChannels.id, { onDelete: 'cascade' }),
+    state: text('state').$type<NotificationDeliveryState>().notNull().default('pending'),
+    attempts: integer('attempts').notNull().default(0),
+    lastError: text('last_error'),
+    nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }).notNull().defaultNow(),
+    /** "kind:instance:job" — what the throttle window is measured against. */
+    throttleKey: text('throttle_key').notNull(),
+    sentAt: timestamp('sent_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('notification_deliveries_event_channel_key').on(t.eventId, t.channelId),
+    index('notification_deliveries_next_idx').on(t.state, t.nextAttemptAt),
+    index('notification_deliveries_throttle_idx').on(t.channelId, t.throttleKey, t.createdAt),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// Worker onboarding: instance configuration and SQL credentials
+// ---------------------------------------------------------------------------
+
+export const instanceConfigStatus = [
+  'awaiting_credentials',
+  'pending',
+  'connected',
+  'auth_failed',
+  'unreachable',
+  'decrypt_failed',
+] as const;
+export type InstanceConfigStatus = (typeof instanceConfigStatus)[number];
+
+export const sqlAuthMode = ['integrated', 'sql'] as const;
+export type SqlAuthMode = (typeof sqlAuthMode)[number];
+
+/**
+ * Instances an admin has asked a worker to monitor, configured from the
+ * dashboard rather than by editing worker.yaml on the host.
+ *
+ * **The control plane cannot read the credential.** `credentialCiphertext` is
+ * encrypted in the operator's browser to the public key that worker generated
+ * at enrolment, and only that worker holds the private half. This database
+ * therefore never holds a usable SQL login — which matters, because a control
+ * plane that did would concentrate credentials for the whole estate in the one
+ * component reachable from every network segment. See docs/security.md.
+ */
+export const workerInstanceConfigs = pgTable(
+  'worker_instance_configs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    workerId: uuid('worker_id')
+      .notNull()
+      .references(() => workers.id, { onDelete: 'cascade' }),
+    /** "MSSQLSERVER", or a named instance. */
+    instanceName: text('instance_name').notNull(),
+    /** Address the worker dials, e.g. "localhost" or "localhost\\SQL2019,1433". */
+    serverAddress: text('server_address').notNull(),
+    authMode: text('auth_mode').$type<SqlAuthMode>().notNull().default('integrated'),
+    /** Login name, held in clear: it is not a secret and it is worth showing. */
+    loginName: text('login_name'),
+    /** RSA-OAEP ciphertext, base64. Opaque here by design. */
+    credentialCiphertext: text('credential_ciphertext'),
+    /** Fingerprint of the key it was encrypted to, so a re-keyed worker's stale
+     * ciphertext is detected rather than handed over and silently failing. */
+    credentialKeyFingerprint: text('credential_key_fingerprint'),
+    credentialUpdatedAt: timestamp('credential_updated_at', { withTimezone: true }),
+    credentialUpdatedBy: uuid('credential_updated_by'),
+    encryptTls: boolean('encrypt_tls').notNull().default(true),
+    trustServerCertificate: boolean('trust_server_certificate').notNull().default(false),
+    environmentTag: text('environment_tag'),
+    status: text('status').$type<InstanceConfigStatus>().notNull().default('awaiting_credentials'),
+    statusDetail: text('status_detail'),
+    statusAt: timestamp('status_at', { withTimezone: true }),
+    createdBy: uuid('created_by'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('worker_instance_configs_key').on(t.workerId, t.instanceName),
+    index('worker_instance_configs_worker_idx').on(t.workerId),
+  ],
 );
 
 export const sessions = pgTable(

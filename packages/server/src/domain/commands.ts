@@ -10,9 +10,10 @@ import {
   type Capability,
   type Command,
   type CommandKind,
+  type Role,
 } from '@remote-sql-agent/protocol';
 import type { Database } from '../db/client.js';
-import { commands, instances, jobs, workers, type CommandState } from '../db/schema.js';
+import { commands, instances, jobs, users, workers, type CommandState } from '../db/schema.js';
 import type { ServerConfig } from '../config.js';
 import type { WorkerRegistry } from '../hub/registry.js';
 import { writeAudit } from './audit.js';
@@ -56,6 +57,8 @@ export interface CreateCommandInput {
   baseDefinitionHash?: string | null;
   issuedBy: string;
   issuedByUsername: string;
+  /** Decides whether the four-eyes rule applies to this issuer. */
+  issuedByRole: Role;
   remoteAddress?: string | null;
 }
 
@@ -109,6 +112,22 @@ export class CommandService {
     };
   }
 
+  /**
+   * Whether this command needs a second person to approve it.
+   *
+   * Three things must line up: the site turned the rule on, the command kind is
+   * one that changes a definition, and the issuer's role is not exempt. Exposed
+   * so the dashboard can tell the operator *before* they start editing whether
+   * their save will apply or queue.
+   */
+  requiresApproval(kind: CommandKind, role: Role): boolean {
+    return (
+      this.config.requireApprovalForJobWrite &&
+      APPROVAL_REQUIRED_BY_DEFAULT.includes(kind) &&
+      !this.config.approvalExemptRoles.includes(role)
+    );
+  }
+
   async create(input: CreateCommandInput): Promise<CreateCommandResult> {
     const required = COMMAND_CAPABILITY[input.kind];
     const { workerId, hostName, capabilities } = await this.effectiveCapabilitiesFor(
@@ -127,8 +146,7 @@ export class CommandService {
       );
     }
 
-    const requiresApproval =
-      this.config.requireApprovalForJobWrite && APPROVAL_REQUIRED_BY_DEFAULT.includes(input.kind);
+    const requiresApproval = this.requiresApproval(input.kind, input.issuedByRole);
 
     const [row] = await this.db
       .insert(commands)
@@ -308,7 +326,13 @@ export class CommandService {
     return sent;
   }
 
-  /** Record the outcome reported by the worker. */
+  /**
+   * Record the outcome reported by the worker.
+   *
+   * Returns enough of the command for the caller to raise a notification about
+   * it, or null when the command is unknown — which happens legitimately if a
+   * worker reconnects and reports a result for something already expired.
+   */
   async recordResult(params: {
     commandId: string;
     success: boolean;
@@ -316,14 +340,19 @@ export class CommandService {
     errorDetail: string;
     sqlErrorNumber: number;
     hostName: string;
-  }): Promise<void> {
+  }): Promise<{
+    type: string;
+    instanceId: string;
+    jobUuid: string | null;
+    issuedByUsername: string | null;
+  } | null> {
     const [command] = await this.db
       .select()
       .from(commands)
       .where(eq(commands.id, params.commandId));
     if (!command) {
       this.logger.warn({ commandId: params.commandId }, 'Result for an unknown command; ignoring');
-      return;
+      return null;
     }
 
     await this.db
@@ -349,6 +378,20 @@ export class CommandService {
         sqlErrorNumber: params.sqlErrorNumber || undefined,
       },
     });
+
+    const [issuer] = command.issuedBy
+      ? await this.db
+          .select({ username: users.username })
+          .from(users)
+          .where(eq(users.id, command.issuedBy))
+      : [];
+
+    return {
+      type: command.type,
+      instanceId: command.instanceId,
+      jobUuid: command.jobUuid,
+      issuedByUsername: issuer?.username ?? null,
+    };
   }
 
   /**

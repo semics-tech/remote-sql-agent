@@ -3,6 +3,9 @@ import { useCommands, useEstate } from './api.js';
 import { useAuth } from './auth.jsx';
 import { Commands } from './pages/Commands.jsx';
 import { Estate } from './pages/Estate.jsx';
+import { Overview } from './pages/Overview.jsx';
+import { Jobs } from './pages/Jobs.jsx';
+import { AddWorker } from './pages/AddWorker.jsx';
 import { Instance } from './pages/Instance.jsx';
 import { Job } from './pages/Job.jsx';
 import { Search } from './pages/Search.jsx';
@@ -34,7 +37,13 @@ export function App() {
         </h1>
         <nav>
           <NavLink to="/" end className={({ isActive }) => (isActive ? 'active' : '')}>
+            Overview
+          </NavLink>
+          <NavLink to="/estate" className={({ isActive }) => (isActive ? 'active' : '')}>
             Estate
+          </NavLink>
+          <NavLink to="/jobs" className={({ isActive }) => (isActive ? 'active' : '')}>
+            Jobs
           </NavLink>
           <NavLink to="/search" className={({ isActive }) => (isActive ? 'active' : '')}>
             Search
@@ -64,7 +73,10 @@ export function App() {
         <ObjectTree />
         <main className="main">
           <Routes>
-            <Route path="/" element={<Estate />} />
+            <Route path="/" element={<Overview />} />
+            <Route path="/estate" element={<Estate />} />
+            <Route path="/estate/add-worker" element={<AddWorker />} />
+            <Route path="/jobs" element={<Jobs />} />
             <Route path="/instances/:instanceId" element={<Instance />} />
             <Route path="/instances/:instanceId/jobs/:jobUuid" element={<Job />} />
             <Route path="/search" element={<Search />} />

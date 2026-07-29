@@ -13,7 +13,7 @@ import { MAX_CAPABILITY_TIER_NAMES } from '@remote-sql-agent/protocol';
  * plane can reach.
  */
 
-const instanceConfigSchema = z.object({
+export const instanceConfigSchema = z.object({
   /** Instance name as it should appear in the control plane, e.g. "MSSQLSERVER" or "INST1". */
   name: z.string().min(1),
   server: z.string().min(1),
@@ -76,7 +76,21 @@ export const workerConfigSchema = z.object({
    * defence that survives control-plane compromise.
    */
   maxCapability: z.enum(MAX_CAPABILITY_TIER_NAMES as [string, ...string[]]).default('readOnly'),
-  instances: z.array(instanceConfigSchema).min(1),
+  /**
+   * Instances to monitor.
+   *
+   * Optional: a worker enrolled from the dashboard arrives with none and is
+   * told what to watch over its control-plane session, so nobody hand-edits
+   * YAML on fifty hosts. Anything listed here is monitored as well, which keeps
+   * existing file-configured deployments working unchanged.
+   */
+  instances: z.array(instanceConfigSchema).default([]),
+  /**
+   * Private key SQL credentials from the dashboard are encrypted to. Generated
+   * on this host at enrolment; the public half is all the control plane ever
+   * sees. See credential-key.ts for why that asymmetry matters.
+   */
+  credentialKeyFile: z.string().default('./run/credential.key'),
   outbox: z
     .object({
       path: z.string().default('./run/outbox.sqlite'),

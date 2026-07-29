@@ -5,6 +5,7 @@ import sql from 'mssql';
 import { createDatabase, type Database } from '@remote-sql-agent/server/src/db/client.js';
 import { runMigrations } from '@remote-sql-agent/server/src/db/migrate.js';
 import { createGrpcServer } from '@remote-sql-agent/server/src/hub/hub.js';
+import { NotificationService } from '@remote-sql-agent/server/src/domain/notifications/service.js';
 import { WorkerRegistry } from '@remote-sql-agent/server/src/hub/registry.js';
 import { loadConfig } from '@remote-sql-agent/server/src/config.js';
 import {
@@ -36,6 +37,7 @@ import {
 } from '@remote-sql-agent/server/src/worker-auth/enrolment.js';
 import { InstanceMonitor } from '@remote-sql-agent/worker/src/instance-monitor.js';
 import { Outbox } from '@remote-sql-agent/worker/src/outbox.js';
+import { loadOrCreateCredentialKey } from '@remote-sql-agent/worker/src/credential-key.js';
 import { ControlPlaneSession } from '@remote-sql-agent/worker/src/session.js';
 import { writeWorkerKey } from '@remote-sql-agent/worker/src/credentials.js';
 import { workerConfigSchema, type InstanceConfig } from '@remote-sql-agent/worker/src/config.js';
@@ -75,6 +77,7 @@ let outboxDir: string;
 let pool: sql.ConnectionPool;
 let commandService: CommandService;
 let signingKeys: CommandSigningKeyPair;
+let credentialKey: ReturnType<typeof loadOrCreateCredentialKey>;
 /** A real user row, so command.issued_by satisfies its foreign key. */
 let ISSUER_ID: string;
 
@@ -168,6 +171,9 @@ beforeAll(async () => {
     authenticator: new WorkerAuthenticator(db, serverConfig),
     commands: commandService,
     commandSigningPublicKey: signingKeys.publicKeyPem,
+    // Real service, no channels or rules configured: events are recorded and
+    // nothing is queued, which is what the hub needs to exercise the path.
+    notifications: new NotificationService(db, serverConfig, logger),
   });
 
   grpcPort = await new Promise<number>((resolve, reject) => {
@@ -178,6 +184,7 @@ beforeAll(async () => {
 
   outboxDir = mkdtempSync(join(tmpdir(), 'rsagent-integration-'));
   outbox = new Outbox(join(outboxDir, 'outbox.sqlite'), 10_000);
+  credentialKey = loadOrCreateCredentialKey(join(outboxDir, 'credential.key'));
 
   // Enrol exactly as an installer would: mint a single-use token, exchange it
   // for an API key, then connect with that key. A worker with no credential is
@@ -252,7 +259,7 @@ beforeAll(async () => {
           ready();
         })();
       },
-      onCommand: (message) => {
+      onMessage: (message) => {
         if (message.msg?.$case !== 'command') return;
         const command = message.msg.command;
         void (async () => {
@@ -283,6 +290,9 @@ beforeAll(async () => {
         $case: 'hello',
         hello: {
           workerVersion: '0.1.0-test',
+          // Published so the control plane can hand out credentials encrypted
+          // to this host. The write path does not use it; it must be present.
+          credentialPublicKey: credentialKey.publicKeyPem,
           hostName: HOST_NAME,
           maxCapability: 'full',
           instances: [
@@ -521,6 +531,7 @@ describe('write path', () => {
       baseDefinitionHash: baseDefinitionHash ?? null,
       issuedBy: ISSUER_ID,
       issuedByUsername: 'integration-test',
+      issuedByRole: 'Admin',
     });
 
     const settled = await eventually(
@@ -675,6 +686,7 @@ describe('write path', () => {
       payload: { jobUuid: target.jobUuid, enabled: false, baseDefinitionHash: '' },
       issuedBy: ISSUER_ID,
       issuedByUsername: 'integration-test',
+      issuedByRole: 'Admin',
     });
 
     await eventually(

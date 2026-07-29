@@ -3,13 +3,14 @@ import { dirname } from 'node:path';
 import { pino } from 'pino';
 import {
   toTimestamp,
-  type InstanceInfo,
   type WorkerMessage,
   type ConfigUpdate,
 } from '@remote-sql-agent/protocol';
 import { loadWorkerConfig, type WorkerConfig } from './config.js';
 import { Outbox } from './outbox.js';
-import { InstanceMonitor, type PollIntervals } from './instance-monitor.js';
+import { type PollIntervals } from './instance-monitor.js';
+import { MonitorSet } from './monitor-set.js';
+import { loadOrCreateCredentialKey } from './credential-key.js';
 import { ControlPlaneSession } from './session.js';
 import { handleCommand } from './command-handler.js';
 
@@ -54,13 +55,19 @@ async function main(): Promise<void> {
   if (config.maxCapability !== 'readOnly') {
     logger.warn(
       { maxCapability: config.maxCapability },
-      'This worker is configured above readOnly. Write commands are not implemented in this build, ' +
-        'but the ceiling should still be set to the minimum the site actually needs.',
+      'This worker is configured above readOnly. The ceiling should be the minimum the site needs.',
     );
   }
 
+  // Generated on first run if enrolment did not already do it. The private half
+  // never leaves this host; see credential-key.ts.
+  const credentialKey = loadOrCreateCredentialKey(config.credentialKeyFile);
+  logger.info(
+    { fingerprint: credentialKey.fingerprint.slice(0, 16) },
+    'Credential key ready; SQL credentials from the dashboard are encrypted to it',
+  );
+
   const outbox = new Outbox(config.outbox.path, config.outbox.maxRows);
-  const monitors = new Map<string, InstanceMonitor>();
 
   // -------------------------------------------------------------------------
   // Emit: live stream if connected, outbox otherwise.
@@ -86,42 +93,20 @@ async function main(): Promise<void> {
     return false;
   };
 
-  // -------------------------------------------------------------------------
-  // Connect to each configured instance.
-  // -------------------------------------------------------------------------
-  for (const instanceConfig of config.instances) {
-    const monitor = new InstanceMonitor({
-      config: instanceConfig,
-      outbox,
-      logger,
-      emit,
-    });
-    try {
-      await monitor.connect();
-      monitors.set(instanceConfig.name, monitor);
-    } catch (err) {
-      // One unreachable instance must not stop the worker serving the others on
-      // the same host.
-      logger.error(
-        { err, instance: instanceConfig.name },
-        'Failed to connect to instance; it will be retried on the next reconnect',
-      );
-    }
-  }
+  const monitors = new MonitorSet({ outbox, logger, emit, credentialKey });
+
+  // Instances listed in worker.yaml come up first and are never removed by the
+  // control plane. Anything else arrives over the session.
+  await monitors.addLocal(config.instances);
 
   if (monitors.size === 0) {
-    logger.fatal('No SQL Server instances could be reached; exiting for the supervisor to restart');
-    process.exit(1);
+    // Not a failure. A worker enrolled from the dashboard is *expected* to
+    // start with nothing to watch — exiting here would put it in a restart loop
+    // until someone configured it, which is exactly backwards.
+    logger.info(
+      'No instances configured yet. Connecting to the control plane and waiting to be told what to monitor.',
+    );
   }
-
-  const buildInstanceInfos = (): InstanceInfo[] =>
-    [...monitors.values()].map((m) => ({
-      instanceName: m.instanceName,
-      sqlVersion: m.identity?.sqlVersion ?? '',
-      sqlEdition: m.identity?.sqlEdition ?? '',
-      agentStatus: m.identity?.agentStatus ?? 'unknown',
-      serverName: m.identity?.serverName ?? '',
-    }));
 
   // -------------------------------------------------------------------------
   // Control plane session.
@@ -155,13 +140,14 @@ async function main(): Promise<void> {
     {
       onReady: (capabilities, serverConfig) => {
         const intervals = resolveIntervals(config, serverConfig);
+        monitors.setIntervals(intervals);
 
         // Order matters: drain the backlog first so history that accumulated
         // during the outage lands before the fresh snapshot's deltas.
         drainOutbox();
 
         void (async () => {
-          for (const monitor of monitors.values()) {
+          for (const monitor of monitors.monitors()) {
             try {
               await monitor.refreshIdentity();
               await monitor.sendSnapshot();
@@ -183,7 +169,7 @@ async function main(): Promise<void> {
               $case: 'heartbeat',
               heartbeat: {
                 sentAt: toTimestamp(new Date()),
-                instances: buildInstanceInfos(),
+                instances: monitors.instanceInfos(),
                 outboxDepth: stats.depth,
                 clockSkewMs: 0,
               },
@@ -203,13 +189,40 @@ async function main(): Promise<void> {
         logger.info({ capabilities }, 'Worker ready');
       },
 
-      onCommand: (message) => {
-        if (message.msg?.$case !== 'command') return;
-        const command = message.msg.command;
+      onMessage: (message) => {
+        const msg = message.msg;
+        if (!msg) return;
 
-        // Serialised behind the same queue as everything else: two commands
-        // against one job applied concurrently would race on msdb state, and
-        // the second's conflict check would read a half-applied definition.
+        if (msg.$case === 'instanceConfigs') {
+          // Serialised behind the same queue as commands: reconciling while a
+          // command is being applied could close the pool out from under it.
+          commandQueue = commandQueue
+            .then(async () => {
+              const results = await monitors.reconcileRemote(msg.instanceConfigs.configs);
+              session?.send({
+                msg: { $case: 'instanceConfigStatus', instanceConfigStatus: { results } },
+              });
+
+              const failed = results.filter((r) => r.status !== 'connected');
+              if (failed.length > 0) {
+                logger.warn(
+                  { failed: failed.map((f) => `${f.instanceName}=${f.status}`) },
+                  'Some instance configurations could not be used',
+                );
+              }
+            })
+            .catch((err: unknown) => {
+              logger.error({ err }, 'Failed to apply instance configuration');
+            });
+          return;
+        }
+
+        if (msg.$case !== 'command') return;
+        const command = msg.command;
+
+        // Serialised: two commands against one job applied concurrently would
+        // race on msdb state, and the second's conflict check would read a
+        // half-applied definition.
         commandQueue = commandQueue
           .then(async () => {
             const monitor = monitors.get(command.instanceName);
@@ -272,10 +285,22 @@ async function main(): Promise<void> {
 
             session?.send({ msg: { $case: 'commandResult', commandResult: result } });
 
-            // Re-poll immediately so the change is mirrored now rather than at
-            // the next scheduled tick — an operator watching the screen should
-            // see their own edit land.
-            await monitor.pollDefinitions().catch(() => undefined);
+            const kind = command.payload?.$case;
+
+            // Starting or stopping a job changes *activity*, not the definition,
+            // and the activity poll is on a ten-second tick. Reading it now is
+            // what makes a job show as running the moment the operator presses
+            // the button, instead of up to a tick later.
+            if (result.success && (kind === 'runJob' || kind === 'stopJob')) {
+              await monitor.pollActivity().catch(() => undefined);
+            }
+
+            // Re-poll definitions so an edit is mirrored now rather than at the
+            // next scheduled tick — an operator watching the screen should see
+            // their own change land.
+            if (kind !== 'runJob' && kind !== 'stopJob') {
+              await monitor.pollDefinitions().catch(() => undefined);
+            }
           })
           .catch((err: unknown) => {
             logger.error({ err, commandId: command.id }, 'Failed to process command');
@@ -297,7 +322,8 @@ async function main(): Promise<void> {
           workerVersion: WORKER_VERSION,
           hostName: config.hostName,
           maxCapability: config.maxCapability,
-          instances: buildInstanceInfos(),
+          instances: monitors.instanceInfos(),
+          credentialPublicKey: credentialKey.publicKeyPem,
         },
       },
     }),
@@ -315,7 +341,7 @@ async function main(): Promise<void> {
     logger.info({ signal }, 'Shutting down worker');
     if (heartbeatTimer) clearInterval(heartbeatTimer);
     session?.stop();
-    await Promise.all([...monitors.values()].map((m) => m.close()));
+    await monitors.closeAll();
     outbox.close();
     process.exit(0);
   };

@@ -184,6 +184,15 @@ async function get<T>(path: string): Promise<T> {
  * story is legible rather than scattered across components. */
 const LIVE_REFRESH_MS = 5_000;
 
+/**
+ * The cadence while something is actually happening.
+ *
+ * Five seconds is fine for a page nobody is staring at, and far too slow when
+ * an operator has just pressed Start and is waiting to see the job move. This
+ * only applies to the one job being watched, so the extra requests are bounded.
+ */
+const ACTIVE_REFRESH_MS = 1_500;
+
 export function useEstate() {
   return useQuery({
     queryKey: ['estate'],
@@ -210,21 +219,29 @@ export function useJobs(instanceId: string | undefined) {
   });
 }
 
-export function useJob(instanceId: string | undefined, jobUuid: string | undefined) {
+export function useJob(
+  instanceId: string | undefined,
+  jobUuid: string | undefined,
+  live = false,
+) {
   return useQuery({
     queryKey: ['job', instanceId, jobUuid],
     queryFn: () => get<JobDetail>(`/api/instances/${instanceId}/jobs/${jobUuid}`),
     enabled: Boolean(instanceId && jobUuid),
-    refetchInterval: LIVE_REFRESH_MS,
+    refetchInterval: live ? ACTIVE_REFRESH_MS : LIVE_REFRESH_MS,
   });
 }
 
-export function useJobHistory(instanceId: string | undefined, jobUuid: string | undefined) {
+export function useJobHistory(
+  instanceId: string | undefined,
+  jobUuid: string | undefined,
+  live = false,
+) {
   return useQuery({
     queryKey: ['history', instanceId, jobUuid],
     queryFn: () => get<{ runs: HistoryRun[] }>(`/api/instances/${instanceId}/jobs/${jobUuid}/history?limit=50`),
     enabled: Boolean(instanceId && jobUuid),
-    refetchInterval: LIVE_REFRESH_MS,
+    refetchInterval: live ? ACTIVE_REFRESH_MS : LIVE_REFRESH_MS,
   });
 }
 
@@ -415,4 +432,433 @@ export function useAgentLog(instanceId: string | undefined) {
     queryFn: () => get<{ entries: AgentLogEntry[] }>(`/api/instances/${instanceId}/agent-log`),
     enabled: Boolean(instanceId),
   });
+}
+
+// ---------------------------------------------------------------------------
+// Operations overview
+// ---------------------------------------------------------------------------
+
+export interface RunningJob {
+  instanceId: string;
+  instanceName: string;
+  hostName: string;
+  jobUuid: string;
+  jobName: string;
+  currentStepId: number | null;
+  currentStepName: string | null;
+  startedAt: string | null;
+  elapsedSeconds: number | null;
+  averageSeconds: number | null;
+  overrunRatio: number | null;
+  isLongRunning: boolean;
+}
+
+export interface FailedRun {
+  instanceId: string;
+  instanceName: string;
+  hostName: string;
+  jobUuid: string;
+  jobName: string;
+  runDatetime: string;
+  runDurationSeconds: number;
+  message: string | null;
+  consecutiveFailures: number;
+}
+
+export interface WorkerHealth {
+  workerId: string;
+  hostName: string;
+  version: string | null;
+  online: boolean;
+  lastSeenAt: string | null;
+  instanceCount: number;
+  agentsNotRunning: number;
+}
+
+export interface Overview {
+  totals: {
+    instances: number;
+    jobs: number;
+    jobsDisabled: number;
+    runningNow: number;
+    longRunning: number;
+    failedLast24h: number;
+    workersOnline: number;
+    workersOffline: number;
+    agentsStopped: number;
+  };
+  running: RunningJob[];
+  failures: FailedRun[];
+  workers: WorkerHealth[];
+}
+
+export function useOverview() {
+  return useQuery({
+    queryKey: ['overview'],
+    queryFn: () => get<Overview>('/api/overview'),
+    refetchInterval: LIVE_REFRESH_MS,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Job statistics
+// ---------------------------------------------------------------------------
+
+export interface RunPoint {
+  sqlInstanceId: number;
+  runDatetime: string;
+  runStatus: number;
+  runDurationSeconds: number;
+}
+
+export interface StepStat {
+  stepId: number;
+  stepName: string | null;
+  runs: number;
+  failures: number;
+  averageSeconds: number;
+  maxSeconds: number;
+  lastSeconds: number | null;
+}
+
+export interface CurrentRun {
+  startedAt: string | null;
+  elapsedSeconds: number | null;
+  currentStepId: number | null;
+  currentStepName: string | null;
+  completedSteps: Array<{
+    stepId: number;
+    stepName: string | null;
+    runStatus: number;
+    runDurationSeconds: number;
+    message: string | null;
+  }>;
+}
+
+export interface JobStats {
+  windowDays: number;
+  totalRuns: number;
+  succeeded: number;
+  failed: number;
+  cancelled: number;
+  retried: number;
+  successRate: number | null;
+  duration: {
+    averageSeconds: number | null;
+    medianSeconds: number | null;
+    p95Seconds: number | null;
+    minSeconds: number | null;
+    maxSeconds: number | null;
+    lastSeconds: number | null;
+    trend: number | null;
+  };
+  recentRuns: RunPoint[];
+  steps: StepStat[];
+  currentRun: CurrentRun | null;
+}
+
+/**
+ * Poll faster while a run is in flight.
+ *
+ * A five-second tick is fine for a static page and far too slow to watch a job
+ * move between steps, which is the entire point of the live graph.
+ */
+export function useJobStats(
+  instanceId: string | undefined,
+  jobUuid: string | undefined,
+  live: boolean,
+) {
+  return useQuery({
+    queryKey: ['job-stats', instanceId, jobUuid],
+    queryFn: () => get<JobStats>(`/api/instances/${instanceId}/jobs/${jobUuid}/stats`),
+    enabled: Boolean(instanceId && jobUuid),
+    refetchInterval: live ? ACTIVE_REFRESH_MS : LIVE_REFRESH_MS,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Cross-estate grouping
+// ---------------------------------------------------------------------------
+
+export type GroupKey = 'name' | 'category' | 'owner' | 'schedule' | 'instance';
+
+export interface GroupMember {
+  instanceId: string;
+  instanceName: string;
+  hostName: string;
+  jobUuid: string;
+  jobName: string;
+  enabled: boolean;
+  categoryName: string | null;
+  ownerLoginName: string | null;
+  scheduleSummary: string;
+  lastRunStatus: number | null;
+  lastRunAt: string | null;
+  lastRunDurationSeconds: number | null;
+  nextRunAt: string | null;
+  running: boolean;
+}
+
+export interface JobGroup {
+  key: string;
+  label: string;
+  members: GroupMember[];
+  total: number;
+  failing: number;
+  running: number;
+  disabled: number;
+  neverRun: number;
+}
+
+export function useJobGroups(groupBy: GroupKey, filter: string) {
+  return useQuery({
+    queryKey: ['job-groups', groupBy, filter],
+    queryFn: () =>
+      get<{ groupBy: GroupKey; groups: JobGroup[] }>(
+        `/api/jobs/groups?by=${groupBy}${filter ? `&filter=${encodeURIComponent(filter)}` : ''}`,
+      ),
+    refetchInterval: LIVE_REFRESH_MS,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Worker onboarding
+// ---------------------------------------------------------------------------
+
+export interface PendingWorker {
+  workerId: string;
+  hostName: string;
+  version: string | null;
+  createdAt: string;
+  lastSeenAt: string | null;
+  hasCredentialKey: boolean;
+  configuredInstances: number;
+  liveInstances: number;
+  online: boolean;
+}
+
+export interface InstanceConfigView {
+  id: string;
+  workerId: string;
+  instanceName: string;
+  serverAddress: string;
+  authMode: 'integrated' | 'sql';
+  loginName: string | null;
+  hasCredential: boolean;
+  credentialUpdatedAt: string | null;
+  encryptTls: boolean;
+  trustServerCertificate: boolean;
+  environmentTag: string | null;
+  status:
+    | 'awaiting_credentials'
+    | 'pending'
+    | 'connected'
+    | 'auth_failed'
+    | 'unreachable'
+    | 'decrypt_failed';
+  statusDetail: string | null;
+  statusAt: string | null;
+}
+
+export interface EnrolmentTokenResult {
+  token: string;
+  expiresAt: string;
+  hostName: string;
+  note: string;
+  install: { windows: string; linux: string; manual: string };
+}
+
+export function usePendingWorkers() {
+  return useQuery({
+    queryKey: ['pending-workers'],
+    queryFn: () => get<{ workers: PendingWorker[] }>('/api/workers/awaiting-setup'),
+    refetchInterval: LIVE_REFRESH_MS,
+  });
+}
+
+export function useInstanceConfigs(workerId: string | undefined) {
+  return useQuery({
+    queryKey: ['instance-configs', workerId],
+    queryFn: () =>
+      get<{ configs: InstanceConfigView[] }>(`/api/workers/${workerId}/instance-configs`),
+    enabled: Boolean(workerId),
+    refetchInterval: LIVE_REFRESH_MS,
+  });
+}
+
+export function useWorkerAdmin() {
+  const queryClient = useQueryClient();
+  const refresh = () => queryClient.invalidateQueries();
+
+  return {
+    createEnrolmentToken: async (input: {
+      hostName: string;
+      credentialMode: 'token' | 'mtls' | 'entra';
+      capabilities: string[];
+    }) => send<EnrolmentTokenResult>('/api/enrolment-tokens', 'POST', input),
+
+    setCapabilities: async (workerId: string, capabilities: string[]) => {
+      const result = await send<{ capabilities: string[]; note: string }>(
+        `/api/workers/${workerId}/capabilities`,
+        'POST',
+        { capabilities },
+      );
+      await refresh();
+      return result;
+    },
+
+    /** The key a credential must be encrypted to before it is submitted. */
+    credentialKey: async (workerId: string) =>
+      send<{ publicKeyPem: string; fingerprint: string }>(
+        `/api/workers/${workerId}/credential-key`,
+        'GET',
+      ),
+
+    saveInstanceConfig: async (
+      workerId: string,
+      input: {
+        instanceName: string;
+        serverAddress: string;
+        authMode: 'integrated' | 'sql';
+        loginName?: string | null;
+        credentialCiphertext?: string | null;
+        credentialKeyFingerprint?: string | null;
+        encryptTls?: boolean;
+        trustServerCertificate?: boolean;
+        environmentTag?: string | null;
+      },
+    ) => {
+      const result = await send<{ config: InstanceConfigView; delivered: boolean; note: string }>(
+        `/api/workers/${workerId}/instance-configs`,
+        'PUT',
+        input,
+      );
+      await refresh();
+      return result;
+    },
+
+    removeInstanceConfig: async (workerId: string, configId: string) => {
+      await send(`/api/workers/${workerId}/instance-configs/${configId}`, 'DELETE');
+      await refresh();
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Notifications
+// ---------------------------------------------------------------------------
+
+export type ChannelKind = 'email' | 'slack' | 'teams' | 'webhook';
+
+export type NotificationEventKind =
+  | 'job.failed'
+  | 'job.succeeded'
+  | 'job.recovered'
+  | 'job.long_running'
+  | 'worker.offline'
+  | 'command.failed';
+
+export interface NotificationChannel {
+  id: string;
+  name: string;
+  kind: ChannelKind;
+  config: Record<string, unknown>;
+  hasSecret: boolean;
+  secretHint: string | null;
+  enabled: boolean;
+  lastDeliveredAt: string | null;
+  lastError: string | null;
+  lastErrorAt: string | null;
+}
+
+export interface NotificationRule {
+  id: string;
+  name: string;
+  enabled: boolean;
+  events: NotificationEventKind[];
+  instanceIds: string[];
+  jobNameContains: string | null;
+  channelIds: string[];
+  throttleMinutes: number;
+}
+
+export interface NotificationDelivery {
+  id: string;
+  state: 'pending' | 'sent' | 'failed' | 'suppressed';
+  attempts: number;
+  lastError: string | null;
+  sentAt: string | null;
+  createdAt: string;
+  channelName: string;
+  channelKind: ChannelKind;
+  eventKind: NotificationEventKind;
+  eventPayload: Record<string, unknown>;
+  occurredAt: string;
+}
+
+export function useNotificationChannels() {
+  return useQuery({
+    queryKey: ['notification-channels'],
+    queryFn: () => get<{ channels: NotificationChannel[] }>('/api/notifications/channels'),
+  });
+}
+
+export function useNotificationRules() {
+  return useQuery({
+    queryKey: ['notification-rules'],
+    queryFn: () => get<{ rules: NotificationRule[] }>('/api/notifications/rules'),
+  });
+}
+
+export function useNotificationDeliveries() {
+  return useQuery({
+    queryKey: ['notification-deliveries'],
+    queryFn: () =>
+      get<{ deliveries: NotificationDelivery[] }>('/api/notifications/deliveries?limit=100'),
+    refetchInterval: LIVE_REFRESH_MS,
+  });
+}
+
+export function useNotificationAdmin() {
+  const queryClient = useQueryClient();
+  const refresh = () => queryClient.invalidateQueries();
+
+  return {
+    saveChannel: async (input: {
+      id?: string;
+      name: string;
+      kind: ChannelKind;
+      config: Record<string, unknown>;
+      secret?: string;
+      enabled: boolean;
+    }) => {
+      const result = await send<NotificationChannel>('/api/notifications/channels', 'POST', input);
+      await refresh();
+      return result;
+    },
+    removeChannel: async (channelId: string) => {
+      await send(`/api/notifications/channels/${channelId}`, 'DELETE');
+      await refresh();
+    },
+    testChannel: async (channelId: string) =>
+      send<{ sent: boolean }>(`/api/notifications/channels/${channelId}/test`, 'POST', {}),
+    saveRule: async (input: {
+      id?: string;
+      name: string;
+      enabled: boolean;
+      events: NotificationEventKind[];
+      instanceIds: string[];
+      jobNameContains?: string | null;
+      channelIds: string[];
+      throttleMinutes: number;
+    }) => {
+      const result = await send<NotificationRule>('/api/notifications/rules', 'POST', input);
+      await refresh();
+      return result;
+    },
+    removeRule: async (ruleId: string) => {
+      await send(`/api/notifications/rules/${ruleId}`, 'DELETE');
+      await refresh();
+    },
+  };
 }

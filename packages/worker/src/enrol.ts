@@ -5,6 +5,7 @@ import { generateKeyPairSync, createSign } from 'node:crypto';
 import { EnrolmentClient, type EnrolResponse } from '@remote-sql-agent/protocol';
 import { loadWorkerConfig, type WorkerConfig } from './config.js';
 import { buildChannelCredentials, writeWorkerKey, acquireEntraToken } from './credentials.js';
+import { loadOrCreateCredentialKey } from './credential-key.js';
 
 /**
  * One-time enrolment (§6.2).
@@ -97,6 +98,21 @@ export async function enrol(options: EnrolOptions): Promise<void> {
       console.log(`Enrolled as worker ${response.workerId} using this host's managed identity.`);
       console.log('No secret was stored: authentication uses a fresh token on every connection.');
       break;
+  }
+
+  // Generated here rather than on first connect so an admin who enrols a worker
+  // and immediately opens the dashboard can configure it, instead of being told
+  // to come back once it has published a key.
+  const credentialKey = loadOrCreateCredentialKey(config.credentialKeyFile);
+  console.log(`Credential key ready at ${config.credentialKeyFile} (mode 0600).`);
+  console.log(`  fingerprint ${credentialKey.fingerprint.slice(0, 32)}…`);
+  console.log(
+    'SQL credentials entered in the dashboard are encrypted to this key in the browser,\n' +
+      'so the control plane stores a credential it cannot itself read.',
+  );
+
+  if (config.instances.length === 0) {
+    console.log('\nNext: open the dashboard and tell this worker which SQL instances to monitor.');
   }
 
   client.close();

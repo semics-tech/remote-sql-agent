@@ -14,10 +14,14 @@ export function JobActions({
   instanceId,
   job,
   onIssued,
+  onStarting,
 }: {
   instanceId: string;
   job: JobDetail;
   onIssued: (message: string) => void;
+  /** Fired the instant a start is accepted, so the page can show it running
+   * before SQL Agent's activity poll catches up. */
+  onStarting?: () => void;
 }) {
   const capabilities = useInstanceCapabilities(instanceId);
   const actions = useJobActions(instanceId, job.jobUuid);
@@ -78,7 +82,16 @@ export function JobActions({
             <button
               className="action"
               disabled={busy}
-              onClick={() => void issue('Start job', () => actions.run())}
+              onClick={() =>
+                void issue('Start job', async () => {
+                  const result = await actions.run();
+                  // Only after the command is accepted. Flipping the UI to
+                  // "running" on click would show a state that a refused
+                  // command never reaches.
+                  if (!result.requiresApproval) onStarting?.();
+                  return result;
+                })
+              }
             >
               Start job
             </button>

@@ -198,6 +198,7 @@ Setup: [docs/authentication.md](docs/authentication.md).
 |---|---|
 | [quick-start.md](docs/quick-start.md) | Nothing to a working estate view |
 | [capabilities.md](docs/capabilities.md) | What a worker may do, and how to choose |
+| [notifications.md](docs/notifications.md) | Alerting to email, Slack, Teams or a webhook |
 | [authentication.md](docs/authentication.md) | Entra sign-in, worker auth, audit export |
 | [security.md](docs/security.md) | What is enforced, and a deployment checklist |
 | [threat-model.md](docs/threat-model.md) | Scenarios, mitigations, residual risk |

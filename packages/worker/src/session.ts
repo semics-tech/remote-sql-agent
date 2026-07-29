@@ -23,7 +23,8 @@ import { buildCallMetadata, buildChannelCredentials, CredentialError } from './c
 
 export interface SessionEvents {
   onReady: (capabilities: Capability[], config: ConfigUpdate | undefined) => void;
-  onCommand: (message: ServerMessage) => void;
+  /** Every server message except HelloAck: commands and configuration. */
+  onMessage: (message: ServerMessage) => void;
   onDisconnect: (reason: string) => void;
 }
 
@@ -179,7 +180,7 @@ export class ControlPlaneSession {
         return;
       }
 
-      this.events.onCommand(message);
+      this.events.onMessage(message);
     });
 
     stream.on('error', (err: Error) => {

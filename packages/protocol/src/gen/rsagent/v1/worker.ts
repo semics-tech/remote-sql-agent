@@ -34,6 +34,7 @@ export interface WorkerMessage {
     | { $case: "agentLog"; agentLog: AgentLogBatch }
     | { $case: "commandResult"; commandResult: CommandResult }
     | { $case: "heartbeat"; heartbeat: Heartbeat }
+    | { $case: "instanceConfigStatus"; instanceConfigStatus: InstanceConfigStatus }
     | undefined;
 }
 
@@ -46,6 +47,29 @@ export interface Hello {
    */
   maxCapability: string;
   instances: InstanceInfo[];
+  /**
+   * SPKI public key, PEM, generated on this host at enrolment. SQL credentials
+   * configured from the dashboard are encrypted to it *in the operator's
+   * browser*; the matching private key never leaves this host, so the control
+   * plane relays credentials it cannot itself read. See docs/security.md.
+   */
+  credentialPublicKey: string;
+}
+
+/**
+ * The worker reporting what happened when it tried to use a configuration the
+ * control plane sent it. `auth_failed` is what turns a wrong password into a
+ * prompt to re-enter it, rather than a worker that silently never connects.
+ */
+export interface InstanceConfigStatus {
+  results: InstanceConfigResult[];
+}
+
+export interface InstanceConfigResult {
+  instanceName: string;
+  /** connected | auth_failed | unreachable | decrypt_failed */
+  status: string;
+  detail: string;
 }
 
 export interface InstanceInfo {
@@ -194,10 +218,44 @@ export interface CommandResult {
 }
 
 export interface ServerMessage {
-  msg?: { $case: "helloAck"; helloAck: HelloAck } | { $case: "command"; command: Command } | {
-    $case: "config";
-    config: ConfigUpdate;
-  } | undefined;
+  msg?:
+    | { $case: "helloAck"; helloAck: HelloAck }
+    | { $case: "command"; command: Command }
+    | { $case: "config"; config: ConfigUpdate }
+    | { $case: "instanceConfigs"; instanceConfigs: InstanceConfigSet }
+    | undefined;
+}
+
+/**
+ * The full set of instances this worker should monitor, sent on connect and
+ * again whenever an admin changes it. Replaces rather than merges: a config
+ * removed in the dashboard must actually stop being monitored.
+ */
+export interface InstanceConfigSet {
+  configs: InstanceConfig[];
+}
+
+export interface InstanceConfig {
+  instanceName: string;
+  serverAddress: string;
+  /** integrated | sql */
+  authMode: string;
+  loginName: string;
+  /**
+   * Base64 RSA-OAEP(SHA-256) ciphertext of {"password":"..."}, encrypted to this
+   * worker's own public key. Empty when auth_mode is `integrated`, where the
+   * service account is the credential and there is nothing to store.
+   */
+  credentialCiphertext: string;
+  /**
+   * Fingerprint of the key it was encrypted to. A mismatch against the worker's
+   * current key means the ciphertext is stale — the worker says so rather than
+   * failing to decrypt and looking like a bad password.
+   */
+  credentialKeyFingerprint: string;
+  encryptTls: boolean;
+  trustServerCertificate: boolean;
+  environmentTag: string;
 }
 
 export interface HelloAck {
@@ -358,6 +416,9 @@ export const WorkerMessage: MessageFns<WorkerMessage> = {
       case "heartbeat":
         Heartbeat.encode(message.msg.heartbeat, writer.uint32(66).fork()).join();
         break;
+      case "instanceConfigStatus":
+        InstanceConfigStatus.encode(message.msg.instanceConfigStatus, writer.uint32(74).fork()).join();
+        break;
     }
     return writer;
   },
@@ -433,6 +494,17 @@ export const WorkerMessage: MessageFns<WorkerMessage> = {
           message.msg = { $case: "heartbeat", heartbeat: Heartbeat.decode(reader, reader.uint32()) };
           continue;
         }
+        case 9: {
+          if (tag !== 74) {
+            break;
+          }
+
+          message.msg = {
+            $case: "instanceConfigStatus",
+            instanceConfigStatus: InstanceConfigStatus.decode(reader, reader.uint32()),
+          };
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -464,6 +536,16 @@ export const WorkerMessage: MessageFns<WorkerMessage> = {
         ? { $case: "commandResult", commandResult: CommandResult.fromJSON(object.command_result) }
         : isSet(object.heartbeat)
         ? { $case: "heartbeat", heartbeat: Heartbeat.fromJSON(object.heartbeat) }
+        : isSet(object.instanceConfigStatus)
+        ? {
+          $case: "instanceConfigStatus",
+          instanceConfigStatus: InstanceConfigStatus.fromJSON(object.instanceConfigStatus),
+        }
+        : isSet(object.instance_config_status)
+        ? {
+          $case: "instanceConfigStatus",
+          instanceConfigStatus: InstanceConfigStatus.fromJSON(object.instance_config_status),
+        }
         : undefined,
     };
   },
@@ -486,6 +568,8 @@ export const WorkerMessage: MessageFns<WorkerMessage> = {
       obj.commandResult = CommandResult.toJSON(message.msg.commandResult);
     } else if (message.msg?.$case === "heartbeat") {
       obj.heartbeat = Heartbeat.toJSON(message.msg.heartbeat);
+    } else if (message.msg?.$case === "instanceConfigStatus") {
+      obj.instanceConfigStatus = InstanceConfigStatus.toJSON(message.msg.instanceConfigStatus);
     }
     return obj;
   },
@@ -544,13 +628,22 @@ export const WorkerMessage: MessageFns<WorkerMessage> = {
         }
         break;
       }
+      case "instanceConfigStatus": {
+        if (object.msg?.instanceConfigStatus !== undefined && object.msg?.instanceConfigStatus !== null) {
+          message.msg = {
+            $case: "instanceConfigStatus",
+            instanceConfigStatus: InstanceConfigStatus.fromPartial(object.msg.instanceConfigStatus),
+          };
+        }
+        break;
+      }
     }
     return message;
   },
 };
 
 function createBaseHello(): Hello {
-  return { workerVersion: "", hostName: "", maxCapability: "", instances: [] };
+  return { workerVersion: "", hostName: "", maxCapability: "", instances: [], credentialPublicKey: "" };
 }
 
 export const Hello: MessageFns<Hello> = {
@@ -566,6 +659,9 @@ export const Hello: MessageFns<Hello> = {
     }
     for (const v of message.instances) {
       InstanceInfo.encode(v!, writer.uint32(34).fork()).join();
+    }
+    if (message.credentialPublicKey !== "") {
+      writer.uint32(42).string(message.credentialPublicKey);
     }
     return writer;
   },
@@ -609,6 +705,14 @@ export const Hello: MessageFns<Hello> = {
           message.instances.push(InstanceInfo.decode(reader, reader.uint32()));
           continue;
         }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.credentialPublicKey = reader.string();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -638,6 +742,11 @@ export const Hello: MessageFns<Hello> = {
       instances: globalThis.Array.isArray(object?.instances)
         ? object.instances.map((e: any) => InstanceInfo.fromJSON(e))
         : [],
+      credentialPublicKey: isSet(object.credentialPublicKey)
+        ? globalThis.String(object.credentialPublicKey)
+        : isSet(object.credential_public_key)
+        ? globalThis.String(object.credential_public_key)
+        : "",
     };
   },
 
@@ -655,6 +764,9 @@ export const Hello: MessageFns<Hello> = {
     if (message.instances?.length) {
       obj.instances = message.instances.map((e) => InstanceInfo.toJSON(e));
     }
+    if (message.credentialPublicKey !== "") {
+      obj.credentialPublicKey = message.credentialPublicKey;
+    }
     return obj;
   },
 
@@ -667,6 +779,165 @@ export const Hello: MessageFns<Hello> = {
     message.hostName = object.hostName ?? "";
     message.maxCapability = object.maxCapability ?? "";
     message.instances = object.instances?.map((e) => InstanceInfo.fromPartial(e)) || [];
+    message.credentialPublicKey = object.credentialPublicKey ?? "";
+    return message;
+  },
+};
+
+function createBaseInstanceConfigStatus(): InstanceConfigStatus {
+  return { results: [] };
+}
+
+export const InstanceConfigStatus: MessageFns<InstanceConfigStatus> = {
+  encode(message: InstanceConfigStatus, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    for (const v of message.results) {
+      InstanceConfigResult.encode(v!, writer.uint32(10).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): InstanceConfigStatus {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseInstanceConfigStatus();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.results.push(InstanceConfigResult.decode(reader, reader.uint32()));
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): InstanceConfigStatus {
+    return {
+      results: globalThis.Array.isArray(object?.results)
+        ? object.results.map((e: any) => InstanceConfigResult.fromJSON(e))
+        : [],
+    };
+  },
+
+  toJSON(message: InstanceConfigStatus): unknown {
+    const obj: any = {};
+    if (message.results?.length) {
+      obj.results = message.results.map((e) => InstanceConfigResult.toJSON(e));
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<InstanceConfigStatus>, I>>(base?: I): InstanceConfigStatus {
+    return InstanceConfigStatus.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<InstanceConfigStatus>, I>>(object: I): InstanceConfigStatus {
+    const message = createBaseInstanceConfigStatus();
+    message.results = object.results?.map((e) => InstanceConfigResult.fromPartial(e)) || [];
+    return message;
+  },
+};
+
+function createBaseInstanceConfigResult(): InstanceConfigResult {
+  return { instanceName: "", status: "", detail: "" };
+}
+
+export const InstanceConfigResult: MessageFns<InstanceConfigResult> = {
+  encode(message: InstanceConfigResult, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.instanceName !== "") {
+      writer.uint32(10).string(message.instanceName);
+    }
+    if (message.status !== "") {
+      writer.uint32(18).string(message.status);
+    }
+    if (message.detail !== "") {
+      writer.uint32(26).string(message.detail);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): InstanceConfigResult {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseInstanceConfigResult();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.instanceName = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.status = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.detail = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): InstanceConfigResult {
+    return {
+      instanceName: isSet(object.instanceName)
+        ? globalThis.String(object.instanceName)
+        : isSet(object.instance_name)
+        ? globalThis.String(object.instance_name)
+        : "",
+      status: isSet(object.status) ? globalThis.String(object.status) : "",
+      detail: isSet(object.detail) ? globalThis.String(object.detail) : "",
+    };
+  },
+
+  toJSON(message: InstanceConfigResult): unknown {
+    const obj: any = {};
+    if (message.instanceName !== "") {
+      obj.instanceName = message.instanceName;
+    }
+    if (message.status !== "") {
+      obj.status = message.status;
+    }
+    if (message.detail !== "") {
+      obj.detail = message.detail;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<InstanceConfigResult>, I>>(base?: I): InstanceConfigResult {
+    return InstanceConfigResult.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<InstanceConfigResult>, I>>(object: I): InstanceConfigResult {
+    const message = createBaseInstanceConfigResult();
+    message.instanceName = object.instanceName ?? "";
+    message.status = object.status ?? "";
+    message.detail = object.detail ?? "";
     return message;
   },
 };
@@ -2741,6 +3012,9 @@ export const ServerMessage: MessageFns<ServerMessage> = {
       case "config":
         ConfigUpdate.encode(message.msg.config, writer.uint32(26).fork()).join();
         break;
+      case "instanceConfigs":
+        InstanceConfigSet.encode(message.msg.instanceConfigs, writer.uint32(34).fork()).join();
+        break;
     }
     return writer;
   },
@@ -2776,6 +3050,17 @@ export const ServerMessage: MessageFns<ServerMessage> = {
           message.msg = { $case: "config", config: ConfigUpdate.decode(reader, reader.uint32()) };
           continue;
         }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.msg = {
+            $case: "instanceConfigs",
+            instanceConfigs: InstanceConfigSet.decode(reader, reader.uint32()),
+          };
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -2795,6 +3080,10 @@ export const ServerMessage: MessageFns<ServerMessage> = {
         ? { $case: "command", command: Command.fromJSON(object.command) }
         : isSet(object.config)
         ? { $case: "config", config: ConfigUpdate.fromJSON(object.config) }
+        : isSet(object.instanceConfigs)
+        ? { $case: "instanceConfigs", instanceConfigs: InstanceConfigSet.fromJSON(object.instanceConfigs) }
+        : isSet(object.instance_configs)
+        ? { $case: "instanceConfigs", instanceConfigs: InstanceConfigSet.fromJSON(object.instance_configs) }
         : undefined,
     };
   },
@@ -2807,6 +3096,8 @@ export const ServerMessage: MessageFns<ServerMessage> = {
       obj.command = Command.toJSON(message.msg.command);
     } else if (message.msg?.$case === "config") {
       obj.config = ConfigUpdate.toJSON(message.msg.config);
+    } else if (message.msg?.$case === "instanceConfigs") {
+      obj.instanceConfigs = InstanceConfigSet.toJSON(message.msg.instanceConfigs);
     }
     return obj;
   },
@@ -2835,7 +3126,312 @@ export const ServerMessage: MessageFns<ServerMessage> = {
         }
         break;
       }
+      case "instanceConfigs": {
+        if (object.msg?.instanceConfigs !== undefined && object.msg?.instanceConfigs !== null) {
+          message.msg = {
+            $case: "instanceConfigs",
+            instanceConfigs: InstanceConfigSet.fromPartial(object.msg.instanceConfigs),
+          };
+        }
+        break;
+      }
     }
+    return message;
+  },
+};
+
+function createBaseInstanceConfigSet(): InstanceConfigSet {
+  return { configs: [] };
+}
+
+export const InstanceConfigSet: MessageFns<InstanceConfigSet> = {
+  encode(message: InstanceConfigSet, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    for (const v of message.configs) {
+      InstanceConfig.encode(v!, writer.uint32(10).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): InstanceConfigSet {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseInstanceConfigSet();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.configs.push(InstanceConfig.decode(reader, reader.uint32()));
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): InstanceConfigSet {
+    return {
+      configs: globalThis.Array.isArray(object?.configs)
+        ? object.configs.map((e: any) => InstanceConfig.fromJSON(e))
+        : [],
+    };
+  },
+
+  toJSON(message: InstanceConfigSet): unknown {
+    const obj: any = {};
+    if (message.configs?.length) {
+      obj.configs = message.configs.map((e) => InstanceConfig.toJSON(e));
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<InstanceConfigSet>, I>>(base?: I): InstanceConfigSet {
+    return InstanceConfigSet.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<InstanceConfigSet>, I>>(object: I): InstanceConfigSet {
+    const message = createBaseInstanceConfigSet();
+    message.configs = object.configs?.map((e) => InstanceConfig.fromPartial(e)) || [];
+    return message;
+  },
+};
+
+function createBaseInstanceConfig(): InstanceConfig {
+  return {
+    instanceName: "",
+    serverAddress: "",
+    authMode: "",
+    loginName: "",
+    credentialCiphertext: "",
+    credentialKeyFingerprint: "",
+    encryptTls: false,
+    trustServerCertificate: false,
+    environmentTag: "",
+  };
+}
+
+export const InstanceConfig: MessageFns<InstanceConfig> = {
+  encode(message: InstanceConfig, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.instanceName !== "") {
+      writer.uint32(10).string(message.instanceName);
+    }
+    if (message.serverAddress !== "") {
+      writer.uint32(18).string(message.serverAddress);
+    }
+    if (message.authMode !== "") {
+      writer.uint32(26).string(message.authMode);
+    }
+    if (message.loginName !== "") {
+      writer.uint32(34).string(message.loginName);
+    }
+    if (message.credentialCiphertext !== "") {
+      writer.uint32(42).string(message.credentialCiphertext);
+    }
+    if (message.credentialKeyFingerprint !== "") {
+      writer.uint32(50).string(message.credentialKeyFingerprint);
+    }
+    if (message.encryptTls !== false) {
+      writer.uint32(56).bool(message.encryptTls);
+    }
+    if (message.trustServerCertificate !== false) {
+      writer.uint32(64).bool(message.trustServerCertificate);
+    }
+    if (message.environmentTag !== "") {
+      writer.uint32(74).string(message.environmentTag);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): InstanceConfig {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseInstanceConfig();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.instanceName = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.serverAddress = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.authMode = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.loginName = reader.string();
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.credentialCiphertext = reader.string();
+          continue;
+        }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.credentialKeyFingerprint = reader.string();
+          continue;
+        }
+        case 7: {
+          if (tag !== 56) {
+            break;
+          }
+
+          message.encryptTls = reader.bool();
+          continue;
+        }
+        case 8: {
+          if (tag !== 64) {
+            break;
+          }
+
+          message.trustServerCertificate = reader.bool();
+          continue;
+        }
+        case 9: {
+          if (tag !== 74) {
+            break;
+          }
+
+          message.environmentTag = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): InstanceConfig {
+    return {
+      instanceName: isSet(object.instanceName)
+        ? globalThis.String(object.instanceName)
+        : isSet(object.instance_name)
+        ? globalThis.String(object.instance_name)
+        : "",
+      serverAddress: isSet(object.serverAddress)
+        ? globalThis.String(object.serverAddress)
+        : isSet(object.server_address)
+        ? globalThis.String(object.server_address)
+        : "",
+      authMode: isSet(object.authMode)
+        ? globalThis.String(object.authMode)
+        : isSet(object.auth_mode)
+        ? globalThis.String(object.auth_mode)
+        : "",
+      loginName: isSet(object.loginName)
+        ? globalThis.String(object.loginName)
+        : isSet(object.login_name)
+        ? globalThis.String(object.login_name)
+        : "",
+      credentialCiphertext: isSet(object.credentialCiphertext)
+        ? globalThis.String(object.credentialCiphertext)
+        : isSet(object.credential_ciphertext)
+        ? globalThis.String(object.credential_ciphertext)
+        : "",
+      credentialKeyFingerprint: isSet(object.credentialKeyFingerprint)
+        ? globalThis.String(object.credentialKeyFingerprint)
+        : isSet(object.credential_key_fingerprint)
+        ? globalThis.String(object.credential_key_fingerprint)
+        : "",
+      encryptTls: isSet(object.encryptTls)
+        ? globalThis.Boolean(object.encryptTls)
+        : isSet(object.encrypt_tls)
+        ? globalThis.Boolean(object.encrypt_tls)
+        : false,
+      trustServerCertificate: isSet(object.trustServerCertificate)
+        ? globalThis.Boolean(object.trustServerCertificate)
+        : isSet(object.trust_server_certificate)
+        ? globalThis.Boolean(object.trust_server_certificate)
+        : false,
+      environmentTag: isSet(object.environmentTag)
+        ? globalThis.String(object.environmentTag)
+        : isSet(object.environment_tag)
+        ? globalThis.String(object.environment_tag)
+        : "",
+    };
+  },
+
+  toJSON(message: InstanceConfig): unknown {
+    const obj: any = {};
+    if (message.instanceName !== "") {
+      obj.instanceName = message.instanceName;
+    }
+    if (message.serverAddress !== "") {
+      obj.serverAddress = message.serverAddress;
+    }
+    if (message.authMode !== "") {
+      obj.authMode = message.authMode;
+    }
+    if (message.loginName !== "") {
+      obj.loginName = message.loginName;
+    }
+    if (message.credentialCiphertext !== "") {
+      obj.credentialCiphertext = message.credentialCiphertext;
+    }
+    if (message.credentialKeyFingerprint !== "") {
+      obj.credentialKeyFingerprint = message.credentialKeyFingerprint;
+    }
+    if (message.encryptTls !== false) {
+      obj.encryptTls = message.encryptTls;
+    }
+    if (message.trustServerCertificate !== false) {
+      obj.trustServerCertificate = message.trustServerCertificate;
+    }
+    if (message.environmentTag !== "") {
+      obj.environmentTag = message.environmentTag;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<InstanceConfig>, I>>(base?: I): InstanceConfig {
+    return InstanceConfig.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<InstanceConfig>, I>>(object: I): InstanceConfig {
+    const message = createBaseInstanceConfig();
+    message.instanceName = object.instanceName ?? "";
+    message.serverAddress = object.serverAddress ?? "";
+    message.authMode = object.authMode ?? "";
+    message.loginName = object.loginName ?? "";
+    message.credentialCiphertext = object.credentialCiphertext ?? "";
+    message.credentialKeyFingerprint = object.credentialKeyFingerprint ?? "";
+    message.encryptTls = object.encryptTls ?? false;
+    message.trustServerCertificate = object.trustServerCertificate ?? false;
+    message.environmentTag = object.environmentTag ?? "";
     return message;
   },
 };

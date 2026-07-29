@@ -95,47 +95,76 @@ principal is the machine account and there is no stored credential at all.
 
 ---
 
-## 3. Generate an enrolment token
+## 3. Add the worker
 
-In the dashboard: **Administration → Workers → New enrolment token**.
+In the dashboard: **Estate → Add a worker**.
 
-Give it the SQL host's computer name. The token is single-use, expires in an
-hour, and is bound to that host name, so it cannot be used to enrol anything
-else.
+Give it the SQL host's computer name and choose what it may do. **Read only is
+the right way to start** — estate visibility, run history, versioning and
+cross-estate search all work without any write capability.
 
-Leave the capabilities empty for now. Read-only is the right way to start.
-
----
-
-## 4. Install the worker
-
-Copy the worker package to the SQL Server host, then from an **elevated**
-PowerShell:
-
-```powershell
-.\install.ps1 -ControlPlane rsagent.corp.example.com:8443 `
-              -EnrolmentToken rsen_xxxxxxxxxxxx `
-              -CaCertPath C:\certs\corp-ca.pem
-```
-
-That installs to `C:\Program Files\RemoteSqlAgent`, exchanges the token for a
-worker key, registers a Windows service, and starts it.
-
-Named instances:
-
-```powershell
-.\install.ps1 -ControlPlane rsagent:8443 -EnrolmentToken rsen_xxx `
-              -SqlInstances MSSQLSERVER,INST2,INST3
-```
-
-One worker handles every instance on the host.
-
-**SQL Server on Linux:** use `rsagent-worker.service` instead; the file has the
-three commands at the top.
+You get a one-line command to run on the SQL Server host. The token in it is
+single-use, expires within the hour, and is bound to that host name, so it
+cannot enrol anything else.
 
 ---
 
-## 5. Check it worked
+## 4. Run it on the SQL Server host
+
+**Windows**, from an elevated PowerShell:
+
+```powershell
+iwr https://rsagent.corp.example.com/install.ps1 -UseBasicParsing | iex
+Install-RsAgentWorker -ControlPlane 'rsagent.corp.example.com:8443' -Token 'rsen_xxxxxxxxxxxx'
+```
+
+**Linux**, as root:
+
+```bash
+curl -fsSL https://rsagent.corp.example.com/install.sh | sudo bash -s -- \
+     --control-plane rsagent.corp.example.com:8443 --token rsen_xxxxxxxxxxxx
+```
+
+Both install a service, enrol, and connect. The package comes from the control
+plane rather than the internet, because a SQL host in a segmented network can
+always reach the control plane — it is about to connect to it — and usually
+cannot reach GitHub.
+
+If your CA is private, add `-CaCertPath C:\certs\corp-ca.pem` or
+`--ca-cert /etc/ssl/corp-ca.pem`.
+
+The installer asks for **no SQL credentials**. The worker connects and waits.
+
+---
+
+## 5. Tell it which instances to monitor
+
+The worker appears under **Estate → Add a worker → Waiting to be told what to
+monitor** within a few seconds. Add each SQL Server instance on the host:
+
+| Field | Usually |
+|---|---|
+| Instance name | `MSSQLSERVER`, or the named instance |
+| Address | `localhost` — the worker connects locally |
+| Authentication | **Windows — the worker's service account** |
+
+**Prefer Windows authentication.** The service account is the credential, and
+there is no password stored anywhere. Grant it `SQLAgentReaderRole` in `msdb`
+as in step 2.
+
+If you must use a SQL login, the password you type is **encrypted in your
+browser** to a public key that worker generated on its own host. The control
+plane stores ciphertext it has no key for and relays it; only that host can
+open it. This needs the dashboard to be served over HTTPS — `crypto.subtle` is
+unavailable otherwise, and the field is disabled with an explanation rather
+than quietly sending the password in clear. See
+[security.md](security.md#sql-credentials-the-control-plane-is-a-courier-not-a-keyholder).
+
+One worker handles every instance on its host.
+
+---
+
+## 6. Check it worked
 
 The instance should appear in the estate view within a minute, with its jobs,
 run history and schedules.
@@ -148,19 +177,22 @@ The common causes all name themselves clearly:
 | `No worker key found` | Enrolment did not complete. Generate a new token and re-run the installer. |
 | `The control plane rejected this worker credential` | The key was revoked, or the worker was deleted in the dashboard. |
 | `Failed to connect to instance` | The SQL login is missing or lacks `SQLAgentReaderRole`. |
+| Instance shows **Login refused** | Wrong password, or the login is disabled. Edit the instance and enter it again. |
+| Instance shows **Credential unreadable** | The worker was reinstalled and generated a new key. Enter the password again. |
 | `Agent error log is not readable` | Expected and harmless. See the FAQ. |
 
 ---
 
-## 6. Turn on writes, when you are ready
+## 7. Turn on writes, when you are ready
 
 Read-only is genuinely useful on its own — estate visibility, run history,
 drift detection and cross-estate search all work without any write capability.
 
 When you do want to make changes:
 
-1. **Administration → Workers →** grant the capabilities the host should accept
-   (`job.toggle`, `job.run`, `schedule.write`, `job.write`).
+1. **Administration → Workers → Manage →** tick the capabilities the host
+   should accept (`job.toggle`, `job.run`, `schedule.write`, `job.write`).
+   Anything the host's own ceiling blocks is shown as blocked there.
 2. On the SQL host, raise the ceiling in
    `C:\Program Files\RemoteSqlAgent\worker.yaml`:
 

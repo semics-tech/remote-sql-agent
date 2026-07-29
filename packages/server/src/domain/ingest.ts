@@ -112,9 +112,24 @@ export async function markWorkerDisconnected(db: Database, workerId: string): Pr
 // History
 // ---------------------------------------------------------------------------
 
+export interface IngestedRun {
+  jobUuid: string;
+  sqlInstanceId: number;
+  runStatus: number;
+  runDatetime: Date;
+  runDurationSeconds: number;
+  message: string | null;
+}
+
 export interface HistoryIngestResult {
   inserted: number;
   highWaterMark: number;
+  /**
+   * Job-level outcome rows this call actually created — never rows that were
+   * already held. Notification detection keys off this, so a replayed outbox
+   * batch cannot re-alert on a failure from last week.
+   */
+  newRuns: IngestedRun[];
 }
 
 /**
@@ -131,7 +146,7 @@ export async function ingestHistory(
 ): Promise<HistoryIngestResult> {
   if (rows.length === 0) {
     const current = await getHistoryHighWaterMark(db, instanceId);
-    return { inserted: 0, highWaterMark: current };
+    return { inserted: 0, highWaterMark: current, newRuns: [] };
   }
 
   const values = rows
@@ -157,14 +172,25 @@ export async function ingestHistory(
     .filter((v): v is NonNullable<typeof v> => v !== null);
 
   if (values.length === 0) {
-    return { inserted: 0, highWaterMark: await getHistoryHighWaterMark(db, instanceId) };
+    return { inserted: 0, highWaterMark: await getHistoryHighWaterMark(db, instanceId), newRuns: [] };
   }
 
+  // RETURNING after ON CONFLICT DO NOTHING yields only the rows that were
+  // genuinely new, which is exactly the signal notification detection needs.
   const inserted = await db
     .insert(jobHistory)
     .values(values)
     .onConflictDoNothing({ target: [jobHistory.instanceId, jobHistory.sqlInstanceId] })
-    .returning({ id: jobHistory.id });
+    .returning({
+      id: jobHistory.id,
+      jobUuid: jobHistory.jobUuid,
+      sqlInstanceId: jobHistory.sqlInstanceId,
+      stepId: jobHistory.stepId,
+      runStatus: jobHistory.runStatus,
+      runDatetime: jobHistory.runDatetime,
+      runDurationSeconds: jobHistory.runDurationSeconds,
+      message: jobHistory.message,
+    });
 
   const batchMax = Math.max(...values.map((v) => v.sqlInstanceId));
   await db
@@ -181,7 +207,13 @@ export async function ingestHistory(
 
   await refreshLastRunSummary(db, instanceId, [...new Set(values.map((v) => v.jobUuid))]);
 
-  return { inserted: inserted.length, highWaterMark: batchMax };
+  return {
+    inserted: inserted.length,
+    highWaterMark: batchMax,
+    newRuns: inserted
+      .filter((r) => r.stepId === 0)
+      .map(({ id: _id, stepId: _stepId, ...run }) => run),
+  };
 }
 
 export async function getHistoryHighWaterMark(db: Database, instanceId: string): Promise<number> {

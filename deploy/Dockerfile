@@ -24,13 +24,26 @@ COPY tests/integration/package.json  tests/integration/
 RUN pnpm install --frozen-lockfile
 
 COPY packages/ packages/
+COPY deploy/worker/ deploy/worker/
 
-RUN pnpm --filter @rsagent/dashboard build
+RUN pnpm --filter @remote-sql-agent/dashboard build
+
+# The worker bundle and its installers are served by the control plane at
+# /install.sh, /install.ps1 and /downloads/. Serving them from here rather than
+# the internet is what makes the one-line install work on a segmented network:
+# a SQL host can always reach the control plane, and usually cannot reach GitHub.
+RUN pnpm --filter @remote-sql-agent/worker bundle \
+ && mkdir -p /packages \
+ && cp deploy/worker/bootstrap.ps1 deploy/worker/bootstrap.sh /packages/ \
+ && mkdir -p /staging/linux \
+ && cp packages/worker/dist/rsagent-worker.mjs /staging/linux/ \
+ && cp deploy/worker/rsagent-worker.service /staging/linux/ \
+ && tar -czf /packages/rsagent-worker-linux.tar.gz -C /staging/linux .
 
 # Prune to production dependencies for the runtime stage.
 # --legacy because the workspace does not use injected dependencies; without it
 # pnpm refuses rather than guessing.
-RUN pnpm --filter @rsagent/server --prod --legacy deploy /prod/server
+RUN pnpm --filter @remote-sql-agent/server --prod --legacy deploy /prod/server
 
 
 FROM node:22-bookworm-slim AS runtime
@@ -45,13 +58,15 @@ ENV NODE_ENV=production
 WORKDIR /app
 
 COPY --from=build /prod/server ./
-COPY --from=build /build/packages/protocol       ./node_modules/@rsagent/protocol
+COPY --from=build /build/packages/protocol       ./node_modules/@remote-sql-agent/protocol
 COPY --from=build /build/packages/dashboard/dist ./dashboard
+COPY --from=build /packages                      ./worker-packages
 
 # tsx runs the TypeScript sources directly. The alternative is a bundling step
 # for a server that starts once and runs for months; the startup cost is not
 # worth the extra build complexity here.
 ENV RSAGENT_DASHBOARD_DIR=/app/dashboard
+ENV RSAGENT_WORKER_PACKAGE_DIR=/app/worker-packages
 ENV RSAGENT_HTTP_HOST=0.0.0.0
 ENV RSAGENT_HTTP_PORT=8080
 ENV RSAGENT_GRPC_HOST=0.0.0.0

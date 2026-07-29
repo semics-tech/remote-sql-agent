@@ -33,6 +33,12 @@ import {
 } from '../domain/ingest.js';
 import { markJobsMissingFromSnapshot, recordJobVersion } from '../domain/versioning.js';
 import { writeAudit } from '../domain/audit.js';
+import type { NotificationService } from '../domain/notifications/service.js';
+import {
+  pushInstanceConfigs,
+  recordCredentialKey,
+  recordInstanceConfigStatus,
+} from '../domain/worker-config.js';
 import {
   WorkerAuthError,
   type AuthenticatedWorker,
@@ -54,6 +60,7 @@ export interface HubDeps {
   authenticator: WorkerAuthenticator;
   commands: CommandService;
   commandSigningPublicKey: string;
+  notifications: NotificationService;
 }
 
 /**
@@ -194,6 +201,34 @@ async function handleSession(
           workerId = worker.id;
           hostName = worker.hostName;
 
+          // The key credentials are encrypted to. A worker that has re-keyed
+          // invalidates every stored ciphertext, so this is recorded before any
+          // configuration is sent back down.
+          if (hello.credentialPublicKey) {
+            try {
+              const { changed } = await recordCredentialKey(
+                db,
+                worker.id,
+                hello.credentialPublicKey,
+              );
+              if (changed) {
+                log.warn(
+                  { hostName },
+                  'Worker published a new credential key; stored SQL credentials must be entered again',
+                );
+                await writeAudit(db, {
+                  actorType: 'worker',
+                  actor: worker.hostName,
+                  action: 'worker.credential_key.rotated',
+                  target: worker.id,
+                  remoteAddress,
+                });
+              }
+            } catch (err) {
+              log.warn({ err, hostName }, 'Ignoring an unreadable credential key from the worker');
+            }
+          }
+
           const ids = await upsertInstances(db, worker.id, hello.instances);
           for (const [name, id] of ids) instanceIds.set(name, id);
 
@@ -264,6 +299,10 @@ async function handleSession(
             { hostName, workerId: worker.id, instances: hello.instances.length, capabilities },
             'Worker connected',
           );
+
+          // Tell it what to monitor before anything else. A freshly-enrolled
+          // worker has no instances in its own config and is waiting for this.
+          await pushInstanceConfigs(db, registry, worker.id);
 
           // Anything approved while this worker was offline goes out now,
           // provided it has not passed its TTL.
@@ -338,6 +377,14 @@ async function handleSession(
               'History ingested',
             );
           }
+          // Only genuinely new outcome rows reach here, so a replayed outbox
+          // batch cannot re-alert on a failure that was handled last week.
+          // Notification faults must never fail ingestion.
+          await deps.notifications
+            .onRunsIngested(instanceId, result.newRuns)
+            .catch((err: unknown) => {
+              log.error({ err, hostName }, 'Failed to raise notifications for ingested runs');
+            });
           break;
         }
 
@@ -367,6 +414,23 @@ async function handleSession(
           break;
         }
 
+        case 'instanceConfigStatus': {
+          if (!workerId) break;
+          const { results } = msg.instanceConfigStatus;
+          await recordInstanceConfigStatus(db, workerId, results);
+
+          const problems = results.filter((r) => r.status !== 'connected');
+          if (problems.length > 0) {
+            log.warn(
+              { hostName, problems: problems.map((p) => `${p.instanceName}: ${p.status}`) },
+              'Worker could not use some instance configurations',
+            );
+          }
+          // Instances that connected are about to appear in a Hello or
+          // heartbeat, so nothing needs to be pushed back down here.
+          break;
+        }
+
         case 'commandResult': {
           const result = msg.commandResult;
           log.info(
@@ -374,7 +438,7 @@ async function handleSession(
             'Command result received',
           );
 
-          await deps.commands.recordResult({
+          const command = await deps.commands.recordResult({
             commandId: result.commandId,
             success: result.success,
             errorCode: result.errorCode,
@@ -382,6 +446,22 @@ async function handleSession(
             sqlErrorNumber: result.sqlErrorNumber,
             hostName,
           });
+
+          if (!result.success && command) {
+            await deps.notifications
+              .onCommandFailed({
+                commandId: result.commandId,
+                commandType: command.type,
+                instanceId: command.instanceId,
+                jobUuid: command.jobUuid,
+                resultCode: result.errorCode,
+                resultDetail: result.errorDetail,
+                issuedBy: command.issuedByUsername ?? 'unknown',
+              })
+              .catch((err: unknown) => {
+                log.error({ err }, 'Failed to raise a notification for a failed command');
+              });
+          }
 
           // The worker returns live state alongside the result. On success that
           // is the applied definition and belongs in the timeline attributed to

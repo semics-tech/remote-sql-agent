@@ -18,16 +18,18 @@ export function Estate() {
       jobs: acc.jobs + i.jobCount,
       failed: acc.failed + i.failedLast24h,
       running: acc.running + i.runningNow,
-      drifted: acc.drifted + i.driftedJobs,
       offline: acc.offline + (i.workerConnected ? 0 : 1),
     }),
-    { jobs: 0, failed: 0, running: 0, drifted: 0, offline: 0 },
+    { jobs: 0, failed: 0, running: 0, offline: 0 },
   );
 
   return (
     <div className="page">
       <div className="page-head">
         <h2>Estate</h2>
+        <Link to="/estate/add-worker" className="action primary">
+          Add a worker
+        </Link>
         {tags.length > 0 ? (
           <select value={tag} onChange={(e) => setTag(e.target.value)} aria-label="Filter by environment">
             <option value="all">All environments</option>
@@ -63,10 +65,6 @@ export function Estate() {
               <div className="n">{totals.running}</div>
               <div className="l">Running now</div>
             </div>
-            <div className={`stat ${totals.drifted > 0 ? 'warn' : ''}`}>
-              <div className="n">{totals.drifted}</div>
-              <div className="l">Drifted</div>
-            </div>
             <div className={`stat ${totals.offline > 0 ? 'alert' : ''}`}>
               <div className="n">{totals.offline}</div>
               <div className="l">Workers offline</div>
@@ -92,7 +90,6 @@ export function Estate() {
                     <th className="right">Jobs</th>
                     <th className="right">Failed 24h</th>
                     <th className="right">Running</th>
-                    <th className="right">Drifted</th>
                     <th>Version</th>
                     <th>Last seen</th>
                   </tr>
@@ -133,13 +130,6 @@ export function Estate() {
                       <td className="right num">
                         {i.runningNow > 0 ? (
                           <span className="badge running">{i.runningNow}</span>
-                        ) : (
-                          <span className="faint">0</span>
-                        )}
-                      </td>
-                      <td className="right num">
-                        {i.driftedJobs > 0 ? (
-                          <span className="badge drift">{i.driftedJobs}</span>
                         ) : (
                           <span className="faint">0</span>
                         )}

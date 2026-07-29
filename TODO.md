@@ -4,6 +4,8 @@
 1. On the dashboard / other page, ability to group jobs together to see their status at a glance (e.g. by job type, by owner, by schedule, etc.) across all or some of the workers by job name, job type, owner, schedule, etc.
 1. Ability to change granted permissions per worker
 1. Notification page to be setup for jobs, destinations include email, slack, teams etc...
+1. Ability to add another worker node on the estate page. It should be a button that goes to a page that gives the user a command to run which includes a token to authenticate that worker with. They run it on the server (ideally windows or linux) and it creates the service, registers the agent and then starts to query. One thing to add to this is that the worker will need to ask for SQL credentials or a windows service account to run as before it can start, it should ask the user for this once the worker is setup, effectively the 'onboarding' process for a worker. This should be done in a secure way, ideally the worker should not be able to see the credentials, they should be encrypted and stored in the database and the worker should be able to decrypt them when it needs to use them. The worker should also be able to ask for a new set of credentials if the old ones are no longer valid.
+
 
 # Queries and bugs
 1. Why are we showing 'drifted'? I'm not sure this is important, if it's changed then it's changed and that's fine. only show a badge if there is a conflict, issue or the job is running (maybe?)

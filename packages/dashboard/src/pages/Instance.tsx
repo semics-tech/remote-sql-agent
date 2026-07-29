@@ -87,12 +87,7 @@ export function Instance() {
                     {visible.map((j) => (
                       <tr key={j.jobUuid}>
                         <td className="nowrap">
-                          <Link to={`/instances/${instanceId}/jobs/${j.jobUuid}`}>{j.name}</Link>{' '}
-                          {j.isDrifted ? (
-                            <span className="badge drift" title="Changed on-premise since the control plane last recorded it">
-                              drift
-                            </span>
-                          ) : null}
+                          <Link to={`/instances/${instanceId}/jobs/${j.jobUuid}`}>{j.name}</Link>
                         </td>
                         <td>
                           {j.enabled ? (

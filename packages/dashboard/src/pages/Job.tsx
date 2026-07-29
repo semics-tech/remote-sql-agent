@@ -1,66 +1,90 @@
 import { Link, useParams } from 'react-router-dom';
 import { lazy, Suspense, useEffect, useState } from 'react';
-import { useDiff, useJob, useJobHistory, useJobVersions, type HistoryRun } from '../api.js';
-import { Panel, QueryState, Empty, RunTape, StatusDot } from '../components.jsx';
 import {
-  formatDateTime,
-  formatDuration,
-  notifyLevel,
-  runStatusClass,
-  runStatusLabel,
-  stepAction,
-} from '../format.js';
-import { describeSchedule } from '@remote-sql-agent/protocol/browser';
-import { useAuth } from '../auth.jsx';
+  useDiff,
+  useJob,
+  useJobHistory,
+  useJobStats,
+  useJobVersions,
+  type HistoryRun,
+} from '../api.js';
+import { Panel, QueryState, Empty, RunTape, StatusDot } from '../components.jsx';
+import { formatDateTime, formatDuration, runStatusClass, runStatusLabel } from '../format.js';
 import { JobActions } from './JobActions.jsx';
 import { JobEditor } from './JobEditor.jsx';
+import { JobSummary } from './JobSummary.jsx';
+import { StepGraph } from './StepGraph.jsx';
 
-// Monaco is ~2 MB; it only appears on the Versions tab, so it must not be in
-// the bundle that renders the estate grid.
+// Monaco is ~2 MB; the diff view only appears on the Versions tab, so it must
+// not be in the bundle that renders the estate grid.
 const MonacoDiff = lazy(() => import('../MonacoDiff.jsx'));
 
-type Tab = 'steps' | 'history' | 'versions' | 'edit';
+type Tab = 'job' | 'history' | 'versions';
 
-/** §9.3 Job detail — Steps, History (SSMS "View History"), Versions. */
+/**
+ * A job.
+ *
+ * Opening a job puts you straight into its definition, editable if you are
+ * allowed to edit it — the same thing SSMS does. Statistics sit above the tabs
+ * because they are context for everything below, and the live step graph
+ * appears there too once a run starts, so the page an operator is already
+ * looking at becomes the progress view without them navigating anywhere.
+ */
 export function Job() {
   const { instanceId, jobUuid } = useParams();
-  const [tab, setTab] = useState<Tab>('steps');
+  const [tab, setTab] = useState<Tab>('job');
   const [notice, setNotice] = useState<string | null>(null);
-  const job = useJob(instanceId, jobUuid);
-  const history = useJobHistory(instanceId, jobUuid);
-  const { can } = useAuth();
+  // Set the moment a start is issued, cleared as soon as SQL Agent confirms.
+  // Without it there is a window where the operator has pressed the button and
+  // nothing on screen has changed.
+  const [starting, setStarting] = useState(false);
 
-  const definition = job.data?.definition ?? null;
+  const jobQuery = useJob(instanceId, jobUuid, starting);
+  const job = jobQuery.data;
+  const running = job?.activity?.state === 'executing';
+
+  const history = useJobHistory(instanceId, jobUuid, running || starting);
+  const stats = useJobStats(instanceId, jobUuid, running || starting);
+
+  // Once SQL Agent reports it as executing, the optimistic state has done its
+  // job. It also clears if the run finished before the first poll landed.
+  useEffect(() => {
+    if (running) setStarting(false);
+  }, [running]);
+
+  const definition = job?.definition ?? null;
 
   return (
     <div className="page">
-      <QueryState isLoading={job.isLoading} error={job.error}>
+      <QueryState isLoading={jobQuery.isLoading} error={jobQuery.error}>
         <div className="page-head">
-          <h2>{job.data?.name}</h2>
-          {job.data?.isDrifted ? <span className="badge drift">Drifted</span> : null}
-          {job.data?.enabled === false ? <span className="badge neutral">Disabled</span> : null}
-          {job.data?.activity?.state === 'executing' ? (
+          <h2>{job?.name}</h2>
+          {job?.enabled === false ? <span className="badge neutral">Disabled</span> : null}
+          {running ? (
             <span className="badge running">Running</span>
+          ) : starting ? (
+            <span className="badge running">Starting…</span>
           ) : null}
         </div>
         <p className="page-sub">
           <Link to={`/instances/${instanceId}`}>← back to instance</Link>
           {' · '}
-          <span className="mono">{job.data?.categoryName ?? 'uncategorised'}</span>
+          <span className="mono">{job?.categoryName ?? 'uncategorised'}</span>
           {' · owner '}
-          <span className="mono">{job.data?.ownerLoginName ?? 'unknown'}</span>
+          <span className="mono">{job?.ownerLoginName ?? 'unknown'}</span>
           {' · version '}
-          <span className="mono">{job.data?.currentVersionNo}</span>
+          <span className="mono">{job?.currentVersionNo}</span>
           {' · last 20 runs '}
           <RunTape runs={history.data?.runs ?? []} />
         </p>
-        {job.data?.description ? <p className="page-sub">{job.data.description}</p> : null}
+        {job?.description ? <p className="page-sub">{job.description}</p> : null}
 
-        {job.data && instanceId ? (
+        {job && instanceId ? (
           <JobActions
             instanceId={instanceId}
-            job={job.data}
+            job={job}
             onIssued={(message) => setNotice(message)}
+            onStarting={() => setStarting(true)}
           />
         ) : null}
       </QueryState>
@@ -74,9 +98,25 @@ export function Job() {
         </div>
       ) : null}
 
+      {running || starting ? (
+        <Panel title="This run">
+          <div style={{ padding: 11 }}>
+            {starting && !running ? (
+              <p className="muted" style={{ margin: '0 0 8px' }}>
+                Start sent. SQL Agent reports activity a moment after it begins — this updates
+                itself.
+              </p>
+            ) : null}
+            <StepGraph definition={definition} stats={stats.data} running={running} />
+          </div>
+        </Panel>
+      ) : null}
+
+      <JobSummary stats={stats.data} />
+
       <div className="tabs">
-        <button className={tab === 'steps' ? 'active' : ''} onClick={() => setTab('steps')}>
-          Steps &amp; Schedules
+        <button className={tab === 'job' ? 'active' : ''} onClick={() => setTab('job')}>
+          Job
         </button>
         <button className={tab === 'history' ? 'active' : ''} onClick={() => setTab('history')}>
           History
@@ -84,137 +124,30 @@ export function Job() {
         <button className={tab === 'versions' ? 'active' : ''} onClick={() => setTab('versions')}>
           Versions
         </button>
-        {can('job.write') ? (
-          <button className={tab === 'edit' ? 'active' : ''} onClick={() => setTab('edit')}>
-            Edit
-          </button>
-        ) : null}
       </div>
 
-      {tab === 'steps' ? (
-        <StepsTab definition={definition} />
+      {tab === 'job' ? (
+        job && instanceId ? (
+          <JobEditor
+            // Remounting on the current hash discards a stale draft once the job
+            // has moved underneath the form, rather than letting the operator
+            // keep editing a version that no longer exists.
+            key={job.currentDefinitionHash ?? 'none'}
+            instanceId={instanceId}
+            job={job}
+            onSaved={(message) => setNotice(message)}
+          />
+        ) : null
       ) : tab === 'history' ? (
-        <HistoryTab runs={history.data?.runs ?? []} isLoading={history.isLoading} error={history.error} />
-      ) : tab === 'versions' ? (
-        <VersionsTab instanceId={instanceId} jobUuid={jobUuid} />
-      ) : job.data && instanceId ? (
-        <JobEditor
-          // Remounting on the current hash discards a stale draft once the job
-          // has moved underneath the form, rather than letting the operator keep
-          // editing a version that no longer exists.
-          key={job.data.currentDefinitionHash ?? 'none'}
-          instanceId={instanceId}
-          job={job.data}
-          onSaved={(message) => {
-            setNotice(message);
-            setTab('steps');
-          }}
-          onCancel={() => setTab('steps')}
+        <HistoryTab
+          runs={history.data?.runs ?? []}
+          isLoading={history.isLoading}
+          error={history.error}
         />
-      ) : null}
+      ) : (
+        <VersionsTab instanceId={instanceId} jobUuid={jobUuid} />
+      )}
     </div>
-  );
-}
-
-function StepsTab({ definition }: { definition: NonNullable<ReturnType<typeof useJob>['data']>['definition'] }) {
-  const [openStep, setOpenStep] = useState<number | null>(1);
-
-  if (!definition) return <Empty title="No definition recorded yet" hint="The worker has not sent a snapshot for this job." />;
-
-  return (
-    <>
-      <Panel title={`Steps (${definition.steps.length})`}>
-        <div className="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th style={{ width: 40 }}>#</th>
-                <th>Step name</th>
-                <th>Type</th>
-                <th>Database</th>
-                <th>On success</th>
-                <th>On failure</th>
-                <th className="right">Retries</th>
-              </tr>
-            </thead>
-            <tbody>
-              {definition.steps.map((s) => (
-                <tr
-                  key={s.stepId}
-                  className="expandable"
-                  onClick={() => setOpenStep(openStep === s.stepId ? null : s.stepId)}
-                >
-                  <td className="num muted">{s.stepId}</td>
-                  <td className="nowrap">
-                    {definition.startStepId === s.stepId ? '▸ ' : ''}
-                    {s.name}
-                  </td>
-                  <td className="nowrap muted">{s.subsystem}</td>
-                  <td className="nowrap muted mono">{s.databaseName ?? '—'}</td>
-                  <td className="nowrap muted">{stepAction(s.onSuccessAction, s.onSuccessStepId)}</td>
-                  <td className="nowrap muted">{stepAction(s.onFailAction, s.onFailStepId)}</td>
-                  <td className="right num muted">{s.retryAttempts}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Panel>
-
-      {definition.steps
-        .filter((s) => s.stepId === openStep)
-        .map((s) => (
-          <Panel key={s.stepId} title={`Step ${s.stepId} — ${s.name} (${s.subsystem})`}>
-            <div style={{ padding: 11 }}>
-              <pre className="code">{s.command || '(empty)'}</pre>
-            </div>
-          </Panel>
-        ))}
-
-      <Panel title={`Schedules (${definition.schedules.length})`}>
-        {definition.schedules.length === 0 ? (
-          <Empty title="Not scheduled" hint="This job only runs when started manually or by an alert." />
-        ) : (
-          <div className="table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Enabled</th>
-                  <th>Description</th>
-                </tr>
-              </thead>
-              <tbody>
-                {definition.schedules.map((s) => (
-                  <tr key={s.name}>
-                    <td className="nowrap">{s.name}</td>
-                    <td className="muted">{s.enabled ? 'Yes' : 'No'}</td>
-                    <td className="muted">{describeSchedule(s)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Panel>
-
-      <Panel title="Notifications">
-        <dl className="kv">
-          <dt>Email</dt>
-          <dd>
-            {definition.notifications.emailOperatorName ?? '—'}{' '}
-            <span className="faint">({notifyLevel(definition.notifications.emailLevel)})</span>
-          </dd>
-          <dt>Page</dt>
-          <dd>
-            {definition.notifications.pageOperatorName ?? '—'}{' '}
-            <span className="faint">({notifyLevel(definition.notifications.pageLevel)})</span>
-          </dd>
-          <dt>Write to the Windows event log</dt>
-          <dd className="muted">{notifyLevel(definition.notifications.eventlogLevel)}</dd>
-        </dl>
-      </Panel>
-    </>
   );
 }
 
@@ -341,7 +274,7 @@ function VersionsTab({ instanceId, jobUuid }: { instanceId?: string; jobUuid?: s
                     Ver
                   </th>
                   <th>Detected</th>
-                  <th>Origin</th>
+                  <th>Changed</th>
                   <th>By</th>
                   <th>Hash</th>
                   <th style={{ width: 130 }}>Compare</th>
@@ -353,14 +286,14 @@ function VersionsTab({ instanceId, jobUuid }: { instanceId?: string; jobUuid?: s
                     <td className="right num">{v.versionNo}</td>
                     <td className="nowrap mono">{formatDateTime(v.detectedAt)}</td>
                     <td>
+                      {/* Attribution, not alarm. Where a change came from is
+                          history worth keeping; it is not a problem in itself. */}
                       {v.origin === 'local' ? (
-                        <span className="badge drift" title="Changed on the server itself, e.g. in SSMS">
-                          on-premise edit
-                        </span>
+                        <span className="muted">on the server</span>
                       ) : v.origin === 'remote' ? (
-                        <span className="badge online">dashboard change</span>
+                        <span className="muted">from this dashboard</span>
                       ) : (
-                        <span className="badge neutral">first seen</span>
+                        <span className="faint">first seen</span>
                       )}
                     </td>
                     <td className="muted">{v.createdBy ?? '—'}</td>
@@ -447,7 +380,7 @@ function VersionsTab({ instanceId, jobUuid }: { instanceId?: string; jobUuid?: s
                           <MonacoDiff
                             original={c.commandBefore ?? ''}
                             modified={c.commandAfter ?? ''}
-                            language={languageFor(c.stepName)}
+                            language="sql"
                           />
                         </Suspense>
                       ) : null}
@@ -463,12 +396,6 @@ function VersionsTab({ instanceId, jobUuid }: { instanceId?: string; jobUuid?: s
       ) : null}
     </QueryState>
   );
-}
-
-function languageFor(_stepName: string): string {
-  // Monaco has no SQL Agent dialect; plain 'sql' highlights T-SQL adequately and
-  // is right for the overwhelming majority of step bodies.
-  return 'sql';
 }
 
 function truncate(value: string | null, max: number): string {
