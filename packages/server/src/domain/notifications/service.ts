@@ -105,8 +105,13 @@ export class NotificationService {
     const throttleKey = `${input.kind}:${input.instanceId ?? input.workerId ?? 'estate'}:${input.jobUuid ?? ''}`;
 
     // A channel named by two rules gets one delivery, not two — the unique
-    // index on (event, channel) enforces that, and picking the tightest
-    // throttle here means the stricter rule wins rather than the looser one.
+    // index on (event, channel) enforces that.
+    //
+    // Where the rules disagree on throttling, the *shortest* window wins. The
+    // alternative silently suppresses alerts someone explicitly asked for: a
+    // rule set to zero means "send me all of these", and letting an unrelated
+    // chattier rule mute it is a surprise in the direction of missing an
+    // incident. Over-delivering is recoverable; under-delivering is not.
     const targets = new Map<string, { ruleId: string; throttleMinutes: number }>();
 
     for (const rule of rules) {
@@ -120,7 +125,7 @@ export class NotificationService {
 
       for (const channelId of rule.channelIds) {
         const existing = targets.get(channelId);
-        if (!existing || rule.throttleMinutes > existing.throttleMinutes) {
+        if (!existing || rule.throttleMinutes < existing.throttleMinutes) {
           targets.set(channelId, { ruleId: rule.id, throttleMinutes: rule.throttleMinutes });
         }
       }
