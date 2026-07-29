@@ -50,11 +50,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/semics/remote-sql-agent.git"
+    "url": "git+https://github.com/semics-tech/remote-sql-agent.git"
   },
-  "homepage": "https://github.com/semics/remote-sql-agent#readme",
+  "homepage": "https://github.com/semics-tech/remote-sql-agent#readme",
   "bugs": {
-    "url": "https://github.com/semics/remote-sql-agent/issues"
+    "url": "https://github.com/semics-tech/remote-sql-agent/issues"
   },
   "keywords": [
     "sql-server",

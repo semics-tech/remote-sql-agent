@@ -1,6 +1,6 @@
 # @remote-sql-agent/worker
 
-The worker component of [Remote SQL Agent](https://github.com/semics/remote-sql-agent).
+The worker component of [Remote SQL Agent](https://github.com/semics-tech/remote-sql-agent).
 
 Runs next to a SQL Server instance, mirrors its SQL Server Agent jobs to a
 central control plane over an **outbound-only** connection, and applies approved
@@ -12,7 +12,7 @@ it reads `msdb` and calls the documented Agent stored procedures, the same ones
 SSMS calls. Stop the worker and every job keeps running.
 
 > On Windows, prefer the packaged installer from the
-> [releases page](https://github.com/semics/remote-sql-agent/releases): it
+> [releases page](https://github.com/semics-tech/remote-sql-agent/releases): it
 > registers a service, locks down file permissions and handles enrolment. This
 > npm package is aimed at SQL Server on Linux.
 
@@ -91,10 +91,10 @@ changes.
 
 ## Documentation
 
-- [Quick start](https://github.com/semics/remote-sql-agent/blob/main/docs/quick-start.md)
-- [Capabilities](https://github.com/semics/remote-sql-agent/blob/main/docs/capabilities.md)
-- [Authentication](https://github.com/semics/remote-sql-agent/blob/main/docs/authentication.md)
+- [Quick start](https://github.com/semics-tech/remote-sql-agent/blob/main/docs/quick-start.md)
+- [Capabilities](https://github.com/semics-tech/remote-sql-agent/blob/main/docs/capabilities.md)
+- [Authentication](https://github.com/semics-tech/remote-sql-agent/blob/main/docs/authentication.md)
 
 ## Licence
 
-[Apache 2.0](https://github.com/semics/remote-sql-agent/blob/main/LICENSE)
+[Apache 2.0](https://github.com/semics-tech/remote-sql-agent/blob/main/LICENSE)

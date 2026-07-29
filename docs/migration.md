@@ -182,7 +182,7 @@ Must happen before the first tagged release.
       If the scope is taken, renaming is mechanical but touches every import.
 - [ ] **Verify the GitHub org/repo name.** `CODEOWNERS`, `SECURITY.md`, the
       package `repository` fields and the container image name all assume
-      `semics/remote-sql-agent`.
+      `semics-tech/remote-sql-agent`.
 - [ ] **Set repository secrets** for the release workflow: `NPM_TOKEN`.
       Container publishing uses the built-in `GITHUB_TOKEN`.
 - [ ] **Enable branch protection on `main`** — see §5.
