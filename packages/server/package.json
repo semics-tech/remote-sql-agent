@@ -1,5 +1,5 @@
 {
-  "name": "@rsagent/server",
+  "name": "@remote-sql-agent/server",
   "version": "0.1.0",
   "private": true,
   "license": "Apache-2.0",
@@ -30,7 +30,7 @@
     "@opentelemetry/resources": "^2.10.0",
     "@opentelemetry/sdk-logs": "^0.221.0",
     "@opentelemetry/semantic-conventions": "^1.43.0",
-    "@rsagent/protocol": "workspace:*",
+    "@remote-sql-agent/protocol": "workspace:*",
     "argon2": "^0.45.1",
     "drizzle-orm": "^0.38.2",
     "fastify": "^5.2.0",
@@ -47,5 +47,6 @@
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
-  }
+  },
+  "description": "Distributed as a container image, not on npm."
 }

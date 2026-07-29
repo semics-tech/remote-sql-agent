@@ -1,7 +1,7 @@
 {
-  "name": "@rsagent/worker",
+  "name": "@remote-sql-agent/worker",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "license": "Apache-2.0",
   "type": "module",
   "main": "./src/index.ts",
@@ -12,15 +12,17 @@
   "scripts": {
     "build": "tsc -p tsconfig.json --noEmit",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "bundle": "esbuild src/index.ts --bundle --platform=node --target=node22 --format=esm --outfile=dist/rsagent-worker.mjs --external:better-sqlite3 --external:@azure/identity --banner:js=\"import{createRequire}from'module';const require=createRequire(import.meta.url);\"",
+    "bundle": "esbuild src/index.ts --bundle --platform=node --target=node22 --format=esm --outfile=dist/rsagent-worker.mjs --external:better-sqlite3 --external:@azure/identity --banner:js=\"#!/usr/bin/env node\nimport{createRequire}from'module';const require=createRequire(import.meta.url);\"",
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
     "test": "vitest run",
-    "package": "tsx scripts/package-worker.ts"
+    "package": "tsx scripts/package-worker.ts",
+    "prepublishOnly": "pnpm run bundle && pnpm run bundle:chmod",
+    "bundle:chmod": "chmod +x dist/rsagent-worker.mjs"
   },
   "dependencies": {
     "@grpc/grpc-js": "^1.12.4",
-    "@rsagent/protocol": "workspace:*",
+    "@remote-sql-agent/protocol": "workspace:*",
     "better-sqlite3": "^11.7.0",
     "mssql": "^11.0.1",
     "pino": "^9.5.0",
@@ -35,5 +37,39 @@
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
+  },
+  "description": "Remote SQL Agent worker: mirrors a host's SQL Server Agent jobs to the control plane over an outbound-only connection, and applies approved changes.",
+  "keywords": [
+    "sql-server",
+    "sql-agent",
+    "dba",
+    "monitoring",
+    "msdb"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/semics/remote-sql-agent.git",
+    "directory": "packages/worker"
+  },
+  "homepage": "https://github.com/semics/remote-sql-agent#readme",
+  "bugs": {
+    "url": "https://github.com/semics/remote-sql-agent/issues"
+  },
+  "files": [
+    "dist/rsagent-worker.mjs",
+    "README.md"
+  ],
+  "optionalDependencies": {
+    "@azure/identity": "^4.13.1"
+  },
+  "publishConfig": {
+    "access": "public",
+    "main": "./dist/rsagent-worker.mjs",
+    "bin": {
+      "rsagent": "./dist/rsagent-worker.mjs"
+    },
+    "exports": {
+      ".": "./dist/rsagent-worker.mjs"
+    }
   }
 }

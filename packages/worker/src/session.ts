@@ -8,7 +8,7 @@ import {
   type Capability,
   effectiveCapabilities,
   isMaxCapabilityTier,
-} from '@rsagent/protocol';
+} from '@remote-sql-agent/protocol';
 import type { WorkerConfig } from './config.js';
 import { Backoff } from './backoff.js';
 import { buildCallMetadata, buildChannelCredentials, CredentialError } from './credentials.js';

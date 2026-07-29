@@ -1,0 +1,30 @@
+# Default owner for everything.
+*                                       @semics
+
+# --- Anything that can change a customer's SQL Server -------------------------
+# agent-writer.ts is the only code in the product that mutates msdb, and
+# command-handler.ts holds the five gates in front of it.
+/packages/worker/src/sql/agent-writer.ts    @semics
+/packages/worker/src/command-handler.ts     @semics
+
+# --- Authentication and authorisation -----------------------------------------
+/packages/server/src/auth/                  @semics
+/packages/server/src/worker-auth/           @semics
+/packages/protocol/src/capabilities.ts      @semics
+/packages/protocol/src/roles.ts             @semics
+/packages/protocol/src/signing.ts           @semics
+
+# --- The wire contract --------------------------------------------------------
+# Adding a command type is a deliberate protocol change, reviewed as one.
+/packages/protocol/proto/                   @semics
+
+# --- Canonical serialisation --------------------------------------------------
+# A change here can flag every job in every estate as drifted.
+/packages/protocol/src/canonical.ts         @semics
+/packages/protocol/src/job-definition.ts    @semics
+
+# --- Things that ship to customers --------------------------------------------
+/deploy/                                    @semics
+/.github/workflows/                         @semics
+/docs/security.md                           @semics
+/docs/threat-model.md                       @semics

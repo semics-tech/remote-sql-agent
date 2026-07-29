@@ -1,5 +1,5 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import { roleHasPermission, type Permission } from '@rsagent/protocol';
+import { roleHasPermission, type Permission } from '@remote-sql-agent/protocol';
 import type { Database } from '../db/client.js';
 import { resolveSession, SESSION_COOKIE, CSRF_HEADER, type AuthenticatedUser } from './sessions.js';
 import { hashToken, safeEqualHex } from './passwords.js';

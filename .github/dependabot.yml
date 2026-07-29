@@ -1,0 +1,33 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    groups:
+      # One PR for the routine churn; anything major still comes separately so
+      # it gets read properly.
+      minor-and-patch:
+        update-types: ['minor', 'patch']
+    ignore:
+      # Native modules are the riskiest to bump silently: better-sqlite3 holds
+      # the worker's durable outbox and argon2 hashes every credential.
+      - dependency-name: better-sqlite3
+        update-types: ['version-update:semver-major']
+      - dependency-name: argon2
+        update-types: ['version-update:semver-major']
+    labels: ['dependencies']
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    labels: ['dependencies', 'ci']
+
+  - package-ecosystem: docker
+    directory: /deploy
+    schedule:
+      interval: monthly
+    labels: ['dependencies']

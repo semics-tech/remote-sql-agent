@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { diffJobDefinitions, type StepChange, type ScheduleChange } from '../src/domain/diff.js';
-import type { JobDefinition, JobStep } from '@rsagent/protocol';
+import type { JobDefinition, JobStep } from '@remote-sql-agent/protocol';
 
 function step(overrides: Partial<JobStep> = {}): JobStep {
   return {

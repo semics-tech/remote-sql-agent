@@ -1,6 +1,6 @@
 import { lazy, Suspense, useState } from 'react';
-import type { JobDefinition, JobStep } from '@rsagent/protocol/browser';
-import { describeSchedule, toHumaneSchedule } from '@rsagent/protocol/browser';
+import type { JobDefinition, JobStep } from '@remote-sql-agent/protocol/browser';
+import { describeSchedule, toHumaneSchedule } from '@remote-sql-agent/protocol/browser';
 import { useJobActions, type JobDetail } from '../api.js';
 import { Panel, Empty } from '../components.jsx';
 import { notifyLevel, stepAction } from '../format.js';

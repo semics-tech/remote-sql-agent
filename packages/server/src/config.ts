@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ROLES, type Role } from '@rsagent/protocol';
+import { ROLES, type Role } from '@remote-sql-agent/protocol';
 
 /**
  * Control-plane configuration. Everything is environment-driven so the Docker

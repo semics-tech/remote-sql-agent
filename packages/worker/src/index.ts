@@ -6,7 +6,7 @@ import {
   type InstanceInfo,
   type WorkerMessage,
   type ConfigUpdate,
-} from '@rsagent/protocol';
+} from '@remote-sql-agent/protocol';
 import { loadWorkerConfig, type WorkerConfig } from './config.js';
 import { Outbox } from './outbox.js';
 import { InstanceMonitor, type PollIntervals } from './instance-monitor.js';

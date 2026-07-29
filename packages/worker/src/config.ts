@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
-import { MAX_CAPABILITY_TIER_NAMES } from '@rsagent/protocol';
+import { MAX_CAPABILITY_TIER_NAMES } from '@remote-sql-agent/protocol';
 
 /**
  * Worker configuration (worker.yaml).

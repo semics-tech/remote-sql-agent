@@ -10,7 +10,7 @@ import {
   runStatusLabel,
   stepAction,
 } from '../format.js';
-import { describeSchedule } from '@rsagent/protocol/browser';
+import { describeSchedule } from '@remote-sql-agent/protocol/browser';
 import { useAuth } from '../auth.jsx';
 import { JobActions } from './JobActions.jsx';
 import { JobEditor } from './JobEditor.jsx';

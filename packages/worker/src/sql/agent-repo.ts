@@ -1,6 +1,6 @@
 import sql from 'mssql';
-import type { JobDefinition, JobStep, ScheduleDefinition } from '@rsagent/protocol';
-import { SCHEMA_VERSION } from '@rsagent/protocol';
+import type { JobDefinition, JobStep, ScheduleDefinition } from '@remote-sql-agent/protocol';
+import { SCHEMA_VERSION } from '@remote-sql-agent/protocol';
 
 /**
  * Read access to msdb — the SQL Server Agent object graph.

@@ -1,102 +1,253 @@
+<div align="center">
+
 # Remote SQL Agent
 
-Centrally view, monitor and manage **SQL Server Agent** jobs across an estate of on-premise
-instances sitting behind multiple corporate firewalls — without opening a single inbound port.
+**Manage SQL Server Agent jobs across every server you own — without opening a single inbound port.**
 
-A lightweight worker runs next to each SQL Server instance and dials **outbound** to a central
-control plane. It mirrors the local Agent — jobs, steps, schedules, operators, alerts, history and
-logs — into a web dashboard that gives you an SSMS-like Agent experience across every server at
-once.
+[![CI](https://github.com/semics/remote-sql-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/semics/remote-sql-agent/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![npm](https://img.shields.io/npm/v/@remote-sql-agent/worker.svg)](https://www.npmjs.com/package/@remote-sql-agent/worker)
+[![Node](https://img.shields.io/badge/node-%E2%89%A522-brightgreen.svg)](https://nodejs.org)
 
-**SQL Agent remains the execution engine.** The worker never runs a job itself. It observes, and
-(when explicitly permitted) administers the local Agent through documented `msdb` stored procedures.
-Remove the worker and everything still runs exactly as before.
+[Quick start](docs/quick-start.md) ·
+[Capabilities](docs/capabilities.md) ·
+[Security](docs/security.md) ·
+[FAQ](docs/faq.md) ·
+[Roadmap](docs/migration.md)
 
-Apache 2.0. CLI/binary name: `rsagent`.
+</div>
+
+---
+
+## The problem
+
+You have 50 SQL Servers across half a dozen firewalled network segments. To see
+why a job failed last night you RDP into a box and open SSMS. To check whether
+anyone still runs that decommissioned feed, you open 50 boxes.
+
+Everything that claims to fix this needs the management plane to *reach* the
+instances — MSX/TSX, Central Management Servers, most commercial tools. Across
+segmented corporate networks, that is the one thing you cannot have.
+
+## The approach
+
+A small worker runs next to each SQL Server and dials **outbound** to a central
+control plane. It mirrors the local Agent — jobs, steps, schedules, operators,
+alerts, history and logs — into a dashboard that gives you an SSMS-shaped view
+of every server at once. Authorised changes sync back down.
+
+```
+  Segment A                Segment B                 Segment C
+ ┌──────────┐             ┌──────────┐              ┌──────────┐
+ │ SQLPROD1 │             │ SQLPROD2 │              │ SQLPROD3 │
+ │ ┌──────┐ │             │ ┌──────┐ │              │ ┌──────┐ │
+ │ │Worker│ │             │ │Worker│ │              │ │Worker│ │
+ │ └──┬───┘ │             │ └──┬───┘ │              │ └──┬───┘ │
+ └────┼─────┘             └────┼─────┘              └────┼─────┘
+      │  outbound only, mTLS or API key over TLS         │
+      └──────────────────┬─────┴──────────────────────────┘
+                         ▼
+                 ┌───────────────┐        ┌──────────┐
+                 │ Control plane │───────▶│ Postgres │
+                 └───────┬───────┘        └──────────┘
+                         │ HTTPS
+                    ┌────▼────┐
+                    │Dashboard│
+                    └─────────┘
+```
+
+**No inbound firewall rules. No listening socket on any SQL host.**
+
+### SQL Agent still runs your jobs
+
+The worker never executes a job. It reads `msdb` and, when permitted, calls the
+documented Agent stored procedures — the same ones SSMS calls. Stop the worker
+and every job keeps running on schedule. Uninstall it and nothing changes except
+that you lose the central view.
+
+Zero migration, zero lock-in.
+
+---
+
+## What you get
+
+**See the estate.** Every instance, its jobs, run history with step-level detail
+and messages, and live activity — in one grid.
+
+**Catch drift.** Someone edits a job in SSMS at 2am? It appears as a new version,
+flagged, with a diff. Drift is expected and surfaced, never silently overwritten.
+
+**Search across every server.** *"Which servers still reference `LEGACYFIN01` in
+a job step?"* — full-text across every step body on every instance. SSMS cannot
+answer this at any price.
+
+**Change things safely.** Enable, disable, start, stop, and edit jobs with a
+Monaco T-SQL editor. Every change is signed, capability-checked, conflict-checked
+and audited, with a second-approver rule on job edits.
+
+**Prove what happened.** Every sign-in, change and worker session is recorded and
+exportable to any OpenTelemetry backend.
+
+**Least privilege throughout.** Read-only by default. Write capability is opt-in
+per worker *and* per capability, and the worker enforces its own ceiling from
+local config — so a compromised control plane still cannot make a read-only
+worker write.
+
+---
+
+## Install
+
+Full walkthrough: **[docs/quick-start.md](docs/quick-start.md)** — about 30
+minutes, most of it waiting for containers.
+
+### Control plane
+
+```bash
+git clone https://github.com/semics/remote-sql-agent
+cd remote-sql-agent/deploy
+cp .env.example .env      # set RSAGENT_PUBLIC_URL and POSTGRES_PASSWORD
+docker compose up -d
+```
+
+Put a TLS certificate for the hub in `deploy/tls/`. The control plane refuses to
+start without one, because worker API keys are bearer secrets.
+
+On first boot it creates an administrator and prints a generated password
+**once** — copy it from the log.
+
+### Worker
+
+Generate a single-use enrolment token in the dashboard
+(**Administration → Workers**), then on the SQL Server host:
+
+```powershell
+.\install.ps1 -ControlPlane rsagent.corp.example.com:8443 `
+              -EnrolmentToken rsen_xxxxxxxxxxxx `
+              -CaCertPath C:\certs\corp-ca.pem
+```
+
+SQL Server on Linux, or you prefer npm:
+
+```bash
+npm install -g @remote-sql-agent/worker
+rsagent enrol --token rsen_xxxxxxxxxxxx /etc/rsagent/worker.yaml
+rsagent /etc/rsagent/worker.yaml
+```
+
+### SQL Server permissions
+
+Read-only mirroring needs one role:
+
+```sql
+USE [msdb];
+CREATE USER [CORP\SQLAGENT-SVC] FOR LOGIN [CORP\SQLAGENT-SVC];
+ALTER ROLE [SQLAgentReaderRole] ADD MEMBER [CORP\SQLAGENT-SVC];
+```
+
+Add `SQLAgentOperatorRole` only when you want the worker to make changes. **Never
+grant `sysadmin`.**
+
+---
+
+## Capabilities
+
+A worker's effective capability is the **intersection** of two independently
+controlled sets:
+
+```
+   server-side grant  ∩  worker-side ceiling  =  what it will do
+   (dashboard)           (worker.yaml)
+```
+
+The worker computes this itself, from its own config, on every session. A site
+that pins `maxCapability: readOnly` has a worker that cannot be made to write
+**even if the control plane is fully compromised**.
+
+| Tier | Adds | Typical use |
+|---|---|---|
+| `readOnly` | observe | **Default.** Visibility, history, drift, search |
+| `operate` | toggle, start/stop | On-call restarts a failed job without an RDP session |
+| `schedule` | schedule edits | Schedules managed centrally |
+| `full` | job and operator edits | Jobs authored from the dashboard |
+
+`job.write` is effectively remote code execution on a database server — a job
+step runs T-SQL, PowerShell or CmdExec. Choose deliberately;
+[docs/capabilities.md](docs/capabilities.md) walks through it.
+
+---
+
+## Sign-in
+
+Microsoft Entra ID (app-role mapping), local accounts, or both. Keeping both
+leaves a break-glass administrator when the IdP is unreachable.
+
+| Entra app role | Dashboard role | Can |
+|---|---|---|
+| `rsagent.viewer` | Viewer | Read everything |
+| `rsagent.operator` | Operator | + enable/disable, start/stop |
+| `rsagent.editor` | Editor | + edit schedules and jobs (subject to approval) |
+| `rsagent.admin` | Admin | + workers, users, approvals, audit |
+
+Setup: [docs/authentication.md](docs/authentication.md).
+
+---
+
+## Documentation
+
+| | |
+|---|---|
+| [quick-start.md](docs/quick-start.md) | Nothing to a working estate view |
+| [capabilities.md](docs/capabilities.md) | What a worker may do, and how to choose |
+| [authentication.md](docs/authentication.md) | Entra sign-in, worker auth, audit export |
+| [security.md](docs/security.md) | What is enforced, and a deployment checklist |
+| [threat-model.md](docs/threat-model.md) | Scenarios, mitigations, residual risk |
+| [faq.md](docs/faq.md) | Including "does this replace SQL Agent?" (no) |
+| [migration.md](docs/migration.md) | Roadmap, known gaps, upgrade path |
+| [remote-sql-agent-architecture.md](docs/remote-sql-agent-architecture.md) | The original design spec |
 
 ---
 
 ## Status
 
-This repository implements **all six milestones** of
-`docs/remote-sql-agent-architecture.md`: contract, read-only slice,
-versioning/drift/search, security hardening, the write path, and packaging.
+All six milestones of the architecture spec are implemented. **204 tests**,
+including an integration suite that drives a real worker against a real SQL
+Server: starting jobs and waiting for their step-level history, editing a job the
+way SSMS would and asserting drift attribution, and proving round-trip
+fidelity — a definition sent from the dashboard is byte-for-byte identical when
+read back from `msdb`.
 
-**Working today**
+Version `0.x`: breaking changes may land in minor versions until `1.0`.
 
-- Worker mirrors job definitions, run history, live activity and the Agent error log from every
-  configured instance on its host
-- Canonical `JobDefinition.v1` schema with stable hashing shared by worker and server
-- Full version history per job, with `initial` / `local` / `remote` origin attribution
-- Drift detection: edit a job in SSMS and it appears as a new version, flagged, with a diff
-- Cross-estate search over job names **and step body text**
-- Offline outbox with replay on reconnect; jittered exponential backoff
-- Dashboard: estate overview, instance view, job detail with History, Versions and diffs
-- **Sign-in with Microsoft Entra ID** (app-role mapping) and/or local accounts, with server-side
-  RBAC on every route
-- **Worker enrolment** with a choice of API key, mTLS client certificate, or Azure managed identity
-- **Audit log** of every sign-in, administrative change and worker session, exportable to any
-  OpenTelemetry-compatible backend
-- **Make changes and have them applied**: enable/disable, start/stop, and full job
-  editing with a Monaco step editor — every change signed, capability-checked,
-  conflict-checked and audited, with a second-approver rule on job edits
-- **Deploy it**: production Dockerfile and Compose for the control plane, WinSW
-  service wrapper and `install.ps1` for Windows workers, systemd unit for
-  SQL-on-Linux
-
-**Known gaps**
-
-- Worker certificate auto-rotation at 2/3 lifetime is not implemented — rotation
-  is manual (token-mode keys rotate from the dashboard)
-- No MSI; the worker ships as a zip plus `install.ps1`. The WinSW binary and a
-  pinned Node runtime are fetched at packaging time rather than vendored
-- Deleting an *operator* is explicitly refused: the command carries an
-  instance-local id, which is not a safe thing to delete by
-- No control-plane HA — the worker registry is in-memory
-
-> Read `docs/security.md` and `docs/quick-start.md` before deploying anywhere.
+Known gaps — no control-plane HA, manual certificate rotation, no MSI — are
+tracked with impact and effort in [docs/migration.md](docs/migration.md).
 
 ---
 
-## Quick start (development)
+## Development
 
 Requires Node.js 22+, pnpm 10+ and Docker.
 
 ```bash
 pnpm install
+pnpm dev:up          # Postgres + SQL Server 2022 with Agent enabled
+pnpm dev:seed        # ~10 varied fixture jobs
 
-# Postgres + SQL Server 2022 with Agent enabled.
-# The SQL Server image is amd64; on Apple Silicon it runs under emulation and
-# takes ~60-90s to become healthy.
-pnpm dev:up
-
-# ~10 varied fixture jobs: multi-step branching, T-SQL/PowerShell/CmdExec,
-# every schedule type, a deliberate failure, a disabled job.
-pnpm dev:seed
-
-# Control plane: REST API on :8080, worker hub on :8443.
-# TLS is required by default; disable it for local development only.
-RSAGENT_GRPC_REQUIRE_TLS=false pnpm --filter @rsagent/server dev
+RSAGENT_GRPC_REQUIRE_TLS=false pnpm --filter @remote-sql-agent/server dev
+pnpm --filter @remote-sql-agent/dashboard dev     # http://localhost:5173
 ```
 
-On first boot the control plane creates an administrator and prints its generated password **once**.
-Copy it from the log — it is not recoverable.
+Enrol a worker as above, pointing at `deploy/worker.dev.yaml`.
 
-The worker must be enrolled before it can connect. Sign in at http://localhost:8080, go to
-**Administration → Workers**, generate an enrolment token for host `DEV-SQLHOST01`, then:
+> The SQL Server image is amd64 and runs under emulation on Apple Silicon.
+> Allow 60–90s for it to become healthy.
 
 ```bash
-# One-time: exchange the token for a worker key
-pnpm --filter @rsagent/worker start enrol --token rsen_... ../../deploy/worker.dev.yaml
-
-# Run the worker
-pnpm --filter @rsagent/worker start ../../deploy/worker.dev.yaml
-
-# Dashboard with hot reload, in a third terminal
-pnpm --filter @rsagent/dashboard dev    # http://localhost:5173
+pnpm test              # unit + integration
+pnpm test:unit         # no containers needed beyond Postgres
+pnpm lint
+pnpm typecheck
+pnpm proto:check       # fails if generated protobuf has drifted
 ```
-
-Within one poll interval the estate view shows the seeded instance and its jobs.
 
 ### See drift detection work
 
@@ -110,105 +261,30 @@ EXEC msdb.dbo.sp_update_jobstep
     @command = N'EXEC dbo.usp_LogMaintenance @Source = N''Heartbeat'', @Message = N''Edited in SSMS'';';"
 ```
 
-Within the definition poll interval the job shows a **drift** badge, and its Versions tab has a new
-`on-premise edit` version with a side-by-side diff of the changed step body.
+Within the poll interval the job shows a **drift** badge, and its Versions tab
+has a new `on-premise edit` version with a diff of the changed step body.
+
+### Layout
+
+```
+packages/protocol     .proto contracts, JobDefinition.v1 schema, canonical
+                      hashing, schedule codec, capability model  [published]
+packages/worker       Node daemon: msdb reader/writer, outbox, gRPC   [published]
+packages/server       Control plane: gRPC hub, Postgres, REST API      [container]
+packages/dashboard    React SPA                          [built into container]
+deploy/               Dockerfile, Compose, installers, dev stack
+docs/                 everything above
+```
+
+The `.proto` files are the single source of truth for the wire contract.
+Generated output is checked in so no contributor needs a protoc toolchain, and
+CI fails if it drifts.
+
+Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Security issues:
+[SECURITY.md](SECURITY.md), please do not open a public issue.
 
 ---
 
-## Documentation
+## Licence
 
-| | |
-|---|---|
-| [quick-start.md](docs/quick-start.md) | Nothing to a working estate view in 30 minutes |
-| [capabilities.md](docs/capabilities.md) | What a worker may do, and how to choose |
-| [authentication.md](docs/authentication.md) | Entra sign-in, worker auth modes, audit export |
-| [security.md](docs/security.md) | What is enforced, and the deployment checklist |
-| [threat-model.md](docs/threat-model.md) | Scenarios, mitigations and residual risk |
-| [faq.md](docs/faq.md) | Including "does this replace SQL Agent?" (no) |
-
-## Layout
-
-```
-packages/protocol    .proto contracts + generated types; JobDefinition.v1 zod schema,
-                     canonical serialiser and hashing; schedule freq_* codec;
-                     capability and RBAC model; command signing
-packages/worker      Node daemon: msdb readers, canonical hashing, incremental
-                     history/activity/log shipping, SQLite outbox, gRPC session
-packages/server      Control plane: gRPC worker hub, Drizzle/Postgres persistence,
-                     versioning and drift, Fastify read API, Prometheus metrics
-packages/dashboard   React SPA (Vite, TanStack Query, Monaco for diffs)
-deploy/              production Dockerfile + Compose, dev stack, SQL fixture seed,
-                     worker service wrapper (WinSW / systemd) and install.ps1
-docs/                architecture spec, quick start, capabilities guide,
-                     authentication and audit guide, security guide,
-                     threat model, FAQ
-```
-
-The `.proto` files are the single source of truth for the wire contract. Generated output is checked
-in so no contributor needs a protoc toolchain, and CI fails if it drifts:
-
-```bash
-pnpm proto:gen      # regenerate after editing a .proto
-pnpm proto:check    # what CI runs
-```
-
-## Tests
-
-```bash
-pnpm test:unit        # protocol, worker, server (server tests need the dev Postgres)
-pnpm lint
-pnpm typecheck
-```
-
-The server tests each provision their own Postgres database on first run. Version allocation under
-concurrency, `ON CONFLICT` idempotency and high-water-mark monotonicity are not meaningfully
-testable against a mock.
-
-```bash
-pnpm test:integration   # needs the dev stack: pnpm dev:up && pnpm dev:seed
-```
-
-The integration suite drives a real worker against a real SQL Server: it starts jobs and waits for
-their step-level history, edits a job the way SSMS would and asserts drift attribution, and proves
-round-trip fidelity — a definition sent from the dashboard is byte-for-byte identical when read back
-from `msdb`.
-
-## Configuration
-
-The control plane is entirely environment-driven — see `packages/server/src/config.ts`, and
-`docs/authentication.md` for the identity and audit settings in full. The essentials:
-
-```bash
-RSAGENT_DATABASE_URL=postgres://...
-RSAGENT_PUBLIC_URL=https://rsagent.example.com   # also makes session cookies Secure
-RSAGENT_AUTH_MODE=both                           # local | entra | both
-RSAGENT_GRPC_TLS_CERT=/etc/rsagent/server.crt    # required unless explicitly overridden
-RSAGENT_GRPC_TLS_KEY=/etc/rsagent/server.key
-RSAGENT_WORKER_AUTH_MODES=token                  # token | mtls | entra
-RSAGENT_AUDIT_OTLP_ENDPOINT=http://collector:4318/v1/logs   # optional
-```
-
-The worker reads a YAML file (`deploy/worker.dev.yaml` is a commented example). The security-critical
-setting is:
-
-```yaml
-maxCapability: readOnly   # readOnly | operate | schedule | full
-```
-
-This is a ceiling the control plane **cannot raise**. A worker pinned to `readOnly` cannot be made
-to write even if the control plane is fully compromised. Leave it at `readOnly` unless you have a
-concrete reason not to.
-
-## SQL Server privileges
-
-Read-only mirroring needs only `SQLAgentReaderRole` in `msdb`:
-
-```sql
-USE [msdb];
-CREATE USER [rsagent_worker] FOR LOGIN [rsagent_worker];
-ALTER ROLE [SQLAgentReaderRole] ADD MEMBER [rsagent_worker];
-```
-
-Never grant the worker `sysadmin`. Reading the Agent *error log* does need elevated rights; rather
-than ask for them, the worker detects the permission error and disables log streaming for that
-instance. See `docs/security.md`.
+[Apache 2.0](LICENSE). Fully open source, no open-core split.

@@ -16,13 +16,16 @@
     "test": "vitest run",
     "test:unit": "vitest run --project protocol --project server --project worker",
     "test:integration": "vitest run --project integration",
-    "proto:gen": "pnpm --filter @rsagent/protocol run proto:gen",
-    "proto:check": "pnpm --filter @rsagent/protocol run proto:check",
-    "db:generate": "pnpm --filter @rsagent/server run db:generate",
-    "db:migrate": "pnpm --filter @rsagent/server run db:migrate",
+    "proto:gen": "pnpm --filter @remote-sql-agent/protocol run proto:gen",
+    "proto:check": "pnpm --filter @remote-sql-agent/protocol run proto:check",
+    "db:generate": "pnpm --filter @remote-sql-agent/server run db:generate",
+    "db:migrate": "pnpm --filter @remote-sql-agent/server run db:migrate",
     "dev:up": "docker compose -f deploy/docker-compose.dev.yml up -d",
     "dev:down": "docker compose -f deploy/docker-compose.dev.yml down -v",
-    "dev:seed": "tsx scripts/seed-sql.ts"
+    "dev:seed": "tsx scripts/seed-sql.ts",
+    "lint:fix": "eslint . --fix",
+    "build:packages": "pnpm --filter @remote-sql-agent/protocol build && pnpm --filter @remote-sql-agent/worker bundle",
+    "release:dry": "pnpm --filter @remote-sql-agent/protocol publish --dry-run --no-git-checks && pnpm --filter @remote-sql-agent/worker publish --dry-run --no-git-checks"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
@@ -44,5 +47,22 @@
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.18.1",
     "vitest": "^2.1.8"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/semics/remote-sql-agent.git"
+  },
+  "homepage": "https://github.com/semics/remote-sql-agent#readme",
+  "bugs": {
+    "url": "https://github.com/semics/remote-sql-agent/issues"
+  },
+  "keywords": [
+    "sql-server",
+    "sql-agent",
+    "msdb",
+    "dba",
+    "job-monitoring",
+    "estate-management"
+  ],
+  "author": "semics"
 }

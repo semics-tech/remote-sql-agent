@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import type { Role } from '@rsagent/protocol/browser';
+import type { Role } from '@remote-sql-agent/protocol/browser';
 
 /**
  * Client-side session state.

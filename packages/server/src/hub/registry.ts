@@ -1,4 +1,4 @@
-import type { ServerMessage } from '@rsagent/protocol';
+import type { ServerMessage } from '@remote-sql-agent/protocol';
 
 /**
  * In-memory registry of live worker sessions.

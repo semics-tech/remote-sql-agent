@@ -1,6 +1,6 @@
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose';
 import { createHash, randomBytes } from 'node:crypto';
-import type { Role } from '@rsagent/protocol';
+import type { Role } from '@remote-sql-agent/protocol';
 
 /**
  * Microsoft Entra ID sign-in (OIDC authorisation code flow with PKCE).

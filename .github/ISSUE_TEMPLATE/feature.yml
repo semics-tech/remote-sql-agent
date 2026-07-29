@@ -1,0 +1,47 @@
+name: Feature request
+description: Suggest something the product should do.
+labels: ['enhancement', 'needs triage']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Two constraints worth knowing before you write, because they rule out a
+        surprising number of otherwise reasonable ideas:
+
+        1. **Workers connect outbound only.** Nothing may require the control
+           plane to reach into a SQL Server's network segment. That property is
+           the product.
+        2. **SQL Agent stays the execution engine.** This does not schedule or
+           run jobs itself, and is not going to.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that is hard or impossible today?
+      placeholder: Describe the situation rather than the solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you do instead today
+      description: Including "RDP into each box and do it by hand" — that is useful to know.
+
+  - type: dropdown
+    id: estate
+    attributes:
+      label: Roughly how many instances would this affect?
+      options:
+        - Fewer than 10
+        - 10 to 50
+        - 50 to 200
+        - More than 200

@@ -9,7 +9,7 @@ import rateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
 import { z } from 'zod';
 import type { Logger } from 'pino';
-import { ROLES, ROLE_PERMISSIONS, isCapability, type Role } from '@rsagent/protocol';
+import { ROLES, ROLE_PERMISSIONS, isCapability, type Role } from '@remote-sql-agent/protocol';
 import type { Database } from '../db/client.js';
 import type { ServerConfig } from '../config.js';
 import type { WorkerRegistry } from '../hub/registry.js';

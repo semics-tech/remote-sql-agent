@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { canonicaliseJobWithHash, type JobDefinition } from '@rsagent/protocol';
+import { canonicaliseJobWithHash, type JobDefinition } from '@remote-sql-agent/protocol';
 import type { Database } from '../src/db/client.js';
 import {
   markJobsMissingFromSnapshot,

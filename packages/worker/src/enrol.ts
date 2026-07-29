@@ -2,7 +2,7 @@ import * as grpc from '@grpc/grpc-js';
 import { writeFileSync, mkdirSync, chmodSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { generateKeyPairSync, createSign } from 'node:crypto';
-import { EnrolmentClient, type EnrolResponse } from '@rsagent/protocol';
+import { EnrolmentClient, type EnrolResponse } from '@remote-sql-agent/protocol';
 import { loadWorkerConfig, type WorkerConfig } from './config.js';
 import { buildChannelCredentials, writeWorkerKey, acquireEntraToken } from './credentials.js';
 

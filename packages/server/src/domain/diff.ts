@@ -1,4 +1,4 @@
-import type { JobDefinition, JobStep, ScheduleDefinition } from '@rsagent/protocol';
+import type { JobDefinition, JobStep, ScheduleDefinition } from '@remote-sql-agent/protocol';
 
 /**
  * Structured diff between two job definitions (§7.2).

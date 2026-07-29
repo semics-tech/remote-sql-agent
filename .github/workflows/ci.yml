@@ -4,10 +4,15 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+# Read-only by default; jobs that need more ask for it explicitly.
+permissions:
+  contents: read
 
 env:
   NODE_VERSION: '22'
@@ -16,6 +21,21 @@ jobs:
   build:
     name: Typecheck, lint, unit tests
     runs-on: ubuntu-latest
+    services:
+      # The server unit tests exercise version allocation under concurrency and
+      # ON CONFLICT idempotency, which are not meaningfully testable against a
+      # mock. Each test file provisions its own database.
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: rsagent
+          POSTGRES_PASSWORD: rsagent_dev_password
+          POSTGRES_DB: rsagent
+        ports: ['5433:5432']
+        options: >-
+          --health-cmd "pg_isready -U rsagent -d rsagent"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+
     steps:
       - uses: actions/checkout@v4
 
@@ -27,19 +47,33 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # §10: the .proto files are the source of truth. Fail if the checked-in
-      # generated output has drifted from them.
+      # The .proto files are the source of truth; generated output is checked in
+      # so contributors need no protoc toolchain. Fail if the two have diverged.
       - name: Check generated protobuf is current
         run: pnpm proto:check
 
       - run: pnpm typecheck
       - run: pnpm lint
-      - run: pnpm test:unit
-      - run: pnpm --filter @rsagent/dashboard build
+
+      - name: Unit tests
+        run: pnpm test:unit
+        env:
+          RSAGENT_TEST_ADMIN_URL: postgres://rsagent:rsagent_dev_password@localhost:5433/rsagent
+
+      - name: Build dashboard
+        run: pnpm --filter @remote-sql-agent/dashboard build
+
+      - name: Build publishable packages
+        run: |
+          pnpm --filter @remote-sql-agent/protocol build
+          pnpm --filter @remote-sql-agent/worker bundle
 
   integration:
     name: Integration (SQL Server + Postgres)
     runs-on: ubuntu-latest
+    # Slow (real SQL Server, real job runs) but it is the only thing that proves
+    # round-trip fidelity and drift attribution actually work.
+    timeout-minutes: 25
     services:
       postgres:
         image: postgres:16-alpine
@@ -59,10 +93,13 @@ jobs:
           MSSQL_SA_PASSWORD: 'RsAgent_Dev_Pass123'
           MSSQL_PID: Developer
           MSSQL_AGENT_ENABLED: 'true'
+          # Without this SQL Server sizes its buffer pool against the whole
+          # runner and gets OOM-killed.
+          MSSQL_MEMORY_LIMIT_MB: '2048'
         ports: ['14330:1433']
         options: >-
           --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$MSSQL_SA_PASSWORD\" -C -Q 'SELECT 1'"
-          --health-interval 10s --health-timeout 10s --health-retries 30 --health-start-period 60s
+          --health-interval 10s --health-timeout 10s --health-retries 30 --health-start-period 90s
 
     steps:
       - uses: actions/checkout@v4
@@ -73,14 +110,34 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
-      - run: pnpm db:migrate
-        env:
-          RSAGENT_DATABASE_URL: postgres://rsagent:rsagent_dev_password@localhost:5433/rsagent
+
+      - name: Seed fixture Agent jobs
+        run: |
+          docker exec "${{ job.services.sqlserver.id }}" mkdir -p /tmp/seed
+          docker cp deploy/sql-seed/seed.sql "${{ job.services.sqlserver.id }}:/tmp/seed.sql"
+          docker exec "${{ job.services.sqlserver.id }}" \
+            /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'RsAgent_Dev_Pass123' -C -b -i /tmp/seed.sql
+
       - run: pnpm test:integration
         env:
-          RSAGENT_DATABASE_URL: postgres://rsagent:rsagent_dev_password@localhost:5433/rsagent
+          RSAGENT_TEST_ADMIN_URL: postgres://rsagent:rsagent_dev_password@localhost:5433/rsagent
           RSAGENT_TEST_SQL_HOST: localhost
           RSAGENT_TEST_SQL_PORT: '14330'
+
+  container:
+    name: Control plane image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   audit:
     name: Dependency audit
@@ -93,5 +150,5 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # §6.7 supply-chain mitigation.
+      # Supply-chain mitigation from the threat model.
       - run: pnpm audit --audit-level high

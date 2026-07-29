@@ -1,0 +1,95 @@
+name: Bug report
+description: Something behaves differently from how it is documented.
+labels: ['bug', 'needs triage']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report.
+
+        **If this is a security issue, please do not file it here** — use
+        [private reporting](https://github.com/semics/remote-sql-agent/security/advisories/new)
+        instead.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Worker
+        - Control plane (API / worker hub)
+        - Dashboard
+        - Installer or packaging
+        - Documentation
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      placeholder: |
+        1. Enrol a worker with capabilities X
+        2. Edit job Y in the dashboard
+        3. Observe Z
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: |
+        Worker logs are at `rsagent-worker.out.log` on Windows, or
+        `journalctl -u rsagent-worker` on Linux. Control plane:
+        `docker compose logs server`.
+
+        **Please redact job step bodies** — they routinely contain connection
+        strings.
+      render: text
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: 0.1.0, or a commit SHA
+    validations:
+      required: true
+
+  - type: input
+    id: sql-version
+    attributes:
+      label: SQL Server version and edition
+      description: From the instance view, or `SELECT @@VERSION`.
+      placeholder: SQL Server 2019 Standard 15.0.4382.1
+
+  - type: dropdown
+    id: capability
+    attributes:
+      label: Worker maxCapability
+      description: From the worker's `worker.yaml`. Often relevant to why something was refused.
+      options:
+        - readOnly
+        - operate
+        - schedule
+        - full
+        - Not sure
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I checked the [FAQ](https://github.com/semics/remote-sql-agent/blob/main/docs/faq.md) — several expected behaviours are explained there
+          required: true
+        - label: I checked [known gaps](https://github.com/semics/remote-sql-agent/blob/main/docs/migration.md)
+          required: true

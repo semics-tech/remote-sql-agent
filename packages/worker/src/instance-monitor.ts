@@ -10,7 +10,7 @@ import {
   type AgentLogRow,
   type JobDefinitionBlob,
   type WorkerMessage,
-} from '@rsagent/protocol';
+} from '@remote-sql-agent/protocol';
 import type { InstanceConfig } from './config.js';
 import type { Outbox } from './outbox.js';
 import {

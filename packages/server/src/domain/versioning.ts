@@ -1,7 +1,7 @@
 import { and, desc, eq, isNull, notInArray } from 'drizzle-orm';
 import type { Database } from '../db/client.js';
 import { jobs, jobVersions, type JobVersionOrigin } from '../db/schema.js';
-import { parseJobDefinition } from '@rsagent/protocol';
+import { parseJobDefinition } from '@remote-sql-agent/protocol';
 
 /**
  * Version and drift attribution (§7).

@@ -1,5 +1,5 @@
 import sql from 'mssql';
-import type { JobDefinition, ScheduleDefinition, OperatorDefinition } from '@rsagent/protocol';
+import type { JobDefinition, ScheduleDefinition, OperatorDefinition } from '@remote-sql-agent/protocol';
 
 /**
  * Write access to msdb.

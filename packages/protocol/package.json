@@ -1,7 +1,7 @@
 {
-  "name": "@rsagent/protocol",
+  "name": "@remote-sql-agent/protocol",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "license": "Apache-2.0",
   "type": "module",
   "main": "./src/index.ts",
@@ -11,11 +11,12 @@
     "./browser": "./src/browser.ts"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json --emitDeclarationOnly false --noEmit",
+    "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "proto:gen": "tsx scripts/gen-proto.ts",
     "proto:check": "tsx scripts/gen-proto.ts --check",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
     "@bufbuild/protobuf": "^2.2.3",
@@ -26,5 +27,43 @@
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
+  },
+  "description": "Shared contracts for Remote SQL Agent: protobuf wire protocol, the canonical JobDefinition.v1 schema, SQL Agent schedule codec, and the capability model.",
+  "keywords": [
+    "sql-server",
+    "sql-agent",
+    "msdb",
+    "protobuf",
+    "grpc"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/semics/remote-sql-agent.git",
+    "directory": "packages/protocol"
+  },
+  "homepage": "https://github.com/semics/remote-sql-agent#readme",
+  "bugs": {
+    "url": "https://github.com/semics/remote-sql-agent/issues"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "proto",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "./browser": {
+        "types": "./dist/browser.d.ts",
+        "default": "./dist/browser.js"
+      }
+    }
   }
 }

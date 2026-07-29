@@ -13,7 +13,7 @@ import {
   isMaxCapabilityTier,
   hashCanonical,
   toTimestamp,
-} from '@rsagent/protocol';
+} from '@remote-sql-agent/protocol';
 import { EnrolmentError, redeemEnrolmentToken } from '../worker-auth/enrolment.js';
 import type { CommandService } from '../domain/commands.js';
 import { checkWorkerVersion } from './version-gate.js';

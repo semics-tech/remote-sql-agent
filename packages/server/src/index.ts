@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { eq } from 'drizzle-orm';
-import { generateCommandSigningKeyPair } from '@rsagent/protocol';
+import { generateCommandSigningKeyPair } from '@remote-sql-agent/protocol';
 import { loadConfig, type ServerConfig } from './config.js';
 import { createDatabase, type Database } from './db/client.js';
 import { runMigrations } from './db/migrate.js';

@@ -10,8 +10,8 @@ import {
   syncState,
   workers,
 } from '../db/schema.js';
-import type { ActivityRow, AgentLogRow, HistoryRow, InstanceInfo } from '@rsagent/protocol';
-import { fromTimestamp } from '@rsagent/protocol';
+import type { ActivityRow, AgentLogRow, HistoryRow, InstanceInfo } from '@remote-sql-agent/protocol';
+import { fromTimestamp } from '@remote-sql-agent/protocol';
 
 /**
  * Ingestion of everything the worker streams up.

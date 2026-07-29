@@ -16,7 +16,7 @@ import {
   type CommandResult,
   type CommandKind,
   type JobDefinitionBlob,
-} from '@rsagent/protocol';
+} from '@remote-sql-agent/protocol';
 import type { Outbox } from './outbox.js';
 import { readJobs } from './sql/agent-repo.js';
 import {

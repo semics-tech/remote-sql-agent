@@ -12,7 +12,7 @@ import {
 } from './sessions.js';
 import { requireSession } from './rbac.js';
 import { writeAudit } from '../domain/audit.js';
-import { ROLE_PERMISSIONS } from '@rsagent/protocol';
+import { ROLE_PERMISSIONS } from '@remote-sql-agent/protocol';
 
 export interface AuthRoutesDeps {
   db: Database;

@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import type { JobDefinition } from '@rsagent/protocol/browser';
+import type { JobDefinition } from '@remote-sql-agent/protocol/browser';
 import { apiFetch } from './auth.jsx';
 
 /** Typed client for the control plane read API. */

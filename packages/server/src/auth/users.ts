@@ -4,7 +4,7 @@ import { users } from '../db/schema.js';
 import { hashPassword, verifyPassword, generateSecret } from './passwords.js';
 import type { EntraProfile } from './entra.js';
 import type { AuthenticatedUser } from './sessions.js';
-import type { Role } from '@rsagent/protocol';
+import type { Role } from '@remote-sql-agent/protocol';
 import type { Logger } from 'pino';
 
 /** User provisioning and local sign-in. */

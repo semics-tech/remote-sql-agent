@@ -2,24 +2,24 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import * as grpc from '@grpc/grpc-js';
 import { pino } from 'pino';
 import sql from 'mssql';
-import { createDatabase, type Database } from '@rsagent/server/src/db/client.js';
-import { runMigrations } from '@rsagent/server/src/db/migrate.js';
-import { createGrpcServer } from '@rsagent/server/src/hub/hub.js';
-import { WorkerRegistry } from '@rsagent/server/src/hub/registry.js';
-import { loadConfig } from '@rsagent/server/src/config.js';
+import { createDatabase, type Database } from '@remote-sql-agent/server/src/db/client.js';
+import { runMigrations } from '@remote-sql-agent/server/src/db/migrate.js';
+import { createGrpcServer } from '@remote-sql-agent/server/src/hub/hub.js';
+import { WorkerRegistry } from '@remote-sql-agent/server/src/hub/registry.js';
+import { loadConfig } from '@remote-sql-agent/server/src/config.js';
 import {
   getEstateOverview,
   listJobs,
   getJob,
   getJobHistory,
   searchJobs,
-} from '@rsagent/server/src/domain/queries.js';
-import { getJobVersions } from '@rsagent/server/src/domain/versioning.js';
+} from '@remote-sql-agent/server/src/domain/queries.js';
+import { getJobVersions } from '@remote-sql-agent/server/src/domain/versioning.js';
 import {
   CommandService,
   buildProtoCommand,
-} from '@rsagent/server/src/domain/commands.js';
-import { commands as commandsTable, users } from '@rsagent/server/src/db/schema.js';
+} from '@remote-sql-agent/server/src/domain/commands.js';
+import { commands as commandsTable, users } from '@remote-sql-agent/server/src/db/schema.js';
 import { eq } from 'drizzle-orm';
 import {
   canonicaliseJobWithHash,
@@ -27,19 +27,19 @@ import {
   signCommand,
   type CommandSigningKeyPair,
   type JobDefinition,
-} from '@rsagent/protocol';
-import { handleCommand } from '@rsagent/worker/src/command-handler.js';
-import { WorkerAuthenticator } from '@rsagent/server/src/worker-auth/authenticate.js';
+} from '@remote-sql-agent/protocol';
+import { handleCommand } from '@remote-sql-agent/worker/src/command-handler.js';
+import { WorkerAuthenticator } from '@remote-sql-agent/server/src/worker-auth/authenticate.js';
 import {
   createEnrolmentToken,
   redeemEnrolmentToken,
-} from '@rsagent/server/src/worker-auth/enrolment.js';
-import { InstanceMonitor } from '@rsagent/worker/src/instance-monitor.js';
-import { Outbox } from '@rsagent/worker/src/outbox.js';
-import { ControlPlaneSession } from '@rsagent/worker/src/session.js';
-import { writeWorkerKey } from '@rsagent/worker/src/credentials.js';
-import { workerConfigSchema, type InstanceConfig } from '@rsagent/worker/src/config.js';
-import type { WorkerMessage } from '@rsagent/protocol';
+} from '@remote-sql-agent/server/src/worker-auth/enrolment.js';
+import { InstanceMonitor } from '@remote-sql-agent/worker/src/instance-monitor.js';
+import { Outbox } from '@remote-sql-agent/worker/src/outbox.js';
+import { ControlPlaneSession } from '@remote-sql-agent/worker/src/session.js';
+import { writeWorkerKey } from '@remote-sql-agent/worker/src/credentials.js';
+import { workerConfigSchema, type InstanceConfig } from '@remote-sql-agent/worker/src/config.js';
+import type { WorkerMessage } from '@remote-sql-agent/protocol';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

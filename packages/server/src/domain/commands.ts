@@ -10,7 +10,7 @@ import {
   type Capability,
   type Command,
   type CommandKind,
-} from '@rsagent/protocol';
+} from '@remote-sql-agent/protocol';
 import type { Database } from '../db/client.js';
 import { commands, instances, jobs, workers, type CommandState } from '../db/schema.js';
 import type { ServerConfig } from '../config.js';

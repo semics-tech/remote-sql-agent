@@ -2,7 +2,7 @@ import { and, eq, gt, isNull, lt } from 'drizzle-orm';
 import type { Database } from '../db/client.js';
 import { sessions, users } from '../db/schema.js';
 import { generateSecret, hashToken } from './passwords.js';
-import type { Role } from '@rsagent/protocol';
+import type { Role } from '@remote-sql-agent/protocol';
 
 /**
  * Server-side sessions.
