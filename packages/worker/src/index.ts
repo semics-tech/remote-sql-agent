@@ -14,7 +14,7 @@ import { loadOrCreateCredentialKey } from './credential-key.js';
 import { ControlPlaneSession } from './session.js';
 import { handleCommand } from './command-handler.js';
 
-const WORKER_VERSION = '0.1.0-rc.1';
+const WORKER_VERSION = '0.1.0';
 const OUTBOX_DRAIN_BATCH = 50;
 
 async function main(): Promise<void> {
