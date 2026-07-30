@@ -17,8 +17,12 @@ env:
   # Node 24 is the current LTS ("Krypton"). Deliberately not 26: that is the
   # Current line, and the worker ships a bundled runtime onto customer database
   # servers, where a line that takes breaking changes is the wrong trade.
+  #
+  # This is also the runtime embedded in the single-file executables, so
+  # changing it changes what customers run, not only what CI runs.
   NODE_VERSION: '24'
-  REGISTRY: ghcr.io
+  GHCR_IMAGE: ghcr.io/${{ github.repository }}/control-plane
+  DOCKERHUB_IMAGE: techsemics/remote-sql-agent
 
 jobs:
   # Nothing is published until the same checks that guard main have passed on
@@ -27,6 +31,9 @@ jobs:
   verify:
     name: Verify
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
     services:
       postgres:
         image: postgres:16-alpine
@@ -53,20 +60,49 @@ jobs:
         env:
           RSAGENT_TEST_ADMIN_URL: postgres://rsagent:rsagent_dev_password@localhost:5433/rsagent
 
-      # The tag must match what the packages actually say their version is,
-      # or npm and the git history disagree forever.
+      # A release is the one build where a known-vulnerable dependency must not
+      # slip through. CI runs this on every push; running it again on the tag
+      # catches an advisory published between the last green run and the tag.
+      - run: pnpm audit --audit-level high
+
+      # The tag must match what the packages actually say their version is, or
+      # npm, the image tags and the git history disagree forever. All of them,
+      # not only the two published to npm: `pnpm release:version` moves them in
+      # lockstep, and this is what proves nobody edited one by hand.
       - name: Tag matches package versions
-        if: startsWith(github.ref, 'refs/tags/')
+        id: version
         run: |
-          TAG="${GITHUB_REF_NAME#v}"
-          for pkg in packages/protocol packages/worker; do
-            VERSION=$(node -p "require('./$pkg/package.json').version")
-            if [ "$VERSION" != "$TAG" ]; then
-              echo "::error::$pkg is version $VERSION but the tag is v$TAG."
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="$(node -p "require('./package.json').version")"
+            echo "Manual run: using the workspace version $VERSION."
+          fi
+
+          for pkg in . packages/protocol packages/worker packages/server packages/dashboard; do
+            FOUND=$(node -p "require('./$pkg/package.json').version")
+            if [ "$FOUND" != "$VERSION" ]; then
+              echo "::error::$pkg is version $FOUND but the release is $VERSION. Run: pnpm release:version $VERSION"
               exit 1
             fi
           done
-          echo "All packages are at $TAG."
+
+          WORKER_VERSION=$(node -p "
+            require('fs').readFileSync('packages/worker/src/index.ts','utf8')
+              .match(/const WORKER_VERSION = '([^']*)'/)[1]")
+          if [ "$WORKER_VERSION" != "$VERSION" ]; then
+            echo "::error::WORKER_VERSION is $WORKER_VERSION but the release is $VERSION. It is reported on every heartbeat."
+            exit 1
+          fi
+
+          # A hyphen is semver's prerelease marker. It decides whether npm's
+          # `latest` and Docker's `latest` move, so it is computed once here
+          # rather than re-derived in three places.
+          if echo "$VERSION" | grep -q -- '-'; then PRERELEASE=true; else PRERELEASE=false; fi
+
+          echo "version=$VERSION"       >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "All packages are at $VERSION (prerelease: $PRERELEASE)."
 
   npm:
     name: Publish to npm
@@ -74,7 +110,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write # npm provenance
+      # The whole npm credential. Trusted publishing exchanges this short-lived
+      # OIDC token for publish rights, so there is no NPM_TOKEN in this
+      # repository to leak, expire, or forget to rotate. Both packages are
+      # configured on npmjs.com to trust this repository and this workflow
+      # file, so renaming this file breaks publishing until the trusted
+      # publisher config is updated to match.
+      id-token: write
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -86,23 +128,37 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # A prerelease must not become what `npm install` gives people by
+      # default. Publishing it under `next` means an rc can be exercised for
+      # real without any existing install picking it up.
+      - name: Resolve dist-tag
+        id: tag
+        run: |
+          if [ "${{ needs.verify.outputs.prerelease }}" = "true" ]; then
+            echo "dist=next" >> "$GITHUB_OUTPUT"
+          else
+            echo "dist=latest" >> "$GITHUB_OUTPUT"
+          fi
+
+      # No --provenance and no NODE_AUTH_TOKEN. Trusted publishing generates
+      # the provenance attestation on its own, and asking for it explicitly is
+      # what makes a publish fail anywhere the OIDC token is absent.
+      #
       # protocol first: worker depends on it, and pnpm rewrites the
       # workspace:* range to the real version at publish time.
       - name: Publish @remote-sql-agent/protocol
         run: |
           pnpm --filter @remote-sql-agent/protocol publish \
-            --access public --no-git-checks --provenance \
+            --access public --no-git-checks \
+            --tag ${{ steps.tag.outputs.dist }} \
             ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '--dry-run' || '' }}
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish @remote-sql-agent/worker
         run: |
           pnpm --filter @remote-sql-agent/worker publish \
-            --access public --no-git-checks --provenance \
+            --access public --no-git-checks \
+            --tag ${{ steps.tag.outputs.dist }} \
             ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '--dry-run' || '' }}
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   container:
     name: Publish control plane image
@@ -119,18 +175,34 @@ jobs:
 
       - uses: docker/login-action@v4
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Docker Hub as well as GHCR, because pulling from GHCR needs a GitHub
+      # login and an evaluator will not do that. One build pushed to both, so
+      # the two registries hold the same digest rather than two builds that
+      # could differ.
+      - name: Log in to Docker Hub
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository }}/control-plane
+          images: |
+            ${{ env.GHCR_IMAGE }}
+            ${{ env.DOCKERHUB_IMAGE }}
+          # `latest` deliberately does not follow a prerelease. The previous
+          # form enabled it for any tag, so v0.1.0-rc.1 would have become what
+          # `docker pull` returns by default.
           tags: |
             type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ needs.verify.outputs.prerelease == 'false' }}
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' && needs.verify.outputs.prerelease == 'false' }}
 
       - id: build
         uses: docker/build-push-action@v6
@@ -150,14 +222,48 @@ jobs:
         if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
         uses: actions/attest-build-provenance@v4
         with:
-          subject-name: ${{ env.REGISTRY }}/${{ github.repository }}/control-plane
+          subject-name: ${{ env.GHCR_IMAGE }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
 
-  worker-package:
-    name: Build worker distribution
+      # Cosmetic, and deliberately allowed to fail.
+      #
+      # Docker Hub's description API needs a token with read/write/**delete**
+      # scope, which pushing does not. A release workflow holding a credential
+      # that can delete published images, so the listing page has a README on
+      # it, is the wrong trade — anything that compromises the workflow could
+      # then remove every tag in the namespace. Use a read/write token and let
+      # this step fail; paste the README into Docker Hub by hand instead. If
+      # you would rather have it synced, issue a delete-scoped token knowing
+      # what it can do.
+      - name: Update the Docker Hub description
+        if: ${{ github.ref_type == 'tag' && needs.verify.outputs.prerelease == 'false' }}
+        continue-on-error: true
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ env.DOCKERHUB_IMAGE }}
+          readme-filepath: ./README.md
+
+  # One executable per platform, each built by the OS it targets. Cross-
+  # injecting into a downloaded runtime does work, but the macOS result then
+  # needs re-signing with tooling only macOS has, and an unsigned binary landing
+  # on a database server is exactly what a security review should stop.
+  executables:
+    name: Executable (${{ matrix.target }})
     needs: verify
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+          - os: windows-latest
+            target: win-x64
+          - os: macos-latest
+            target: darwin-arm64
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -167,69 +273,171 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
-      # The zip is what install.ps1 consumes. The Node runtime and the WinSW
-      # binary are fetched here rather than vendored into the repository.
+      # build:sea runs the binary it produces with --rsagent-selftest, so a
+      # failed injection fails the job here rather than shipping a file that is
+      # a perfectly healthy copy of node and nothing else.
+      - name: Build and self-test
+        run: pnpm --filter @remote-sql-agent/worker run build:sea
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: executable-${{ matrix.target }}
+          path: packages/worker/dist/rsagent-worker-${{ matrix.target }}*
+          if-no-files-found: error
+          retention-days: 7
+
+  # The Windows service package and the Linux tarball: the two forms the
+  # installers consume. Both carry the worker bundle, which now that it marks
+  # nothing external is self-contained — no node_modules beside it.
+  worker-package:
+    name: Build worker distributions
+    needs: verify
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
       - name: Assemble
         run: pnpm --filter @remote-sql-agent/worker package -- --no-runtime
 
-      - name: Fetch pinned Node runtime for Windows
+      # Verified against nodejs.org's own SHASUMS256.txt rather than trusted
+      # because it arrived over TLS. This binary is installed as a service on a
+      # database server; "the download succeeded" is not the same claim as "the
+      # download is what Node published".
+      - name: Fetch and verify the pinned Node runtime for Windows
         run: |
           NODE_FULL="v24.18.1"
-          curl -fsSL "https://nodejs.org/dist/${NODE_FULL}/node-${NODE_FULL}-win-x64.zip" -o node-win.zip
-          unzip -q node-win.zip
+          ARCHIVE="node-${NODE_FULL}-win-x64.zip"
+          curl -fsSL "https://nodejs.org/dist/${NODE_FULL}/${ARCHIVE}" -o "$ARCHIVE"
+          curl -fsSL "https://nodejs.org/dist/${NODE_FULL}/SHASUMS256.txt" -o SHASUMS256.txt
+          grep " ${ARCHIVE}\$" SHASUMS256.txt | sha256sum -c -
+          unzip -q "$ARCHIVE"
           mkdir -p packages/worker/dist/package/node
           cp "node-${NODE_FULL}-win-x64/node.exe" packages/worker/dist/package/node/
-          cp "node-${NODE_FULL}-win-x64/LICENSE" packages/worker/dist/package/node/
+          cp "node-${NODE_FULL}-win-x64/LICENSE"  packages/worker/dist/package/node/
 
       - name: Fetch WinSW
         run: |
           curl -fsSL https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe \
             -o packages/worker/dist/package/rsagent-worker.exe
 
-      - name: Zip
+      - name: Package for Windows
         run: |
           cd packages/worker/dist/package
-          zip -qr "../../../../rsagent-worker-${GITHUB_REF_NAME:-dev}.zip" .
+          zip -qr "${GITHUB_WORKSPACE}/rsagent-worker-${VERSION}-win-x64.zip" .
+
+      # The same tarball deploy/Dockerfile builds and the control plane serves
+      # at /downloads/. It was never attached to a release, so anyone not yet
+      # running a control plane had no way to get it.
+      - name: Package for Linux
+        run: |
+          mkdir -p staging/linux
+          cp packages/worker/dist/rsagent-worker.mjs staging/linux/
+          cp deploy/worker/rsagent-worker.service    staging/linux/
+          tar -czf "rsagent-worker-${VERSION}-linux-x64.tar.gz" -C staging/linux .
+
+      - name: Ship the bare bundle too
+        run: cp packages/worker/dist/rsagent-worker.mjs "rsagent-worker-${VERSION}.mjs"
 
       - uses: actions/upload-artifact@v4
         with:
           name: worker-distribution
-          path: rsagent-worker-*.zip
+          path: |
+            rsagent-worker-*.zip
+            rsagent-worker-*.tar.gz
+            rsagent-worker-*.mjs
+          if-no-files-found: error
           retention-days: 90
 
   github-release:
     name: GitHub release
-    needs: [npm, container, worker-package]
-    if: startsWith(github.ref, 'refs/tags/')
+    needs: [verify, npm, container, executables, worker-package]
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
     steps:
       - uses: actions/checkout@v7
+
       - uses: actions/download-artifact@v4
         with:
-          name: worker-distribution
+          path: artifacts
+          merge-multiple: true
+
+      - name: Collect and checksum
+        run: |
+          mkdir -p release
+          find artifacts -type f -exec cp {} release/ \;
+
+          # upload-artifact does not preserve the mode bit. Restored here so a
+          # downloaded Linux or macOS binary runs, rather than needing a chmod
+          # nobody documents.
+          chmod +x release/rsagent-worker-linux-x64 release/rsagent-worker-darwin-arm64
+
+          cd release
+          sha256sum -- * > SHA256SUMS
+          echo '## Assets'
+          cat SHA256SUMS
+
+      # Signed by the workflow that built them, so a download traces back to
+      # this repository and this commit rather than to whoever uploaded it.
+      - name: Attest the release assets
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: 'release/rsagent-worker-*'
 
       - uses: softprops/action-gh-release@v3
         with:
-          files: rsagent-worker-*.zip
+          files: release/*
           generate_release_notes: true
+          prerelease: ${{ needs.verify.outputs.prerelease == 'true' }}
           body: |
             ## Install
 
             **Control plane**
 
             ```bash
-            docker pull ghcr.io/${{ github.repository }}/control-plane:${{ github.ref_name }}
+            docker pull ${{ env.DOCKERHUB_IMAGE }}:${{ env.VERSION }}
+            # or, from GitHub's registry
+            docker pull ${{ env.GHCR_IMAGE }}:${{ env.VERSION }}
             ```
 
-            **Worker** — download the zip below and run `install.ps1` from an
-            elevated PowerShell, or on Linux:
+            **Worker** — pick one:
+
+            | Route | Use when |
+            |---|---|
+            | `rsagent-worker-linux-x64`, `-win-x64.exe`, `-darwin-arm64` | Nothing is installed on the host. One file, no Node, no dependencies |
+            | `npm install -g @remote-sql-agent/worker@${{ env.VERSION }}` | The host already has Node 24 |
+            | `rsagent-worker-${{ env.VERSION }}-win-x64.zip` | Windows, run as a service — `install.ps1` from an elevated prompt |
+            | `rsagent-worker-${{ env.VERSION }}-linux-x64.tar.gz` | Linux, run as a systemd unit |
+
+            Enrol with a token from the dashboard under **Administration → Workers**:
 
             ```bash
-            npm install -g @remote-sql-agent/worker@${{ github.ref_name }}
+            rsagent-worker-linux-x64 enrol --token rsen_... /etc/rsagent/worker.yaml
             ```
 
-            See [the quick start](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/docs/quick-start.md).
+            A new worker is `readOnly` until someone raises the ceiling on the
+            host itself. The control plane cannot raise it.
+
+            ## Verifying a download
+
+            ```bash
+            sha256sum -c SHA256SUMS --ignore-missing
+            gh attestation verify rsagent-worker-linux-x64 --repo ${{ github.repository }}
+            ```
+
+            See [the quick start](https://github.com/${{ github.repository }}/blob/v${{ env.VERSION }}/docs/quick-start.md).
 
             ---

@@ -59,6 +59,38 @@ describe('queueing and draining', () => {
     for (let i = 0; i < 10; i++) outbox.enqueue('history', 'INST1', { i });
     expect(outbox.peek(4)).toHaveLength(4);
   });
+
+  it('acknowledges the whole batch or none of it', () => {
+    // better-sqlite3 gave this for free through its transaction() helper;
+    // node:sqlite has no equivalent, so the BEGIN/COMMIT/ROLLBACK in
+    // acknowledge() is hand-written and worth pinning. A half-applied
+    // acknowledgement would drop rows the control plane never confirmed —
+    // the exact loss this table exists to prevent.
+    for (let i = 0; i < 3; i++) outbox.enqueue('history', 'INST1', { i });
+    const ids = outbox.peek(10).map((r) => r.id);
+
+    // A non-integer id makes SQLite reject the bind part-way through, after
+    // the first delete has already been issued inside the transaction.
+    expect(() =>
+      outbox.acknowledge([ids[0]!, Symbol('not an id') as unknown as number]),
+    ).toThrow();
+
+    expect(outbox.peek(10)).toHaveLength(3);
+  });
+
+  it('leaves the database usable after a rolled-back acknowledgement', () => {
+    // A stranded open transaction would fail every later write with
+    // "cannot start a transaction within a transaction", which is a far more
+    // confusing symptom than the original error.
+    outbox.enqueue('history', 'INST1', { n: 1 });
+    const [row] = outbox.peek(10);
+
+    expect(() => outbox.acknowledge([Symbol('bad') as unknown as number])).toThrow();
+
+    outbox.enqueue('history', 'INST1', { n: 2 });
+    outbox.acknowledge([row!.id]);
+    expect(outbox.peek(10).map((r) => JSON.parse(r.payload).n)).toEqual([2]);
+  });
 });
 
 describe('bounded size', () => {

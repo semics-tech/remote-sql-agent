@@ -10,6 +10,47 @@ While at `0.x`, breaking changes may land in minor versions.
 
 ### Added
 
+- **Single-file worker executables** for Linux, Windows and macOS. One
+  download, no Node, no dependencies, no installer — enough to enrol a
+  database server that has nothing on it. Built by the OS they target and
+  self-tested before upload
+- **The control plane image is published to Docker Hub** as
+  `techsemics/remote-sql-agent`, alongside GHCR. Same build, same digest;
+  pulling no longer requires a GitHub login
+- **Release assets are verifiable**: `SHA256SUMS` plus a build attestation on
+  every artefact, so a download traces back to the workflow run that made it.
+  The Windows Node runtime is now checked against nodejs.org's published
+  `SHASUMS256.txt` instead of being trusted because the download succeeded
+- **`pnpm release:version <version>`** sets every manifest and `WORKER_VERSION`
+  in lockstep, and the release job refuses to publish if any of them disagrees
+  with the tag. Prereleases go to npm's `next` dist-tag and do not move
+  `latest` on either registry
+- **[docs/releasing.md](docs/releasing.md)** — what is published where, and
+  what a maintainer has to set up first
+
+### Fixed
+
+- **The Linux worker tarball could not start.** It ships `rsagent-worker.mjs`
+  with no `node_modules` beside it, but the bundle marked `better-sqlite3` and
+  `@azure/identity` external, so both failed to resolve at startup.
+  `@azure/identity` was never optional — tedious depends on it outright and
+  requires it at the top of `connection.js`. Nothing is marked external now
+- **`npm i -g @remote-sql-agent/worker` pulled a dependency tree it never
+  used.** grpc, mssql, pino, yaml, zod and protocol are all inside the bundle;
+  they were declared as runtime dependencies as well, so npm downloaded the lot
+  a second time. The install is now a single package
+
+### Changed
+
+- **The worker's outbox uses the runtime's built-in `node:sqlite`** rather than
+  better-sqlite3. This removes the last native module from the worker: nothing
+  is compiled from C++ on a customer's database server, `npm i -g` no longer
+  needs a toolchain, and a single-file executable becomes possible at all. The
+  cost is an API still marked experimental, which is why the runtime is pinned
+  and the surface is confined to `outbox.ts`
+- **The control-plane image builds with no toolchain.** `python3` and
+  `build-essential` existed only so better-sqlite3 could compile on arm64
+
 - **Operations overview** as the landing page: what is running, what is running
   longer than its own average, what failed in the last 24 hours, and worker
   health — estate-wide, in one screen

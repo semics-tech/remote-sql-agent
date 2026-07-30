@@ -95,7 +95,7 @@ A lightweight **worker** is deployed next to each SQL Server instance. The worke
 | ORM / DB access | **Drizzle ORM** + **postgres.js**, SQL-first migrations | Fully typed, stays close to SQL (needed for jsonb queries, partitioning, high-water-mark upserts); Prisma is the acceptable alternative if contributors prefer it |
 | Validation / canonical schema | **zod** — `JobDefinition.v1` is a zod schema in the shared package; canonical serialisation + SHA-256 hashing helpers live beside it | Runtime validation at every trust boundary, static types for free |
 | Dashboard | **React + TypeScript + Vite**; TanStack Query; **Monaco** editor for T-SQL step editing and diffs | Familiar, huge ecosystem; Monaco gives SSMS-grade editing |
-| Local worker store (outbox) | **better-sqlite3** | Synchronous, robust, zero-config embedded store for offline queueing + idempotency records |
+| Local worker store (outbox) | **`node:sqlite`** (built into the runtime) | Synchronous, zero-config embedded store for offline queueing + idempotency records. Chosen over better-sqlite3 because being part of Node is what lets the worker ship as a single executable and install without a C++ toolchain; the cost is an API still marked experimental, mitigated by pinning the runtime and confining the surface to `outbox.ts` |
 | Secrets on worker host | **DPAPI** via a native binding (e.g. `win-dpapi`) on Windows; `0600` file permissions on Linux | Protects the worker's SQL credentials at rest without a key-management dependency |
 | Password hashing | **argon2** (npm) | Current best practice |
 | Control plane DB | **PostgreSQL 16** — the only supported database | Versioning/audit needs a real relational store; jsonb for job definition snapshots; no SQLite evaluation mode (Docker Compose makes Postgres trivial to run) |
@@ -156,9 +156,9 @@ A lightweight **worker** is deployed next to each SQL Server instance. The worke
 ### 5.4 Resilience
 
 - Persistent gRPC stream with exponential backoff reconnect (jittered, cap 60s).
-- Local outbox: history/log deltas queue to the worker's better-sqlite3 file when offline; drain on reconnect (bounded size with oldest-first eviction; eviction is logged and reported).
+- Local outbox: history/log deltas queue to the worker's SQLite file (`node:sqlite`) when offline; drain on reconnect (bounded size with oldest-first eviction; eviction is logged and reported).
 - Commands are **not** queued worker-side when offline — an offline worker simply can't receive them; the control plane holds pending commands with a TTL (default 15 min, then auto-expire to `Failed: worker offline`).
-- Idempotency: every command carries a UUID; worker records applied command IDs (better-sqlite3) and no-ops duplicates.
+- Idempotency: every command carries a UUID; worker records applied command IDs in the same SQLite file and no-ops duplicates.
 - Node-specifics: catch `unhandledRejection`/`uncaughtException` → structured log + clean exit; WinSW/systemd restarts the process. Health file heartbeat so the service wrapper can detect a wedged event loop.
 
 ---
@@ -230,7 +230,7 @@ Commands are a closed protobuf enum + typed payloads. Adding a new command type 
 
 ### 6.7 Threat model (maintain `/docs/threat-model.md`)
 
-Minimum scenarios to document with mitigations: control-plane compromise (→ worker-side ceilings, closed command set, cert revocation), stolen worker cert (→ short validity, revocation, IP anomaly alerting), malicious dashboard admin (→ approvals, immutable audit, export to SIEM), MITM (→ mTLS, pinned CA), replay (→ command UUIDs + timestamps), supply chain (→ pnpm lockfile, `pnpm audit` in CI, minimal native-module surface: better-sqlite3, argon2, win-dpapi only).
+Minimum scenarios to document with mitigations: control-plane compromise (→ worker-side ceilings, closed command set, cert revocation), stolen worker cert (→ short validity, revocation, IP anomaly alerting), malicious dashboard admin (→ approvals, immutable audit, export to SIEM), MITM (→ mTLS, pinned CA), replay (→ command UUIDs + timestamps), supply chain (→ pnpm lockfile, `pnpm audit` in CI, minimal native-module surface: argon2 and win-dpapi only, both control-plane side).
 
 ---
 
@@ -360,7 +360,7 @@ Each milestone ends with passing tests and a tagged, runnable state. Do not star
 - **Accept:** `docker compose up` yields a seeded SQL instance; contract tests green.
 
 ### M1 — Read-only vertical slice
-- Worker: connect to SQL via `mssql`, full snapshot, definition polling + hashing, history high-water-mark shipping, activity polling, agent log tailing; plain TLS to server (mTLS comes in M3), better-sqlite3 outbox.
+- Worker: connect to SQL via `mssql`, full snapshot, definition polling + hashing, history high-water-mark shipping, activity polling, agent log tailing; plain TLS to server (mTLS comes in M3), `node:sqlite` outbox.
 - Server: WorkerHub gRPC session handling, persistence of snapshot/deltas/history via Drizzle, Fastify REST read API.
 - Dashboard: estate overview, instance view, job detail with History tab.
 - **Accept:** run a fixture job → within one poll interval the dashboard shows the run with step-level messages matching SSMS View History. Kill the network between worker and server mid-run → history arrives after reconnect (outbox test).

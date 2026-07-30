@@ -44,17 +44,22 @@ export function writeWorkerKey(path: string, key: string): void {
 /**
  * Acquire an Entra access token from the host's managed identity.
  *
- * @azure/identity is imported lazily so that the overwhelming majority of
- * deployments — which use token mode — never load it.
+ * Imported lazily so that token-mode deployments — the overwhelming majority —
+ * do not pay the startup cost of constructing a credential chain they will
+ * never use.
  */
 export async function acquireEntraToken(audience: string, clientId?: string): Promise<string> {
   let credential: { getToken: (scope: string) => Promise<{ token: string } | null> };
   try {
-    // Indirect specifier on purpose: @azure/identity is an optional peer that
-    // only Entra-mode deployments install, and a literal import would make it a
-    // hard build-time dependency for everyone.
-    const moduleName = '@azure/identity';
-    const { DefaultAzureCredential } = (await import(moduleName)) as {
+    // A literal specifier, so esbuild resolves it and inlines the package.
+    //
+    // This used to be an indirect one, on the stated grounds that
+    // @azure/identity was an optional peer only Entra sites installed. That
+    // was not true: tedious depends on it outright and requires it at the top
+    // of connection.js, so it loads the moment mssql does. Keeping it out of
+    // the bundle did not make it optional — it made the tarball and the
+    // single-file build unable to start at all.
+    const { DefaultAzureCredential } = (await import('@azure/identity')) as {
       DefaultAzureCredential: new (options?: {
         managedIdentityClientId?: string;
       }) => typeof credential;
@@ -63,9 +68,13 @@ export async function acquireEntraToken(audience: string, clientId?: string): Pr
       clientId ? { managedIdentityClientId: clientId } : undefined,
     );
   } catch (err) {
+    // No longer "install the package" advice: it is bundled, so reaching here
+    // means constructing the credential chain failed — most often no managed
+    // identity on the host, which is a configuration problem, not a missing
+    // dependency. Telling someone to npm install would send them the wrong way.
     throw new CredentialError(
-      'Entra authentication requires the optional @azure/identity package. ' +
-        `Install it on this host, or switch controlPlane.auth.mode to "token". (${String(err)})`,
+      'Could not initialise Entra authentication on this host. ' +
+        `Check that it has a managed identity, or switch controlPlane.auth.mode to "token". (${String(err)})`,
     );
   }
 

@@ -7,14 +7,15 @@
  *   rsagent-worker.xml   WinSW service definition
  *   install.ps1          installer
  *   node/                pinned Node runtime (fetched separately, see below)
- *   node_modules/        native modules that cannot be bundled
  *
- * better-sqlite3 is a native module and is copied rather than bundled;
- * @azure/identity is optional and only needed for Entra worker auth.
+ * There is no node_modules directory any more. The outbox moved to the
+ * runtime's own node:sqlite, so the bundle has no native module to sit beside
+ * it — see src/sqlite.ts. @azure/identity is still left external, but it is
+ * optional and only Entra worker auth reaches it.
  *
  * The Node runtime is not vendored into the repository. Point NODE_DIST at an
  * extracted Windows Node distribution, or run with --no-runtime to build a
- * package for a host that already has Node 22.
+ * package for a host that already has Node 24.
  */
 import { execFileSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, rmSync } from 'node:fs';
@@ -33,28 +34,24 @@ rmSync(out, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });
 
 console.log('Bundling worker...');
-execFileSync('npx', ['pnpm', 'run', 'bundle'], { cwd: workerRoot, stdio: 'inherit' });
+// `.cmd` on Windows: execFileSync cannot launch a shim directly.
+execFileSync(process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm', ['run', 'bundle'], {
+  cwd: workerRoot,
+  stdio: 'inherit',
+});
 
 cpSync(join(workerRoot, 'dist', 'rsagent-worker.mjs'), join(out, 'rsagent-worker.mjs'));
 cpSync(join(repoRoot, 'deploy', 'worker', 'rsagent-worker.xml'), join(out, 'rsagent-worker.xml'));
 cpSync(join(repoRoot, 'deploy', 'worker', 'install.ps1'), join(out, 'install.ps1'));
 cpSync(join(repoRoot, 'deploy', 'worker', 'rsagent-worker.service'), join(out, 'rsagent-worker.service'));
 
-// Native modules survive bundling only as real files on disk.
-for (const nativeModule of ['better-sqlite3', 'bindings', 'file-uri-to-path', 'prebuild-install']) {
-  const from = join(repoRoot, 'node_modules', nativeModule);
-  if (existsSync(from)) {
-    cpSync(from, join(out, 'node_modules', nativeModule), { recursive: true, dereference: true });
-  }
-}
-
 if (includeRuntime) {
   if (!nodeDist) {
     console.warn(
       '\nNODE_DIST is not set, so no Node runtime was bundled.\n' +
         'Download the Windows x64 zip from https://nodejs.org/dist/ , extract it, and set\n' +
-        '  NODE_DIST=/path/to/node-v22.x.x-win-x64\n' +
-        'Or pass --no-runtime to build for hosts that already have Node 22.\n',
+        '  NODE_DIST=/path/to/node-v24.x.x-win-x64\n' +
+        'Or pass --no-runtime to build for hosts that already have Node 24.\n',
     );
   } else {
     console.log(`Copying Node runtime from ${nodeDist}...`);

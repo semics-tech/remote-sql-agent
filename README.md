@@ -109,6 +109,13 @@ cp .env.example .env      # set RSAGENT_PUBLIC_URL and POSTGRES_PASSWORD
 docker compose up -d
 ```
 
+The image is published to both registries, same digest:
+
+```bash
+docker pull techsemics/remote-sql-agent:latest
+docker pull ghcr.io/semics-tech/remote-sql-agent/control-plane:latest
+```
+
 Put a TLS certificate for the hub in `deploy/tls/`. The control plane refuses to
 start without one, because worker API keys are bearer secrets.
 
@@ -126,12 +133,31 @@ Generate a single-use enrolment token in the dashboard
               -CaCertPath C:\certs\corp-ca.pem
 ```
 
-SQL Server on Linux, or you prefer npm:
+SQL Server on Linux, or a host with nothing installed on it — download the
+executable for the platform from
+[Releases](https://github.com/semics-tech/remote-sql-agent/releases). One file,
+no Node, no dependencies:
+
+```bash
+curl -fsSLO https://github.com/semics-tech/remote-sql-agent/releases/latest/download/rsagent-worker-linux-x64
+chmod +x rsagent-worker-linux-x64
+./rsagent-worker-linux-x64 enrol --token rsen_xxxxxxxxxxxx /etc/rsagent/worker.yaml
+./rsagent-worker-linux-x64 /etc/rsagent/worker.yaml
+```
+
+Or, on a host that already has Node 24:
 
 ```bash
 npm install -g @remote-sql-agent/worker
 rsagent enrol --token rsen_xxxxxxxxxxxx /etc/rsagent/worker.yaml
 rsagent /etc/rsagent/worker.yaml
+```
+
+Every release asset is listed in `SHA256SUMS` and carries a build attestation,
+so a download can be traced back to the workflow run that produced it:
+
+```bash
+gh attestation verify rsagent-worker-linux-x64 --repo semics-tech/remote-sql-agent
 ```
 
 ### SQL Server permissions
@@ -204,6 +230,7 @@ Setup: [docs/authentication.md](docs/authentication.md).
 | [threat-model.md](docs/threat-model.md) | Scenarios, mitigations, residual risk |
 | [faq.md](docs/faq.md) | Including "does this replace SQL Agent?" (no) |
 | [migration.md](docs/migration.md) | Roadmap, known gaps, upgrade path |
+| [releasing.md](docs/releasing.md) | Cutting a release to npm, Docker Hub and GitHub |
 | [remote-sql-agent-architecture.md](docs/remote-sql-agent-architecture.md) | The original design spec |
 
 ---

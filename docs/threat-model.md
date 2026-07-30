@@ -116,8 +116,10 @@ it to report on those instances, not to command others.
 
 - **[now]** `pnpm-lock.yaml` is committed; CI installs with `--frozen-lockfile`.
 - **[now]** `pnpm audit --audit-level high` runs in CI.
-- **[now]** Native modules are limited to `better-sqlite3` (worker only). `argon2` and `win-dpapi`
-  join it in M3.
+- **[now]** The worker compiles no native code at all: its outbox uses the runtime's built-in
+  `node:sqlite`, so the code that runs on a customer's database server is the bundle plus the
+  pinned Node runtime and nothing else. `argon2` is the only native module in the tree, and it is
+  control-plane only. `win-dpapi` joins it in M3.
 - **[now]** Generated protobuf output is checked in and CI fails if it drifts from the `.proto`
   source, so a compromised codegen toolchain cannot silently alter the wire contract.
 

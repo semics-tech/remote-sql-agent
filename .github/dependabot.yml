@@ -18,10 +18,8 @@ updates:
       minor-and-patch:
         update-types: ['minor', 'patch']
     ignore:
-      # Native modules are the riskiest to bump silently: better-sqlite3 holds
-      # the worker's durable outbox and argon2 hashes every credential.
-      - dependency-name: better-sqlite3
-        update-types: ['version-update:semver-major']
+      # argon2 is the last native module in the tree, and it hashes every
+      # credential. A major bump gets read by a person, not merged by a bot.
       - dependency-name: argon2
         update-types: ['version-update:semver-major']
     labels: ['dependencies']

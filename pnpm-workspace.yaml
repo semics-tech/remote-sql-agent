@@ -7,6 +7,19 @@ packages:
 onlyBuiltDependencies:
   - '@bufbuild/buf'
   - argon2
-  - better-sqlite3
   - esbuild
   - protobufjs
+
+# better-sqlite3 is deliberately absent from the list above.
+#
+# It is still *installed* — drizzle-orm declares every driver it supports as an
+# optional peer and this repo sets auto-install-peers=true, which neither
+# ignoredOptionalDependencies nor peerDependencyRules.ignoreMissing overrides.
+# Both were tried. What keeping it off this list does is stop pnpm running its
+# build script, so the native module is never compiled: nothing imports it (the
+# server is on postgres.js, the worker on node:sqlite), so an unbuilt copy in
+# the store is inert.
+#
+# That is what lets deploy/Dockerfile drop python3 and build-essential. If a
+# real native dependency is ever added, it goes on the list above and the
+# toolchain comes back with it.

@@ -31,6 +31,8 @@
     "lint:fix": "eslint . --fix",
     "build:packages": "pnpm --filter @remote-sql-agent/protocol build && pnpm --filter @remote-sql-agent/worker bundle",
     "release:dry": "pnpm --filter @remote-sql-agent/protocol publish --dry-run --no-git-checks && pnpm --filter @remote-sql-agent/worker publish --dry-run --no-git-checks",
+    "release:version": "tsx scripts/set-version.ts",
+    "build:sea": "pnpm --filter @remote-sql-agent/worker run build:sea",
     "test:e2e": "pnpm --filter @remote-sql-agent/dashboard test:e2e"
   },
   "pnpm": {
@@ -40,7 +42,6 @@
     "onlyBuiltDependencies": [
       "@bufbuild/buf",
       "argon2",
-      "better-sqlite3",
       "esbuild",
       "protobufjs"
     ]
