@@ -15,9 +15,12 @@ import postgres from 'postgres';
 import { hashPassword } from '../src/auth/passwords.js';
 
 const DEV_URL = 'postgres://rsagent:rsagent_dev_password@localhost:5433/rsagent';
+/** Documented in README.md, which is the point — it has to be knowable. */
+const DEV_DEFAULT = 'rsagent-dev';
 const url = process.env.RSAGENT_DATABASE_URL ?? DEV_URL;
 const username = process.env.RSAGENT_BOOTSTRAP_ADMIN ?? 'admin';
-const password = process.env.RSAGENT_BOOTSTRAP_ADMIN_PASSWORD ?? 'rsagent-dev';
+const supplied = process.env.RSAGENT_BOOTSTRAP_ADMIN_PASSWORD;
+const password = supplied ?? DEV_DEFAULT;
 
 const host = new URL(url).hostname;
 if (host !== 'localhost' && host !== '127.0.0.1') {
@@ -69,10 +72,14 @@ try {
     `;
   }
 
+  // The password is only echoed when it is the published development default,
+  // which tells the reader nothing README.md does not. One supplied through the
+  // environment is named rather than printed: it may well be reused elsewhere,
+  // and this output lands in terminal scrollback and CI logs.
   console.log(
     `\n  ${existing ? 'Reset' : 'Created'} the development administrator.\n` +
       `    username: ${username}\n` +
-      `    password: ${password}\n\n` +
+      `    password: ${supplied ? 'as set in RSAGENT_BOOTSTRAP_ADMIN_PASSWORD' : DEV_DEFAULT}\n\n` +
       '  Local development only. Set RSAGENT_BOOTSTRAP_ADMIN_PASSWORD to choose another.\n',
   );
 } finally {
