@@ -682,7 +682,38 @@ describe('write path', () => {
     const [instance] = await getEstateOverview(db);
     const jobs = await listJobs(db, instance!.instanceId);
     const target = jobs.find((j) => j.name === 'RSAgent Fixture - Nightly Maintenance')!;
-    const detail = await getJob(db, instance!.instanceId, target.jobUuid);
+    let detail = await getJob(db, instance!.instanceId, target.jobUuid);
+
+    // This test disables a step and leaves it that way, so a second run against
+    // the same SQL Server would otherwise start from an already-unreachable
+    // step — which is not the thing under test, and fails on the round trip at
+    // the end. CI seeds a fresh instance every time and never noticed; running
+    // the suite twice locally did. Put the step back first.
+    const victimId = (detail!.definition as JobDefinition).steps[1]!.stepId;
+    if (isStepDisabled(detail!.definition as JobDefinition, victimId)) {
+      const restored = enableStep(detail!.definition as JobDefinition, victimId);
+      const { canonicalJson: restoredJson, hash: restoredHash } = canonicaliseJobWithHash(
+        restored.definition,
+      );
+      const put = await issueAndSettle(
+        'upsertJob',
+        target.jobUuid,
+        {
+          jobUuid: target.jobUuid,
+          canonicalJson: restoredJson,
+          baseDefinitionHash: detail!.currentDefinitionHash,
+          allowOverwrite: false,
+        },
+        detail!.currentDefinitionHash ?? undefined,
+      );
+      expect(put.state).toBe('succeeded');
+      detail = await eventually(
+        () => getJob(db, instance!.instanceId, target.jobUuid),
+        (job) => job?.currentDefinitionHash === restoredHash,
+        { timeoutMs: 60_000 },
+      );
+    }
+
     const before = detail!.definition as JobDefinition;
 
     const victim = before.steps[1]!;
