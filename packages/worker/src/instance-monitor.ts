@@ -57,6 +57,28 @@ export interface PollIntervals {
  * of the 32 MiB receive limit even with large T-SQL step bodies. */
 const SNAPSHOT_CHUNK_SIZE = 25;
 
+/**
+ * Cadence while a job is actually executing.
+ *
+ * The configured interval — ten seconds by default — is right for an idle
+ * instance and useless for watching a run: plenty of Agent jobs finish inside
+ * it, so `executing` is never observed at all and the dashboard goes straight
+ * from "starting" to "finished" with nothing in between. While something is
+ * running, both activity and history are polled at this instead, so step
+ * completions land on the timeline as they happen.
+ */
+const ACTIVE_POLL_MS = 750;
+
+/**
+ * How long to keep the fast cadence after issuing a start.
+ *
+ * `sp_start_job` returns as soon as Agent accepts the request, before the job
+ * appears in `sysjobactivity`, so the first poll after a command usually sees
+ * nothing. This covers that gap without leaving the instance polling hard
+ * forever if the job never starts.
+ */
+const START_BURST_MS = 15_000;
+
 export class InstanceMonitor {
   #pool: sql.ConnectionPool | null = null;
   #identity: InstanceIdentity | null = null;
@@ -66,6 +88,13 @@ export class InstanceMonitor {
   #agentLogSupported = true;
   #warnedUnknownSubsystems = new Set<string>();
   #stopped = false;
+
+  /** True while SQL Agent reports at least one job on this instance executing. */
+  #anyExecuting = false;
+  /** Epoch ms until which to poll fast regardless, after issuing a start. */
+  #fastUntil = 0;
+  #liveTimer: NodeJS.Timeout | null = null;
+  #intervals: PollIntervals | null = null;
 
   /**
    * Serialises definition polling against command application.
@@ -173,17 +202,63 @@ export class InstanceMonitor {
     };
 
     schedule(() => this.pollDefinitions(), intervals.definitionSeconds, 'definition');
-    schedule(() => this.pollHistory(intervals.historyBatchSize), intervals.historySeconds, 'history');
-    schedule(() => this.pollActivity(), intervals.activitySeconds, 'activity');
     if (this.#agentLogSupported) {
       schedule(() => this.pollAgentLog(), intervals.agentLogSeconds, 'agent log');
     }
+
+    // Activity and history share one self-rescheduling loop rather than fixed
+    // intervals, so the cadence can follow whether anything is actually
+    // running. They are polled together on purpose: a step completion is only
+    // meaningful alongside the activity row that says which step came next.
+    this.#intervals = intervals;
+    this.#scheduleLivePoll(0);
+  }
+
+  #scheduleLivePoll(delayMs: number): void {
+    if (this.#stopped) return;
+    if (this.#liveTimer) clearTimeout(this.#liveTimer);
+
+    this.#liveTimer = setTimeout(() => {
+      void this.#livePollOnce()
+        .catch((err: unknown) => {
+          this.deps.logger.error({ err, instance: this.instanceName }, 'Live poll failed');
+        })
+        .finally(() => this.#scheduleLivePoll(this.#nextLiveDelayMs()));
+    }, delayMs);
+    this.#liveTimer.unref();
+  }
+
+  #nextLiveDelayMs(): number {
+    const idle = (this.#intervals?.activitySeconds ?? 10) * 1000;
+    const fast = this.#anyExecuting || Date.now() < this.#fastUntil;
+    return fast ? ACTIVE_POLL_MS : idle;
+  }
+
+  async #livePollOnce(): Promise<void> {
+    await this.pollActivity();
+    // History second: a step that finished is only visible here, and polling it
+    // after activity means the two views agree rather than showing a step as
+    // still running when its completion row already exists.
+    await this.pollHistory(this.#intervals?.historyBatchSize ?? 500);
+  }
+
+  /**
+   * Poll hard for a short window.
+   *
+   * Called after a start or stop is applied. Without it the first observation
+   * lands on the normal interval, by which time a short job has been and gone.
+   */
+  nudgeActivity(): void {
+    this.#fastUntil = Date.now() + START_BURST_MS;
+    this.#scheduleLivePoll(0);
   }
 
   stopPolling(): void {
     this.#stopped = true;
     for (const timer of this.#timers) clearInterval(timer);
     this.#timers = [];
+    if (this.#liveTimer) clearTimeout(this.#liveTimer);
+    this.#liveTimer = null;
   }
 
   async close(): Promise<void> {
@@ -370,6 +445,12 @@ export class InstanceMonitor {
   async pollActivity(): Promise<void> {
     if (!this.#pool) return;
     const records = await readActivity(this.#pool);
+
+    // Drives the poll cadence. Recomputed on every read rather than only on
+    // change, so a job that starts on its own schedule speeds the loop up too —
+    // not just one the dashboard asked for.
+    this.#anyExecuting = records.some((r) => r.state === 'executing');
+
     if (records.length === 0) return;
 
     const rows: ActivityRow[] = records.map((r) => ({

@@ -287,12 +287,12 @@ async function main(): Promise<void> {
 
             const kind = command.payload?.$case;
 
-            // Starting or stopping a job changes *activity*, not the definition,
-            // and the activity poll is on a ten-second tick. Reading it now is
-            // what makes a job show as running the moment the operator presses
-            // the button, instead of up to a tick later.
+            // Starting or stopping a job changes *activity*, not the
+            // definition. One immediate read is not enough: sp_start_job
+            // returns before Agent has written the activity row, so this asks
+            // the monitor to poll hard for a short window instead.
             if (result.success && (kind === 'runJob' || kind === 'stopJob')) {
-              await monitor.pollActivity().catch(() => undefined);
+              monitor.nudgeActivity();
             }
 
             // Re-poll definitions so an edit is mirrored now rather than at the

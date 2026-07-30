@@ -121,5 +121,5 @@ First release. Implements all six milestones of the architecture specification.
 See [docs/migration.md](docs/migration.md). The significant ones: no
 control-plane HA, manual certificate rotation in mTLS mode, no MSI.
 
-[Unreleased]: https://github.com/semics/remote-sql-agent/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/semics/remote-sql-agent/releases/tag/v0.1.0
+[Unreleased]: https://github.com/semics-tech/remote-sql-agent/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/semics-tech/remote-sql-agent/releases/tag/v0.1.0

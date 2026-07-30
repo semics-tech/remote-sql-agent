@@ -21,14 +21,21 @@ export interface LiveWorker {
 export class WorkerRegistry {
   readonly #byWorkerId = new Map<string, LiveWorker>();
 
-  register(worker: LiveWorker): void {
+  register(worker: LiveWorker): boolean {
     // A worker reconnecting before the old session is reaped would otherwise
     // leave a stale entry that swallows commands into a dead socket.
     const existing = this.#byWorkerId.get(worker.workerId);
+    const superseded = Boolean(existing && existing !== worker);
     if (existing && existing !== worker) {
       existing.disconnect('superseded by a newer session from the same worker');
     }
     this.#byWorkerId.set(worker.workerId, worker);
+
+    // Reported so the caller can say so. Two processes sharing one credential
+    // supersede each other forever, and from either end it looks like an
+    // unexplained network drop: the worker logs "server closed the stream" and
+    // the server logs "cancelled". Neither names the actual cause.
+    return superseded;
   }
 
   unregister(workerId: string, session: LiveWorker): void {

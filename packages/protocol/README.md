@@ -1,6 +1,6 @@
 # @remote-sql-agent/protocol
 
-Shared contracts for [Remote SQL Agent](https://github.com/semics/remote-sql-agent).
+Shared contracts for [Remote SQL Agent](https://github.com/semics-tech/remote-sql-agent).
 
 Published so that integrations can speak the same language as the product: read
 a job definition out of the control plane's API and hash it identically, or
@@ -78,4 +78,4 @@ versioned in its own name — a breaking change to the job shape would be
 
 ## Licence
 
-[Apache 2.0](https://github.com/semics/remote-sql-agent/blob/main/LICENSE)
+[Apache 2.0](https://github.com/semics-tech/remote-sql-agent/blob/main/LICENSE)

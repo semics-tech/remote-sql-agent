@@ -13,13 +13,32 @@ import { formatDateTime, formatDuration, runStatusClass, runStatusLabel } from '
 import { JobActions } from './JobActions.jsx';
 import { JobEditor } from './JobEditor.jsx';
 import { JobSummary } from './JobSummary.jsx';
-import { StepGraph } from './StepGraph.jsx';
+import { RunTimeline } from './RunTimeline.jsx';
 
 // Monaco is ~2 MB; the diff view only appears on the Versions tab, so it must
 // not be in the bundle that renders the estate grid.
 const MonacoDiff = lazy(() => import('../MonacoDiff.jsx'));
 
 type Tab = 'job' | 'history' | 'versions';
+
+/**
+ * How long to keep showing an enable/disable as in progress.
+ *
+ * Issuing the command only queues it, so nothing on this page can tell the
+ * difference between "the worker is about to apply it" and "the worker is
+ * offline and never will". Rather than leave the button in limbo, give up and
+ * show what the server actually reports, with somewhere to go and look.
+ */
+const TOGGLE_TIMEOUT_MS = 20_000;
+
+/**
+ * How long to keep showing "Starting…" before giving up on it.
+ *
+ * Generous: SQL Agent's activity poll is ten seconds by default, and a worker
+ * that has just applied the command polls immediately, so anything that is
+ * going to start has started well inside this.
+ */
+const STARTING_TIMEOUT_MS = 30_000;
 
 /**
  * A job.
@@ -38,19 +57,58 @@ export function Job() {
   // Without it there is a window where the operator has pressed the button and
   // nothing on screen has changed.
   const [starting, setStarting] = useState(false);
+  // The enabled state we have asked for and not yet seen confirmed. Same idea
+  // as `starting`: the operator pressed a button and something must change.
+  const [pendingEnabled, setPendingEnabled] = useState<boolean | null>(null);
+  const [toggleStalled, setToggleStalled] = useState(false);
+  // The last run recorded when the start was issued. A short job can finish
+  // before any poll observes it executing, and then "running" never becomes
+  // true — this is what notices it ran anyway.
+  const [startedFrom, setStartedFrom] = useState<string | null>(null);
 
-  const jobQuery = useJob(instanceId, jobUuid, starting);
+  const settling = starting || pendingEnabled !== null;
+  const jobQuery = useJob(instanceId, jobUuid, settling);
   const job = jobQuery.data;
   const running = job?.activity?.state === 'executing';
+  const enabled = job?.enabled;
 
   const history = useJobHistory(instanceId, jobUuid, running || starting);
   const stats = useJobStats(instanceId, jobUuid, running || starting);
 
-  // Once SQL Agent reports it as executing, the optimistic state has done its
-  // job. It also clears if the run finished before the first poll landed.
+  // Three ways out of the optimistic state, because a job can finish faster
+  // than the poll interval and "running" would then never be observed:
+  //   1. SQL Agent reports it executing — the normal case;
+  //   2. a new run appears in history — it started and finished between polls;
+  //   3. a timeout — it never started, and a badge stuck on "Starting…" for
+  //      the rest of the session is worse than admitting we do not know.
   useEffect(() => {
-    if (running) setStarting(false);
-  }, [running]);
+    if (!starting) return undefined;
+    if (running) {
+      setStarting(false);
+      return undefined;
+    }
+    if (job?.lastRunAt && job.lastRunAt !== startedFrom) {
+      setStarting(false);
+      return undefined;
+    }
+
+    const timer = setTimeout(() => setStarting(false), STARTING_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [starting, running, job?.lastRunAt, startedFrom]);
+
+  useEffect(() => {
+    if (pendingEnabled === null) return undefined;
+    if (enabled === pendingEnabled) {
+      setPendingEnabled(null);
+      setToggleStalled(false);
+      return undefined;
+    }
+    const timer = setTimeout(() => {
+      setPendingEnabled(null);
+      setToggleStalled(true);
+    }, TOGGLE_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [pendingEnabled, enabled]);
 
   const definition = job?.definition ?? null;
 
@@ -59,7 +117,13 @@ export function Job() {
       <QueryState isLoading={jobQuery.isLoading} error={jobQuery.error}>
         <div className="page-head">
           <h2>{job?.name}</h2>
-          {job?.enabled === false ? <span className="badge neutral">Disabled</span> : null}
+          {pendingEnabled !== null ? (
+            <span className="badge neutral" title="Sent to the worker; waiting for SQL Agent">
+              {pendingEnabled ? 'Enabling…' : 'Disabling…'}
+            </span>
+          ) : enabled === false ? (
+            <span className="badge neutral">Disabled</span>
+          ) : null}
           {running ? (
             <span className="badge running">Running</span>
           ) : starting ? (
@@ -83,11 +147,32 @@ export function Job() {
           <JobActions
             instanceId={instanceId}
             job={job}
+            pendingEnabled={pendingEnabled}
             onIssued={(message) => setNotice(message)}
-            onStarting={() => setStarting(true)}
+            onStarting={() => {
+              setStartedFrom(job.lastRunAt);
+              setStarting(true);
+            }}
+            onToggling={(next) => {
+              setToggleStalled(false);
+              setPendingEnabled(next);
+            }}
           />
         ) : null}
       </QueryState>
+
+      {toggleStalled ? (
+        <div className="notice">
+          <span>
+            SQL Agent has not confirmed that change yet. The job is still{' '}
+            {enabled ? 'enabled' : 'disabled'} here — check{' '}
+            <Link to="/commands">Commands</Link> for what became of it.
+          </span>
+          <button className="action" onClick={() => setToggleStalled(false)}>
+            Dismiss
+          </button>
+        </div>
+      ) : null}
 
       {notice ? (
         <div className="notice">
@@ -98,19 +183,22 @@ export function Job() {
         </div>
       ) : null}
 
-      {running || starting ? (
-        <Panel title="This run">
-          <div style={{ padding: 11 }}>
-            {starting && !running ? (
-              <p className="muted" style={{ margin: '0 0 8px' }}>
-                Start sent. SQL Agent reports activity a moment after it begins — this updates
-                itself.
-              </p>
-            ) : null}
-            <StepGraph definition={definition} stats={stats.data} running={running} />
-          </div>
-        </Panel>
-      ) : null}
+      <Panel title={running ? 'This run' : starting ? 'Starting' : 'Last run'}>
+        <div style={{ padding: 11 }}>
+          {starting && !running ? (
+            <p className="muted" style={{ margin: '0 0 8px' }}>
+              Start sent. A short job can finish before SQL Server reports it as running — the
+              timeline below will show the completed run either way.
+            </p>
+          ) : null}
+          <RunTimeline
+            definition={definition}
+            stats={stats.data}
+            history={history.data?.runs ?? []}
+            running={running}
+          />
+        </div>
+      </Panel>
 
       <JobSummary stats={stats.data} />
 

@@ -19,7 +19,8 @@ controlPlane:
     jitterRatio: 0.3
 
 # The local ceiling. Never overridable from the control plane (§6.3).
-maxCapability: readOnly
+## Capability levels: readOnly, operate, schedule, full.
+maxCapability: full
 
 instances:
   - name: MSSQLSERVER
