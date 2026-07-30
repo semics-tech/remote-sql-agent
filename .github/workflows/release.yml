@@ -205,7 +205,7 @@ jobs:
             type=raw,value=latest,enable=${{ github.ref_type == 'tag' && needs.verify.outputs.prerelease == 'false' }}
 
       - id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: deploy/Dockerfile
