@@ -232,15 +232,53 @@ Requires Node.js 22+, pnpm 10+ and Docker.
 pnpm install
 pnpm dev:up          # Postgres + SQL Server 2022 with Agent enabled
 pnpm dev:seed        # ~10 varied fixture jobs
-
-RSAGENT_GRPC_REQUIRE_TLS=false pnpm --filter @remote-sql-agent/server dev
-pnpm --filter @remote-sql-agent/dashboard dev     # http://localhost:5173
 ```
-
-Enrol a worker as above, pointing at `deploy/worker.dev.yaml`.
 
 > The SQL Server image is amd64 and runs under emulation on Apple Silicon.
 > Allow 60–90s for it to become healthy.
+
+**Three long-running processes**, one terminal each. All three are needed: the
+control plane serves the API, the worker is what actually talks to SQL Server,
+and without it the dashboard is an empty estate.
+
+```bash
+# 1. Control plane — API on :8080, worker hub on :8443
+RSAGENT_GRPC_REQUIRE_TLS=false pnpm --filter @remote-sql-agent/server dev
+
+# 2. Dashboard — http://localhost:5173, proxies /api to :8080
+pnpm --filter @remote-sql-agent/dashboard dev
+
+# 3. Worker — listens on nothing; dials out to the hub
+pnpm dev:worker
+```
+
+The worker needs enrolling once before step 3 works. The control plane prints a
+generated bootstrap admin password to its log on first boot; sign in with it,
+then **Estate → Add a worker** for a token:
+
+```bash
+pnpm dev:enrol --token rsen_xxxxxxxxxxxx
+```
+
+That writes `packages/worker/run/worker.key` (the credential) and
+`credential.key` (the key SQL credentials are encrypted to). Delete either and
+the worker cannot reconnect — rotate a new one from **Administration → Workers**.
+
+### Letting the dev worker make changes
+
+Two gates, and **both** must allow it — see [capabilities.md](docs/capabilities.md):
+
+1. **Administration → Workers → Manage** — tick the capabilities to grant.
+2. `deploy/worker.dev.yaml` — raise `maxCapability` from `readOnly`.
+
+`maxCapability` is read **once at startup**, so restart the worker afterwards;
+reconnecting re-sends the old value. Confirm it took by looking for
+`capabilities` in the worker's `Worker ready` log line, or the "Can actually do"
+column in Administration.
+
+> Two worker processes sharing one credential supersede each other in a loop —
+> each connect kicks the other off. If capability changes appear to be ignored,
+> or the estate flickers, check for a stray worker before anything else.
 
 ```bash
 pnpm test              # unit + integration
