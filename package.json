@@ -30,7 +30,8 @@
     "dev:enrol": "pnpm --filter @remote-sql-agent/worker start enrol ../../deploy/worker.dev.yaml",
     "lint:fix": "eslint . --fix",
     "build:packages": "pnpm --filter @remote-sql-agent/protocol build && pnpm --filter @remote-sql-agent/worker bundle",
-    "release:dry": "pnpm --filter @remote-sql-agent/protocol publish --dry-run --no-git-checks && pnpm --filter @remote-sql-agent/worker publish --dry-run --no-git-checks"
+    "release:dry": "pnpm --filter @remote-sql-agent/protocol publish --dry-run --no-git-checks && pnpm --filter @remote-sql-agent/worker publish --dry-run --no-git-checks",
+    "test:e2e": "pnpm --filter @remote-sql-agent/dashboard test:e2e"
   },
   "pnpm": {
     "overrides": {
