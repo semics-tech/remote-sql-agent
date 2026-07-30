@@ -5,7 +5,7 @@ import {
   generateKeyPairSync,
   privateDecrypt,
 } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 /**
@@ -47,13 +47,17 @@ export function fingerprintPublicKey(publicKeyPem: string): string {
  * should be able to configure it, not be told to wait.
  */
 export function loadOrCreateCredentialKey(path: string): CredentialKeyPair {
-  if (existsSync(path)) {
-    const privateKeyPem = readFileSync(path, 'utf8');
-    const publicKeyPem = createPublicKey(privateKeyPem)
-      .export({ type: 'spki', format: 'pem' })
-      .toString();
-    return { privateKeyPem, publicKeyPem, fingerprint: fingerprintPublicKey(publicKeyPem) };
-  }
+  // Deliberately no existsSync-then-act. Asking whether the key is there and
+  // then creating it are two operations, and between them anything can happen
+  // to the path — most damagingly, a symlink pointing somewhere the attacker
+  // can read, which the create would then follow and hand them the private
+  // half of the key protecting every SQL credential on this host.
+  //
+  // So both directions act first and interpret the error afterwards: the read
+  // is attempted outright, and the write uses 'wx' (O_CREAT | O_EXCL), which
+  // the kernel refuses if anything already exists at the path, symlink or not.
+  const existing = readExistingKey(path);
+  if (existing) return existing;
 
   const { publicKey, privateKey } = generateKeyPairSync('rsa', {
     modulusLength: KEY_BITS,
@@ -62,10 +66,25 @@ export function loadOrCreateCredentialKey(path: string): CredentialKeyPair {
   });
 
   mkdirSync(dirname(path), { recursive: true });
-  // Written 0600 before anything is in it, so there is no window in which the
-  // key exists at the default umask. On Windows the mode is advisory and the
-  // installer restricts the directory ACL instead — see deploy/worker/install.ps1.
-  writeFileSync(path, privateKey, { encoding: 'utf8', mode: 0o600 });
+  try {
+    // Created 0600 by the same call that creates it, so there is no window in
+    // which the key exists at the default umask. On Windows the mode is
+    // advisory and the installer restricts the directory ACL instead — see
+    // deploy/worker/install.ps1.
+    writeFileSync(path, privateKey, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+  } catch (error) {
+    if (errorCode(error) !== 'EEXIST') throw error;
+
+    // Someone created the key between our read and our write — a second worker
+    // process starting alongside this one. Theirs is the one on disk, so it is
+    // the one this host will be able to decrypt with. Discard the key we just
+    // generated rather than overwriting and stranding every credential already
+    // encrypted to the winner.
+    const winner = readExistingKey(path);
+    if (!winner) throw error;
+    return winner;
+  }
+
   try {
     chmodSync(path, 0o600);
   } catch {
@@ -77,6 +96,25 @@ export function loadOrCreateCredentialKey(path: string): CredentialKeyPair {
     publicKeyPem: publicKey,
     fingerprint: fingerprintPublicKey(publicKey),
   };
+}
+
+function readExistingKey(path: string): CredentialKeyPair | null {
+  let privateKeyPem: string;
+  try {
+    privateKeyPem = readFileSync(path, 'utf8');
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') return null;
+    throw error;
+  }
+
+  const publicKeyPem = createPublicKey(privateKeyPem)
+    .export({ type: 'spki', format: 'pem' })
+    .toString();
+  return { privateKeyPem, publicKeyPem, fingerprint: fingerprintPublicKey(publicKeyPem) };
+}
+
+function errorCode(error: unknown): string | undefined {
+  return (error as NodeJS.ErrnoException | undefined)?.code;
 }
 
 export class CredentialDecryptError extends Error {
