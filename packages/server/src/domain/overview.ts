@@ -42,6 +42,14 @@ export interface RunningJob {
   elapsedSeconds: number | null;
   /** Mean duration of recent successful runs, or null with too little history. */
   averageSeconds: number | null;
+  /**
+   * How long the previous successful run took.
+   *
+   * Reported even when there is no average, because one prior run is still a
+   * far better answer to "should I be worried yet" than nothing at all — it is
+   * only too thin a sample to *judge* an overrun against.
+   */
+  lastDurationSeconds: number | null;
   /** elapsed / average, once both are known. */
   overrunRatio: number | null;
   isLongRunning: boolean;
@@ -166,7 +174,9 @@ export async function getRunningJobs(db: Database, now: Date): Promise<RunningJo
     const elapsedSeconds = r.startedAt
       ? Math.max(0, Math.round((now.getTime() - r.startedAt.getTime()) / 1000))
       : null;
-    const averageSeconds = baselines.get(`${r.instanceId}:${r.jobUuid}`) ?? null;
+    const baseline = baselines.get(`${r.instanceId}:${r.jobUuid}`);
+    const averageSeconds = baseline?.averageSeconds ?? null;
+    const lastDurationSeconds = baseline?.lastDurationSeconds ?? null;
 
     let overrunRatio: number | null = null;
     let isLongRunning = false;
@@ -179,12 +189,19 @@ export async function getRunningJobs(db: Database, now: Date): Promise<RunningJo
       isLongRunning = elapsedSeconds >= NO_BASELINE_ALERT_SECONDS;
     }
 
-    return { ...r, elapsedSeconds, averageSeconds, overrunRatio, isLongRunning };
+    return { ...r, elapsedSeconds, averageSeconds, lastDurationSeconds, overrunRatio, isLongRunning };
   });
 }
 
+export interface DurationBaseline {
+  /** Null until there are enough runs to mean anything. */
+  averageSeconds: number | null;
+  /** The most recent successful run, however few there have been. */
+  lastDurationSeconds: number | null;
+}
+
 /**
- * Mean duration of recent *successful* runs, keyed "instanceId:jobUuid".
+ * Duration baselines from recent *successful* runs, keyed "instanceId:jobUuid".
  *
  * Failures are excluded on purpose: a job that fails after two seconds would
  * otherwise drag the baseline down and make every healthy run look like an
@@ -194,7 +211,7 @@ export async function durationBaselines(
   db: Database,
   keys: Array<{ instanceId: string; jobUuid: string }>,
   now: Date,
-): Promise<Map<string, number>> {
+): Promise<Map<string, DurationBaseline>> {
   if (keys.length === 0) return new Map();
 
   const since = new Date(now.getTime() - BASELINE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
@@ -208,6 +225,11 @@ export async function durationBaselines(
       instanceId: jobHistory.instanceId,
       jobUuid: jobHistory.jobUuid,
       averageSeconds: sql<number>`AVG(${jobHistory.runDurationSeconds})`,
+      // The latest row's value, not the largest — array_agg with an ORDER BY is
+      // the one aggregate that can pick it out without a second round trip.
+      lastDurationSeconds: sql<
+        number | null
+      >`(ARRAY_AGG(${jobHistory.runDurationSeconds} ORDER BY ${jobHistory.runDatetime} DESC))[1]`,
       runs: sql<number>`COUNT(*)`,
     })
     .from(jobHistory)
@@ -223,12 +245,17 @@ export async function durationBaselines(
     .groupBy(jobHistory.instanceId, jobHistory.jobUuid);
 
   const wanted = new Set(keys.map((k) => `${k.instanceId}:${k.jobUuid}`));
-  const out = new Map<string, number>();
+  const out = new Map<string, DurationBaseline>();
   for (const row of rows) {
     const key = `${row.instanceId}:${row.jobUuid}`;
-    // One sample is an anecdote, not a baseline.
-    if (!wanted.has(key) || Number(row.runs) < 3) continue;
-    out.set(key, Number(row.averageSeconds));
+    if (!wanted.has(key)) continue;
+    out.set(key, {
+      // One sample is an anecdote, not a baseline — but it is still worth
+      // showing, so only the average is withheld.
+      averageSeconds: Number(row.runs) < 3 ? null : Number(row.averageSeconds),
+      lastDurationSeconds:
+        row.lastDurationSeconds === null ? null : Number(row.lastDurationSeconds),
+    });
   }
   return out;
 }

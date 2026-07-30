@@ -1,4 +1,7 @@
 # To Do
+1. sql / powershell linting in the monaco editor?
+
+# In Progress
 1. Job edit screen needs rearranging
     - Move the Schedules & Notifications to their own tabs
     - Make step definition collapsed by default, expand on step click

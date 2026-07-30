@@ -1,4 +1,4 @@
-import { lazy, Suspense, useMemo, useState } from 'react';
+import { Fragment, lazy, Suspense, useMemo, useState } from 'react';
 import type { JobDefinition, JobStep } from '@remote-sql-agent/protocol/browser';
 import {
   StepAction,
@@ -6,6 +6,7 @@ import {
   describeSchedule,
   moveStep,
   removeStep,
+  reorderStep,
   toHumaneSchedule,
   updateStep,
 } from '@remote-sql-agent/protocol/browser';
@@ -28,7 +29,14 @@ const MonacoEditor = lazy(() => import('../MonacoEditor.jsx'));
  * exactly what msdb ends up holding — the property the round-trip fidelity test
  * pins down. The base hash travels with it so the worker refuses if someone
  * changed the job in SSMS while this was open.
+ *
+ * Steps, schedules and notifications are separate sections of one form rather
+ * than separate screens, because they are saved together: a draft that spans
+ * all three needs one save bar, visible from wherever the last edit was made.
  */
+
+type Section = 'steps' | 'schedules' | 'notifications';
+
 export function JobEditor({
   instanceId,
   job,
@@ -42,7 +50,11 @@ export function JobEditor({
   const [draft, setDraft] = useState<JobDefinition | null>(() =>
     original ? structuredClone(original) : null,
   );
-  const [selectedStep, setSelectedStep] = useState(1);
+  const [section, setSection] = useState<Section>('steps');
+  // Null, not 1: the step list is the overview, and opening every job with one
+  // step's body already expanded buries the shape of the job under a T-SQL
+  // editor nobody asked for yet.
+  const [expandedStep, setExpandedStep] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
@@ -67,8 +79,6 @@ export function JobEditor({
   if (!original || !draft) {
     return <Empty title="Nothing to edit" hint="No definition has been mirrored for this job." />;
   }
-
-  const step = draft.steps.find((s) => s.stepId === selectedStep) ?? draft.steps[0];
 
   /** Every structural edit goes through the protocol helpers, which renumber
    * steps and repair "go to step N" references. Doing it here by hand is how
@@ -221,261 +231,54 @@ export function JobEditor({
         </div>
       </Panel>
 
-      <Panel
-        title={`Steps (${draft.steps.length})`}
-        actions={
-          editable ? (
-            <button
-              className="action"
-              onClick={() =>
-                structural(() => {
-                  const result = addStep(draft, { afterStepId: step?.stepId ?? null });
-                  // Select what was just created: the operator's next action is
-                  // always to type into it.
-                  setSelectedStep((step?.stepId ?? draft.steps.length) + 1);
-                  return result;
-                })
-              }
-            >
-              Add step
-            </button>
-          ) : undefined
-        }
-      >
-        <div className="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th style={{ width: 40 }}>#</th>
-                <th>Step name</th>
-                <th>Type</th>
-                <th>On success</th>
-                <th>On failure</th>
-                <th className="right">Retries</th>
-                {editable ? <th style={{ width: 130 }}>Order</th> : null}
-              </tr>
-            </thead>
-            <tbody>
-              {draft.steps.map((s, index) => (
-                <tr
-                  key={s.stepId}
-                  className="expandable"
-                  onClick={() => setSelectedStep(s.stepId)}
-                  style={s.stepId === step?.stepId ? { background: 'var(--bg-selected)' } : undefined}
-                >
-                  <td className="num muted">{s.stepId}</td>
-                  <td className="nowrap">
-                    {draft.startStepId === s.stepId ? '▸ ' : ''}
-                    {s.name}
-                  </td>
-                  <td className="nowrap muted">{s.subsystem}</td>
-                  <td className="nowrap muted">{stepAction(s.onSuccessAction, s.onSuccessStepId)}</td>
-                  <td className="nowrap muted">{stepAction(s.onFailAction, s.onFailStepId)}</td>
-                  <td className="right num muted">{s.retryAttempts}</td>
-                  {editable ? (
-                    <td className="nowrap" onClick={(e) => e.stopPropagation()}>
-                      <button
-                        className="action icon"
-                        aria-label={`Move ${s.name} up`}
-                        disabled={index === 0}
-                        onClick={() => structural(() => moveStep(draft, s.stepId, 'up'))}
-                      >
-                        ↑
-                      </button>
-                      <button
-                        className="action icon"
-                        aria-label={`Move ${s.name} down`}
-                        disabled={index === draft.steps.length - 1}
-                        onClick={() => structural(() => moveStep(draft, s.stepId, 'down'))}
-                      >
-                        ↓
-                      </button>
-                      <button
-                        className="action icon danger"
-                        aria-label={`Remove ${s.name}`}
-                        onClick={() => structural(() => removeStep(draft, s.stepId))}
-                      >
-                        ✕
-                      </button>
-                    </td>
-                  ) : null}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Panel>
+      <div className="tabs subtabs">
+        <button
+          className={section === 'steps' ? 'active' : ''}
+          onClick={() => setSection('steps')}
+        >
+          Steps <span className="tab-count">{draft.steps.length}</span>
+        </button>
+        <button
+          className={section === 'schedules' ? 'active' : ''}
+          onClick={() => setSection('schedules')}
+        >
+          Schedules <span className="tab-count">{draft.schedules.length}</span>
+        </button>
+        <button
+          className={section === 'notifications' ? 'active' : ''}
+          onClick={() => setSection('notifications')}
+        >
+          Notifications
+        </button>
+      </div>
 
-      {step ? (
-        <Panel title={`Step ${step.stepId} — ${step.name}`}>
-          <div className="editor-grid">
-            <label htmlFor="step-name">Step name</label>
-            <input
-              id="step-name"
-              type="text"
-              value={step.name}
-              disabled={!editable}
-              onChange={(e) => patchStep(step.stepId, { name: e.target.value })}
-            />
-
-            <label htmlFor="step-type">Type</label>
-            <select
-              id="step-type"
-              value={step.subsystem}
-              disabled={!editable}
-              onChange={(e) =>
-                patchStep(step.stepId, { subsystem: e.target.value as JobStep['subsystem'] })
-              }
-            >
-              {['TSQL', 'CmdExec', 'PowerShell', 'SSIS'].map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
-
-            <label htmlFor="step-db">Database</label>
-            <input
-              id="step-db"
-              type="text"
-              value={step.databaseName ?? ''}
-              disabled={!editable}
-              onChange={(e) => patchStep(step.stepId, { databaseName: e.target.value || null })}
-            />
-
-            <label htmlFor="step-success">On success</label>
-            <StepActionPicker
-              id="step-success"
-              action={step.onSuccessAction}
-              targetStepId={step.onSuccessStepId}
-              steps={draft.steps}
-              currentStepId={step.stepId}
-              disabled={!editable}
-              onChange={(onSuccessAction, onSuccessStepId) =>
-                patchStep(step.stepId, { onSuccessAction, onSuccessStepId })
-              }
-            />
-
-            <label htmlFor="step-fail">On failure</label>
-            <StepActionPicker
-              id="step-fail"
-              action={step.onFailAction}
-              targetStepId={step.onFailStepId}
-              steps={draft.steps}
-              currentStepId={step.stepId}
-              disabled={!editable}
-              onChange={(onFailAction, onFailStepId) =>
-                patchStep(step.stepId, { onFailAction, onFailStepId })
-              }
-            />
-
-            <label htmlFor="step-retries">Retry attempts</label>
-            <input
-              id="step-retries"
-              type="text"
-              inputMode="numeric"
-              value={String(step.retryAttempts)}
-              disabled={!editable}
-              onChange={(e) =>
-                patchStep(step.stepId, { retryAttempts: Number(e.target.value) || 0 })
-              }
-            />
-
-            <label htmlFor="step-retry-interval">Retry interval (minutes)</label>
-            <input
-              id="step-retry-interval"
-              type="text"
-              inputMode="numeric"
-              value={String(step.retryIntervalMinutes)}
-              disabled={!editable}
-              onChange={(e) =>
-                patchStep(step.stepId, { retryIntervalMinutes: Number(e.target.value) || 0 })
-              }
-            />
-          </div>
-
-          <div style={{ padding: '0 11px 11px' }}>
-            <div className="editor-label">Command</div>
-            <Suspense fallback={<pre className="code">{step.command}</pre>}>
-              <MonacoEditor
-                value={step.command}
-                language={step.subsystem === 'PowerShell' ? 'powershell' : 'sql'}
-                readOnly={!editable}
-                onChange={(value) => patchStep(step.stepId, { command: value })}
-              />
-            </Suspense>
-          </div>
-        </Panel>
-      ) : null}
-
-      <Panel title={`Schedules (${draft.schedules.length})`}>
-        {draft.schedules.length === 0 ? (
-          <Empty title="Not scheduled" hint="This job only runs when started manually or by an alert." />
-        ) : (
-          <div className="table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Enabled</th>
-                  <th>Occurs</th>
-                  <th>Starts</th>
-                </tr>
-              </thead>
-              <tbody>
-                {draft.schedules.map((s, index) => (
-                  <tr key={s.name}>
-                    <td className="nowrap">{s.name}</td>
-                    <td>
-                      <input
-                        type="checkbox"
-                        checked={s.enabled}
-                        disabled={!editable}
-                        aria-label={`${s.name} enabled`}
-                        onChange={(e) =>
-                          setDraft((d) =>
-                            d
-                              ? {
-                                  ...d,
-                                  schedules: d.schedules.map((x, i) =>
-                                    i === index ? { ...x, enabled: e.target.checked } : x,
-                                  ),
-                                }
-                              : d,
-                          )
-                        }
-                      />
-                    </td>
-                    <td className="muted">{describeSchedule(s)}</td>
-                    <td className="muted mono">{toHumaneSchedule(s).startDate}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Panel>
-
-      <Panel title="Notifications">
-        <dl className="kv">
-          <dt>Email</dt>
-          <dd>
-            {draft.notifications.emailOperatorName ?? '—'}{' '}
-            <span className="faint">({notifyLevel(draft.notifications.emailLevel)})</span>
-          </dd>
-          <dt>Page</dt>
-          <dd>
-            {draft.notifications.pageOperatorName ?? '—'}{' '}
-            <span className="faint">({notifyLevel(draft.notifications.pageLevel)})</span>
-          </dd>
-          <dt>Write to the Windows event log</dt>
-          <dd className="muted">{notifyLevel(draft.notifications.eventlogLevel)}</dd>
-        </dl>
-        <div style={{ padding: '0 11px 11px' }} className="faint">
-          These are SQL Agent's own operator notifications, set per instance. Estate-wide alerting
-          to email, Slack or Teams is configured in Administration → Notifications.
-        </div>
-      </Panel>
+      {section === 'steps' ? (
+        <StepsSection
+          draft={draft}
+          editable={editable}
+          expandedStep={expandedStep}
+          onExpand={setExpandedStep}
+          onStructural={structural}
+          onPatchStep={patchStep}
+        />
+      ) : section === 'schedules' ? (
+        <SchedulesSection
+          draft={draft}
+          editable={editable}
+          onToggleSchedule={(index, enabled) =>
+            setDraft((d) =>
+              d
+                ? {
+                    ...d,
+                    schedules: d.schedules.map((x, i) => (i === index ? { ...x, enabled } : x)),
+                  }
+                : d,
+            )
+          }
+        />
+      ) : (
+        <NotificationsSection draft={draft} />
+      )}
 
       {/* Only present once there is something to save. A permanently visible
           save bar on a read-only screen is just noise. */}
@@ -494,6 +297,394 @@ export function JobEditor({
         </div>
       ) : null}
     </>
+  );
+}
+
+/**
+ * The step list, and one step's detail at a time.
+ *
+ * Collapsed by default because the list *is* the useful view: what the job
+ * does, in order, and where it branches. The body of a step is a T-SQL editor
+ * that fills the screen, so it opens on the row you asked for and nowhere else.
+ */
+function StepsSection({
+  draft,
+  editable,
+  expandedStep,
+  onExpand,
+  onStructural,
+  onPatchStep,
+}: {
+  draft: JobDefinition;
+  editable: boolean;
+  expandedStep: number | null;
+  onExpand: (stepId: number | null) => void;
+  onStructural: (fn: () => { definition: JobDefinition; warnings: string[] }) => void;
+  onPatchStep: (stepId: number, patch: Partial<JobStep>) => void;
+}) {
+  // Which row is being dragged, and which row the pointer is currently over.
+  const [dragging, setDragging] = useState<number | null>(null);
+  const [dropIndex, setDropIndex] = useState<number | null>(null);
+
+  const columns = editable ? 7 : 6;
+
+  function endDrag(): void {
+    setDragging(null);
+    setDropIndex(null);
+  }
+
+  return (
+    <Panel
+      title={`Steps (${draft.steps.length})`}
+      actions={
+        editable ? (
+          <button
+            className="action"
+            onClick={() =>
+              onStructural(() => {
+                const after = expandedStep ?? null;
+                const result = addStep(draft, { afterStepId: after });
+                // Open what was just created: the next action is always to
+                // type into it.
+                onExpand((after ?? draft.steps.length) + 1);
+                return result;
+              })
+            }
+          >
+            Add step
+          </button>
+        ) : undefined
+      }
+    >
+      <div className="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th style={{ width: 52 }}>#</th>
+              <th>Step name</th>
+              <th>Type</th>
+              <th>On success</th>
+              <th>On failure</th>
+              <th className="right">Retries</th>
+              {editable ? <th style={{ width: 130 }}>Order</th> : null}
+            </tr>
+          </thead>
+          <tbody>
+            {draft.steps.map((s, index) => {
+              const open = s.stepId === expandedStep;
+              const rowClass = [
+                'expandable',
+                'step-row',
+                dragging === s.stepId ? 'dragging' : '',
+                dropIndex === index && dragging !== null && dragging !== s.stepId
+                  ? 'drop-target'
+                  : '',
+              ]
+                .filter(Boolean)
+                .join(' ');
+
+              return (
+                <Fragment key={s.stepId}>
+                  <tr
+                    className={rowClass}
+                    draggable={editable}
+                    onClick={() => onExpand(open ? null : s.stepId)}
+                    onDragStart={(e) => {
+                      setDragging(s.stepId);
+                      e.dataTransfer.effectAllowed = 'move';
+                      // Firefox will not start a drag without payload.
+                      e.dataTransfer.setData('text/plain', String(s.stepId));
+                    }}
+                    onDragOver={(e) => {
+                      if (dragging === null) return;
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = 'move';
+                      setDropIndex(index);
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      if (dragging !== null && dragging !== s.stepId) {
+                        const moved = dragging;
+                        onStructural(() => reorderStep(draft, moved, index));
+                        // Step ids are positions, so the dragged step is now
+                        // numbered by where it landed.
+                        if (expandedStep === moved) onExpand(index + 1);
+                      }
+                      endDrag();
+                    }}
+                    onDragEnd={endDrag}
+                  >
+                    <td className="num muted nowrap">
+                      {editable ? (
+                        <span className="drag-grip" aria-hidden="true">
+                          ⠿
+                        </span>
+                      ) : null}
+                      {s.stepId}
+                    </td>
+                    <td className="nowrap">
+                      <span className="faint">{open ? '▾' : '▸'}</span>{' '}
+                      {draft.startStepId === s.stepId ? (
+                        <span title="The job starts here">▸ </span>
+                      ) : null}
+                      {s.name}
+                    </td>
+                    <td className="nowrap muted">{s.subsystem}</td>
+                    <td className="nowrap muted">
+                      {stepAction(s.onSuccessAction, s.onSuccessStepId)}
+                    </td>
+                    <td className="nowrap muted">{stepAction(s.onFailAction, s.onFailStepId)}</td>
+                    <td className="right num muted">{s.retryAttempts}</td>
+                    {editable ? (
+                      <td className="nowrap" onClick={(e) => e.stopPropagation()}>
+                        {/* Kept alongside dragging, not replaced by it: reordering
+                            has to be reachable from a keyboard. */}
+                        <button
+                          className="action icon"
+                          aria-label={`Move ${s.name} up`}
+                          disabled={index === 0}
+                          onClick={() => {
+                            onStructural(() => moveStep(draft, s.stepId, 'up'));
+                            if (expandedStep === s.stepId) onExpand(s.stepId - 1);
+                          }}
+                        >
+                          ↑
+                        </button>
+                        <button
+                          className="action icon"
+                          aria-label={`Move ${s.name} down`}
+                          disabled={index === draft.steps.length - 1}
+                          onClick={() => {
+                            onStructural(() => moveStep(draft, s.stepId, 'down'));
+                            if (expandedStep === s.stepId) onExpand(s.stepId + 1);
+                          }}
+                        >
+                          ↓
+                        </button>
+                        <button
+                          className="action icon danger"
+                          aria-label={`Remove ${s.name}`}
+                          onClick={() => {
+                            onStructural(() => removeStep(draft, s.stepId));
+                            if (expandedStep === s.stepId) onExpand(null);
+                          }}
+                        >
+                          ✕
+                        </button>
+                      </td>
+                    ) : null}
+                  </tr>
+
+                  {open ? (
+                    <tr className="step-detail-row">
+                      <td colSpan={columns}>
+                        <StepDetail
+                          step={s}
+                          steps={draft.steps}
+                          editable={editable}
+                          onPatch={(patch) => onPatchStep(s.stepId, patch)}
+                        />
+                      </td>
+                    </tr>
+                  ) : null}
+                </Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {editable ? (
+        <div className="faint" style={{ padding: '0 11px 9px' }}>
+          Drag a row to reorder, or use the arrows. SQL Agent numbers steps by position, so any
+          &ldquo;go to step&rdquo; branches are repointed to follow the steps they name.
+        </div>
+      ) : null}
+    </Panel>
+  );
+}
+
+/** One step's properties and its command body. */
+function StepDetail({
+  step,
+  steps,
+  editable,
+  onPatch,
+}: {
+  step: JobStep;
+  steps: JobStep[];
+  editable: boolean;
+  onPatch: (patch: Partial<JobStep>) => void;
+}) {
+  return (
+    <div className="step-detail">
+      <div className="editor-grid">
+        <label htmlFor={`step-name-${step.stepId}`}>Step name</label>
+        <input
+          id={`step-name-${step.stepId}`}
+          type="text"
+          value={step.name}
+          disabled={!editable}
+          onChange={(e) => onPatch({ name: e.target.value })}
+        />
+
+        <label htmlFor={`step-type-${step.stepId}`}>Type</label>
+        <select
+          id={`step-type-${step.stepId}`}
+          value={step.subsystem}
+          disabled={!editable}
+          onChange={(e) => onPatch({ subsystem: e.target.value as JobStep['subsystem'] })}
+        >
+          {['TSQL', 'CmdExec', 'PowerShell', 'SSIS'].map((s) => (
+            <option key={s} value={s}>
+              {s}
+            </option>
+          ))}
+        </select>
+
+        <label htmlFor={`step-db-${step.stepId}`}>Database</label>
+        <input
+          id={`step-db-${step.stepId}`}
+          type="text"
+          value={step.databaseName ?? ''}
+          disabled={!editable}
+          onChange={(e) => onPatch({ databaseName: e.target.value || null })}
+        />
+
+        <label htmlFor={`step-success-${step.stepId}`}>On success</label>
+        <StepActionPicker
+          id={`step-success-${step.stepId}`}
+          action={step.onSuccessAction}
+          targetStepId={step.onSuccessStepId}
+          steps={steps}
+          currentStepId={step.stepId}
+          disabled={!editable}
+          onChange={(onSuccessAction, onSuccessStepId) =>
+            onPatch({ onSuccessAction, onSuccessStepId })
+          }
+        />
+
+        <label htmlFor={`step-fail-${step.stepId}`}>On failure</label>
+        <StepActionPicker
+          id={`step-fail-${step.stepId}`}
+          action={step.onFailAction}
+          targetStepId={step.onFailStepId}
+          steps={steps}
+          currentStepId={step.stepId}
+          disabled={!editable}
+          onChange={(onFailAction, onFailStepId) => onPatch({ onFailAction, onFailStepId })}
+        />
+
+        <label htmlFor={`step-retries-${step.stepId}`}>Retry attempts</label>
+        <input
+          id={`step-retries-${step.stepId}`}
+          type="text"
+          inputMode="numeric"
+          value={String(step.retryAttempts)}
+          disabled={!editable}
+          onChange={(e) => onPatch({ retryAttempts: Number(e.target.value) || 0 })}
+        />
+
+        <label htmlFor={`step-retry-interval-${step.stepId}`}>Retry interval (minutes)</label>
+        <input
+          id={`step-retry-interval-${step.stepId}`}
+          type="text"
+          inputMode="numeric"
+          value={String(step.retryIntervalMinutes)}
+          disabled={!editable}
+          onChange={(e) => onPatch({ retryIntervalMinutes: Number(e.target.value) || 0 })}
+        />
+      </div>
+
+      <div style={{ padding: '0 11px 11px' }}>
+        <div className="editor-label">Command</div>
+        <Suspense fallback={<pre className="code">{step.command}</pre>}>
+          <MonacoEditor
+            value={step.command}
+            language={step.subsystem === 'PowerShell' ? 'powershell' : 'sql'}
+            readOnly={!editable}
+            onChange={(value) => onPatch({ command: value })}
+          />
+        </Suspense>
+      </div>
+    </div>
+  );
+}
+
+function SchedulesSection({
+  draft,
+  editable,
+  onToggleSchedule,
+}: {
+  draft: JobDefinition;
+  editable: boolean;
+  onToggleSchedule: (index: number, enabled: boolean) => void;
+}) {
+  return (
+    <Panel title={`Schedules (${draft.schedules.length})`}>
+      {draft.schedules.length === 0 ? (
+        <Empty
+          title="Not scheduled"
+          hint="This job only runs when started manually or by an alert."
+        />
+      ) : (
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Enabled</th>
+                <th>Occurs</th>
+                <th>Starts</th>
+              </tr>
+            </thead>
+            <tbody>
+              {draft.schedules.map((s, index) => (
+                <tr key={s.name}>
+                  <td className="nowrap">{s.name}</td>
+                  <td>
+                    <input
+                      type="checkbox"
+                      checked={s.enabled}
+                      disabled={!editable}
+                      aria-label={`${s.name} enabled`}
+                      onChange={(e) => onToggleSchedule(index, e.target.checked)}
+                    />
+                  </td>
+                  <td className="muted">{describeSchedule(s)}</td>
+                  <td className="muted mono">{toHumaneSchedule(s).startDate}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function NotificationsSection({ draft }: { draft: JobDefinition }) {
+  return (
+    <Panel title="Notifications">
+      <dl className="kv">
+        <dt>Email</dt>
+        <dd>
+          {draft.notifications.emailOperatorName ?? '—'}{' '}
+          <span className="faint">({notifyLevel(draft.notifications.emailLevel)})</span>
+        </dd>
+        <dt>Page</dt>
+        <dd>
+          {draft.notifications.pageOperatorName ?? '—'}{' '}
+          <span className="faint">({notifyLevel(draft.notifications.pageLevel)})</span>
+        </dd>
+        <dt>Write to the Windows event log</dt>
+        <dd className="muted">{notifyLevel(draft.notifications.eventlogLevel)}</dd>
+      </dl>
+      <div style={{ padding: '0 11px 11px' }} className="faint">
+        These are SQL Agent&apos;s own operator notifications, set per instance. Estate-wide
+        alerting to email, Slack or Teams is configured in Administration → Notifications.
+      </div>
+    </Panel>
   );
 }
 

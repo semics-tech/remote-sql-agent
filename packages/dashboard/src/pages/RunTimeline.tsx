@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
 import { StepAction, type JobDefinition } from '@remote-sql-agent/protocol/browser';
 import type { HistoryRun, JobStats } from '../api.js';
 import { formatDateTime, formatDuration, runStatusClass, runStatusLabel } from '../format.js';
+import { useTicker } from '../ticker.js';
 
 /**
  * A run on a time axis: steps down the side, elapsed time across.
@@ -310,23 +310,4 @@ function axisTicks(totalSeconds: number): number[] {
   const ticks: number[] = [];
   for (let t = 0; t < totalSeconds; t += step) ticks.push(t);
   return ticks;
-}
-
-/**
- * A one-second tick while a run is live.
- *
- * The bar for the running step is drawn against "now", so without this it would
- * only grow when a poll happened to land.
- */
-function useTicker(active: boolean): number {
-  const [now, setNow] = useState(() => Date.now());
-
-  useEffect(() => {
-    if (!active) return undefined;
-    setNow(Date.now());
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [active]);
-
-  return now;
 }

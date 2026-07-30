@@ -13,15 +13,22 @@ import { useAuth } from '../auth.jsx';
 export function JobActions({
   instanceId,
   job,
+  pendingEnabled,
   onIssued,
   onStarting,
+  onToggling,
 }: {
   instanceId: string;
   job: JobDetail;
+  /** The enabled state asked for and not yet confirmed, or null when settled. */
+  pendingEnabled: boolean | null;
   onIssued: (message: string) => void;
   /** Fired the instant a start is accepted, so the page can show it running
    * before SQL Agent's activity poll catches up. */
   onStarting?: () => void;
+  /** Likewise for enable/disable — the page owns the optimistic state because
+   * the heading badge and the polling rate both depend on it. */
+  onToggling?: (enabled: boolean) => void;
 }) {
   const capabilities = useInstanceCapabilities(instanceId);
   const actions = useJobActions(instanceId, job.jobUuid);
@@ -69,14 +76,36 @@ export function JobActions({
         {workerCan('job.toggle') && can('job.toggle') ? (
           <button
             className="action"
-            disabled={busy}
+            // Disabled while the change is in flight rather than hidden: the
+            // button is where the operator is looking, so it is where the
+            // progress belongs.
+            disabled={busy || pendingEnabled !== null}
             onClick={() =>
-              void issue(job.enabled ? 'Disable job' : 'Enable job', () =>
-                actions.toggle(!job.enabled, job.currentDefinitionHash ?? undefined),
+              void issue(
+                job.enabled ? 'Disable job' : 'Enable job',
+                async () => {
+                  const next = !job.enabled;
+                  const result = await actions.toggle(
+                    next,
+                    job.currentDefinitionHash ?? undefined,
+                  );
+                  // Only once accepted, and never when it is queued for
+                  // approval — showing "Disabling…" for a change nobody has
+                  // approved would be a lie the page never resolves.
+                  if (!result.requiresApproval) onToggling?.(next);
+                  return result;
+                },
+                { silentOnSuccess: true },
               )
             }
           >
-            {job.enabled ? 'Disable' : 'Enable'}
+            {pendingEnabled !== null
+              ? pendingEnabled
+                ? 'Enabling…'
+                : 'Disabling…'
+              : job.enabled
+                ? 'Disable'
+                : 'Enable'}
           </button>
         ) : null}
 

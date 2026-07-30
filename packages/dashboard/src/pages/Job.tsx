@@ -22,6 +22,16 @@ const MonacoDiff = lazy(() => import('../MonacoDiff.jsx'));
 type Tab = 'job' | 'history' | 'versions';
 
 /**
+ * How long to keep showing an enable/disable as in progress.
+ *
+ * Issuing the command only queues it, so nothing on this page can tell the
+ * difference between "the worker is about to apply it" and "the worker is
+ * offline and never will". Rather than leave the button in limbo, give up and
+ * show what the server actually reports, with somewhere to go and look.
+ */
+const TOGGLE_TIMEOUT_MS = 20_000;
+
+/**
  * A job.
  *
  * Opening a job puts you straight into its definition, editable if you are
@@ -38,10 +48,16 @@ export function Job() {
   // Without it there is a window where the operator has pressed the button and
   // nothing on screen has changed.
   const [starting, setStarting] = useState(false);
+  // The enabled state we have asked for and not yet seen confirmed. Same idea
+  // as `starting`: the operator pressed a button and something must change.
+  const [pendingEnabled, setPendingEnabled] = useState<boolean | null>(null);
+  const [toggleStalled, setToggleStalled] = useState(false);
 
-  const jobQuery = useJob(instanceId, jobUuid, starting);
+  const settling = starting || pendingEnabled !== null;
+  const jobQuery = useJob(instanceId, jobUuid, settling);
   const job = jobQuery.data;
   const running = job?.activity?.state === 'executing';
+  const enabled = job?.enabled;
 
   const history = useJobHistory(instanceId, jobUuid, running || starting);
   const stats = useJobStats(instanceId, jobUuid, running || starting);
@@ -52,6 +68,20 @@ export function Job() {
     if (running) setStarting(false);
   }, [running]);
 
+  useEffect(() => {
+    if (pendingEnabled === null) return undefined;
+    if (enabled === pendingEnabled) {
+      setPendingEnabled(null);
+      setToggleStalled(false);
+      return undefined;
+    }
+    const timer = setTimeout(() => {
+      setPendingEnabled(null);
+      setToggleStalled(true);
+    }, TOGGLE_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [pendingEnabled, enabled]);
+
   const definition = job?.definition ?? null;
 
   return (
@@ -59,7 +89,13 @@ export function Job() {
       <QueryState isLoading={jobQuery.isLoading} error={jobQuery.error}>
         <div className="page-head">
           <h2>{job?.name}</h2>
-          {job?.enabled === false ? <span className="badge neutral">Disabled</span> : null}
+          {pendingEnabled !== null ? (
+            <span className="badge neutral" title="Sent to the worker; waiting for SQL Agent">
+              {pendingEnabled ? 'Enabling…' : 'Disabling…'}
+            </span>
+          ) : enabled === false ? (
+            <span className="badge neutral">Disabled</span>
+          ) : null}
           {running ? (
             <span className="badge running">Running</span>
           ) : starting ? (
@@ -83,11 +119,29 @@ export function Job() {
           <JobActions
             instanceId={instanceId}
             job={job}
+            pendingEnabled={pendingEnabled}
             onIssued={(message) => setNotice(message)}
             onStarting={() => setStarting(true)}
+            onToggling={(next) => {
+              setToggleStalled(false);
+              setPendingEnabled(next);
+            }}
           />
         ) : null}
       </QueryState>
+
+      {toggleStalled ? (
+        <div className="notice">
+          <span>
+            SQL Agent has not confirmed that change yet. The job is still{' '}
+            {enabled ? 'enabled' : 'disabled'} here — check{' '}
+            <Link to="/commands">Commands</Link> for what became of it.
+          </span>
+          <button className="action" onClick={() => setToggleStalled(false)}>
+            Dismiss
+          </button>
+        </div>
+      ) : null}
 
       {notice ? (
         <div className="notice">

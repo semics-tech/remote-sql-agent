@@ -447,8 +447,10 @@ export interface RunningJob {
   currentStepId: number | null;
   currentStepName: string | null;
   startedAt: string | null;
+  /** Measured by the server when it replied; tick it forward from there. */
   elapsedSeconds: number | null;
   averageSeconds: number | null;
+  lastDurationSeconds: number | null;
   overrunRatio: number | null;
   isLongRunning: boolean;
 }

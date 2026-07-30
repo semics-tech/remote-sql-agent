@@ -114,6 +114,35 @@ export function moveStep(
   return rebuild(definition, nodes, []);
 }
 
+/**
+ * Move a step to an absolute position, preserving every reference.
+ *
+ * Separate from `moveStep` because dragging is positional: the operator drops a
+ * step *between* two others and expects it to land there, whereas repeated
+ * single-place swaps would have to be counted out and get the destination wrong
+ * whenever the dragged step passes its own original slot.
+ *
+ * `toIndex` is the destination in the list as it will read afterwards, zero-
+ * based, and is clamped rather than rejected — a drop past the last row means
+ * "put it last", which is what the pointer was over.
+ */
+export function reorderStep(
+  definition: JobDefinition,
+  stepId: number,
+  toIndex: number,
+): StepEditResult {
+  const nodes = toNodes(definition);
+  const from = nodes.findIndex((n) => n.step.stepId === stepId);
+  if (from === -1) return { definition, warnings: [] };
+
+  const to = Math.max(0, Math.min(nodes.length - 1, Math.trunc(toIndex)));
+  if (to === from) return { definition, warnings: [] };
+
+  const [moved] = nodes.splice(from, 1);
+  nodes.splice(to, 0, moved!);
+  return rebuild(definition, nodes, []);
+}
+
 /** Replace one step's fields without disturbing the graph. */
 export function updateStep(
   definition: JobDefinition,

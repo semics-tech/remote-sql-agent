@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addStep, moveStep, removeStep, updateStep } from '../src/job-edit.js';
+import { addStep, moveStep, removeStep, reorderStep, updateStep } from '../src/job-edit.js';
 import { StepAction, jobDefinitionSchema } from '../src/job-definition.js';
 import { job, step } from './fixtures.js';
 
@@ -167,6 +167,64 @@ describe('moveStep', () => {
       'Cleanup',
     ]);
     expect(moveStep(branchingJob(), 4, 'down').definition.steps[3]!.name).toBe('Cleanup');
+  });
+});
+
+describe('reorderStep', () => {
+  it('drops a step at the position the pointer was over', () => {
+    // "Cleanup" dragged to the top of the list.
+    const { definition } = reorderStep(branchingJob(), 4, 0);
+    expect(definition.steps.map((s) => s.name)).toEqual([
+      'Cleanup',
+      'Precheck',
+      'Backup',
+      'Alert on failure',
+    ]);
+  });
+
+  it('lands on the same row whether dragged up or down', () => {
+    // The trap this pins: indices shift once the dragged step is lifted out.
+    // Moving step 1 to index 2 must put it *third*, not second, and the same
+    // row moved back must return the list to where it started.
+    const downwards = reorderStep(branchingJob(), 1, 2).definition;
+    expect(downwards.steps.map((s) => s.name)).toEqual([
+      'Backup',
+      'Alert on failure',
+      'Precheck',
+      'Cleanup',
+    ]);
+
+    const back = reorderStep(downwards, 3, 0).definition;
+    expect(back.steps.map((s) => s.name)).toEqual(
+      branchingJob().steps.map((s) => s.name),
+    );
+  });
+
+  it('carries branches and the start step across the move', () => {
+    const { definition, warnings } = reorderStep(branchingJob(), 4, 0);
+    const backup = definition.steps.find((s) => s.name === 'Backup')!;
+
+    // Cleanup is now step 1 and the handler is step 4; both jumps must follow.
+    expect(backup.onSuccessStepId).toBe(1);
+    expect(backup.onFailStepId).toBe(4);
+    expect(definition.startStepId).toBe(3);
+    expect(warnings).toEqual([]);
+  });
+
+  it('clamps a drop past either end rather than refusing it', () => {
+    expect(reorderStep(branchingJob(), 1, 99).definition.steps[3]!.name).toBe('Precheck');
+    expect(reorderStep(branchingJob(), 4, -5).definition.steps[0]!.name).toBe('Cleanup');
+  });
+
+  it('leaves the definition untouched for a no-op or an unknown step', () => {
+    const base = branchingJob();
+    expect(reorderStep(base, 2, 1).definition).toBe(base);
+    expect(reorderStep(base, 99, 0).definition).toBe(base);
+  });
+
+  it('produces a definition that still validates', () => {
+    const { definition } = reorderStep(branchingJob(), 2, 3);
+    expect(() => jobDefinitionSchema.parse(definition)).not.toThrow();
   });
 });
 

@@ -235,7 +235,9 @@ pnpm dev:seed        # ~10 varied fixture jobs
 ```
 
 > The SQL Server image is amd64 and runs under emulation on Apple Silicon.
-> Allow 60–90s for it to become healthy.
+> Allow 60–90s for it to become healthy, and give Docker at least 6 GB. Below
+> that it is the container the kernel picks first: `docker ps -a` shows
+> `Exited (137)`, and everything downstream looks like a connection bug instead.
 
 **Three long-running processes**, one terminal each. All three are needed: the
 control plane serves the API, the worker is what actually talks to SQL Server,
@@ -243,18 +245,46 @@ and without it the dashboard is an empty estate.
 
 ```bash
 # 1. Control plane — API on :8080, worker hub on :8443
-RSAGENT_GRPC_REQUIRE_TLS=false pnpm --filter @remote-sql-agent/server dev
+pnpm dev:server
 
 # 2. Dashboard — http://localhost:5173, proxies /api to :8080
-pnpm --filter @remote-sql-agent/dashboard dev
+pnpm dev:dashboard
 
 # 3. Worker — listens on nothing; dials out to the hub
 pnpm dev:worker
 ```
 
-The worker needs enrolling once before step 3 works. The control plane prints a
-generated bootstrap admin password to its log on first boot; sign in with it,
-then **Estate → Add a worker** for a token:
+### Signing in
+
+The dashboard asks for credentials in development too. There is deliberately no
+local bypass: an authentication switch that can be turned off is one that
+eventually ships turned off, and every RBAC path in the product hangs off having
+a real signed-in user with a real role.
+
+`pnpm dev:server` instead fixes the bootstrap password to something you already
+know, by setting `RSAGENT_BOOTSTRAP_ADMIN_PASSWORD`:
+
+```
+username: admin
+password: rsagent-dev
+```
+
+That only applies on first boot, when the database has no users yet. If you have
+an older dev database — or you changed the password and forgot it:
+
+```bash
+pnpm dev:reset-admin
+```
+
+It refuses to touch anything but a database on `localhost`.
+
+In a real deployment neither exists: the control plane generates a password on
+first boot and prints it **once**.
+
+### Enrolling the dev worker
+
+The worker needs enrolling before step 3 works. Sign in, then **Estate → Add a
+worker** for a token:
 
 ```bash
 pnpm dev:enrol --token rsen_xxxxxxxxxxxx

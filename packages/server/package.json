@@ -16,6 +16,7 @@
     "start": "tsx src/index.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
+    "reset-dev-admin": "tsx scripts/reset-dev-admin.ts",
     "test": "vitest run"
   },
   "dependencies": {
