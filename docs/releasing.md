@@ -59,12 +59,78 @@ versions cannot be reused after they are unpublished.
 
 | Secret | Used by | Notes |
 |---|---|---|
-| `NPM_TOKEN` | npm job | Granular token, write access to the `@remote-sql-agent` scope |
 | `DOCKERHUB_USERNAME` | container job | |
 | `DOCKERHUB_TOKEN` | container job | A Docker Hub **access token**, not the account password |
 
+There is deliberately **no `NPM_TOKEN`**. npm publishing uses trusted
+publishing: the workflow's `id-token: write` permission mints a short-lived
+OIDC token that npm exchanges for publish rights, scoped to this repository and
+this workflow file. Nothing long-lived exists in the repository to leak,
+expire, or forget to rotate, and provenance is generated automatically as a
+side effect.
+
 `GITHUB_TOKEN` is supplied automatically and covers GHCR and the release
 upload.
+
+### The bootstrap problem
+
+Trusted publishing is configured **per package, on a package that already
+exists**. A package that has never been published has no settings page to
+configure, so OIDC cannot perform a package's first publish. This is a known
+chicken-and-egg in npm's design, not something wrong with this setup.
+
+So each new package name needs one manual publish, once, ever:
+
+```bash
+npm login                       # interactive, 2FA; no token is stored anywhere
+
+cd "$(mktemp -d)"
+for pkg in protocol worker; do
+  mkdir -p "$pkg" && cd "$pkg"
+  cat > package.json <<JSON
+{
+  "name": "@remote-sql-agent/$pkg",
+  "version": "0.0.0",
+  "description": "Placeholder to enable trusted publishing. See https://github.com/semics-tech/remote-sql-agent",
+  "license": "Apache-2.0"
+}
+JSON
+  npm publish --access public
+  cd ..
+done
+```
+
+`0.0.0` on purpose: it is below any real release, it is published from a
+scratch directory so nothing in this repository is touched, and it means every
+version anyone actually installs was published by CI with provenance. Deprecate
+it once the first real release is out:
+
+```bash
+npm deprecate "@remote-sql-agent/protocol@0.0.0" "Placeholder. Use 0.1.0 or later."
+npm deprecate "@remote-sql-agent/worker@0.0.0"   "Placeholder. Use 0.1.0 or later."
+```
+
+### Configuring the trusted publisher
+
+On npmjs.com, for **each** of the two packages — Settings → Trusted Publisher:
+
+| Field | Value |
+|---|---|
+| Provider | GitHub Actions |
+| Organization or user | `semics-tech` |
+| Repository | `remote-sql-agent` |
+| Workflow filename | `release.yml` |
+| Environment | leave empty |
+| Allowed actions | `npm publish` |
+
+The workflow filename is matched exactly, so **renaming
+`.github/workflows/release.yml` breaks publishing** until both packages are
+updated to match. Adding a third published package means repeating this for it;
+until then its release job will fail with a 404, which is what an
+unauthenticated publish looks like.
+
+Requires pnpm 10.20 or later — pnpm implements the OIDC exchange itself, and
+this repository pins `pnpm@10.23.0` via `packageManager`.
 
 A manual `workflow_dispatch` run defaults to `dry_run: true`: it builds
 everything, including the executables, and publishes nothing. That is the way
@@ -105,10 +171,17 @@ gh attestation verify oci://ghcr.io/semics-tech/remote-sql-agent/control-plane:0
 
 ## Before the first publish
 
-- Create the `@remote-sql-agent` npm organisation and confirm the scope is
-  owned by this project
-- Create the Docker Hub repository `semics/remote-sql-agent`
-- Add the three secrets above
-- Run the workflow manually with `dry_run: true` and read the output
-- Cut `v0.1.0-rc.1` and install it from each of the three routes on a machine
-  that has never built this repository
+1. Create the `@remote-sql-agent` npm organisation
+2. Bootstrap-publish the two `0.0.0` placeholders, as above
+3. Configure a trusted publisher on each package
+4. Create the Docker Hub repository `semics/remote-sql-agent`, and add
+   `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`
+5. Run the Release workflow manually with `dry_run: true` and read the output.
+   `workflow_dispatch` only fires from the default branch, so this cannot be
+   tested from a pull request
+6. Cut `v0.1.0-rc.1` and install it from each of the three routes on a machine
+   that has never built this repository
+
+Step 6 is not optional ceremony. A publish pipeline that has never run is not a
+publish pipeline that works, and **npm versions cannot be reused** — an
+unpublished version number is spent for good.

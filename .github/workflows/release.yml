@@ -110,7 +110,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write # npm provenance
+      # The whole npm credential. Trusted publishing exchanges this short-lived
+      # OIDC token for publish rights, so there is no NPM_TOKEN in this
+      # repository to leak, expire, or forget to rotate. Both packages are
+      # configured on npmjs.com to trust this repository and this workflow
+      # file, so renaming this file breaks publishing until the trusted
+      # publisher config is updated to match.
+      id-token: write
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -134,25 +140,25 @@ jobs:
             echo "dist=latest" >> "$GITHUB_OUTPUT"
           fi
 
+      # No --provenance and no NODE_AUTH_TOKEN. Trusted publishing generates
+      # the provenance attestation on its own, and asking for it explicitly is
+      # what makes a publish fail anywhere the OIDC token is absent.
+      #
       # protocol first: worker depends on it, and pnpm rewrites the
       # workspace:* range to the real version at publish time.
       - name: Publish @remote-sql-agent/protocol
         run: |
           pnpm --filter @remote-sql-agent/protocol publish \
-            --access public --no-git-checks --provenance \
+            --access public --no-git-checks \
             --tag ${{ steps.tag.outputs.dist }} \
             ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '--dry-run' || '' }}
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish @remote-sql-agent/worker
         run: |
           pnpm --filter @remote-sql-agent/worker publish \
-            --access public --no-git-checks --provenance \
+            --access public --no-git-checks \
             --tag ${{ steps.tag.outputs.dist }} \
             ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '--dry-run' || '' }}
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   container:
     name: Publish control plane image

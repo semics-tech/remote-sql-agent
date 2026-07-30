@@ -176,15 +176,19 @@ workers it holds. Postgres itself can be made HA independently right now.
 
 Must happen before the first tagged release.
 
-- [ ] **Verify the npm scope is available.** Packages are named
-      `@remote-sql-agent/protocol` and `@remote-sql-agent/worker`. The
-      architecture spec called for this check before M0 and it was never done.
-      If the scope is taken, renaming is mechanical but touches every import.
+- [x] **Verify the npm scope is available.** Packages are named
+      `@remote-sql-agent/protocol` and `@remote-sql-agent/worker`. The scope
+      was unclaimed and the `remote-sql-agent` organisation now holds it.
 - [ ] **Verify the GitHub org/repo name.** `CODEOWNERS`, `SECURITY.md`, the
       package `repository` fields and the container image name all assume
       `semics-tech/remote-sql-agent`.
-- [ ] **Set repository secrets** for the release workflow: `NPM_TOKEN`.
-      Container publishing uses the built-in `GITHUB_TOKEN`.
+- [ ] **Bootstrap the two npm packages and configure trusted publishing** on
+      each. OIDC cannot perform a package's first publish, so each name needs
+      one manual `0.0.0` publish before its trusted publisher can be set up.
+      Steps in [releasing.md](releasing.md).
+- [ ] **Set repository secrets** for the release workflow:
+      `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`. npm needs no secret — it
+      publishes via OIDC — and GHCR uses the built-in `GITHUB_TOKEN`.
 - [ ] **Enable branch protection on `main`** — see §5.
 - [ ] **Decide the support commitment** before people depend on it. `0.x`
       versions currently signal that breaking changes may land in minors.
