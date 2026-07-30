@@ -239,7 +239,7 @@ jobs:
       - name: Update the Docker Hub description
         if: ${{ github.ref_type == 'tag' && needs.verify.outputs.prerelease == 'false' }}
         continue-on-error: true
-        uses: peter-evans/dockerhub-description@v4
+        uses: peter-evans/dockerhub-description@v5
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
