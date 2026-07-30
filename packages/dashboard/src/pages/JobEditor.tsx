@@ -4,7 +4,10 @@ import {
   StepAction,
   addStep,
   describeSchedule,
+  disableStep,
+  enableStep,
   moveStep,
+  reachableSteps,
   removeStep,
   reorderStep,
   toHumaneSchedule,
@@ -326,7 +329,14 @@ function StepsSection({
   const [dragging, setDragging] = useState<number | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
 
-  const columns = editable ? 7 : 6;
+  const columns = editable ? 8 : 7;
+
+  // SQL Agent has no disabled-step flag, so "will not run" and "nothing can
+  // reach it" are the same condition — which means one control and one
+  // explanation, rather than a switch and a separate warning that contradict
+  // each other whenever someone rewires a job by hand in SSMS.
+  const reachable = reachableSteps(draft);
+  const disabledCount = draft.steps.filter((s) => !reachable.has(s.stepId)).length;
 
   function endDrag(): void {
     setDragging(null);
@@ -361,6 +371,9 @@ function StepsSection({
           <thead>
             <tr>
               <th style={{ width: 52 }}>#</th>
+              <th style={{ width: 44 }} title="Whether the job can reach this step at all">
+                Runs
+              </th>
               <th>Step name</th>
               <th>Type</th>
               <th>On success</th>
@@ -372,9 +385,11 @@ function StepsSection({
           <tbody>
             {draft.steps.map((s, index) => {
               const open = s.stepId === expandedStep;
+              const runs = reachable.has(s.stepId);
               const rowClass = [
                 'expandable',
                 'step-row',
+                runs ? '' : 'step-off',
                 dragging === s.stepId ? 'dragging' : '',
                 dropIndex === index && dragging !== null && dragging !== s.stepId
                   ? 'drop-target'
@@ -422,12 +437,38 @@ function StepsSection({
                       ) : null}
                       {s.stepId}
                     </td>
+                    <td onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        checked={runs}
+                        disabled={!editable}
+                        aria-label={`${s.name} runs`}
+                        title={
+                          runs
+                            ? 'Clear to route the job around this step. The step stays in the job.'
+                            : 'This step cannot be reached, so it never runs. Tick to put it back in the flow.'
+                        }
+                        onChange={(e) =>
+                          onStructural(() =>
+                            e.target.checked
+                              ? enableStep(draft, s.stepId)
+                              : disableStep(draft, s.stepId),
+                          )
+                        }
+                      />
+                    </td>
                     <td className="nowrap">
                       <span className="faint">{open ? '▾' : '▸'}</span>{' '}
                       {draft.startStepId === s.stepId ? (
                         <span title="The job starts here">▸ </span>
                       ) : null}
                       {s.name}
+                      {runs ? null : (
+                        <>
+                          {' '}
+                          <span className="badge neutral">off</span>
+                        </>
+                      )}
                     </td>
                     <td className="nowrap muted">{s.subsystem}</td>
                     <td className="nowrap muted">
@@ -494,10 +535,28 @@ function StepsSection({
         </table>
       </div>
 
+      {disabledCount > 0 ? (
+        <div className="notice" style={{ margin: '0 11px 9px' }}>
+          <span>
+            <strong>
+              {disabledCount === 1
+                ? '1 step will not run'
+                : `${disabledCount} steps will not run`}
+            </strong>
+            <br />
+            SQL Agent has no switch for turning a step off, so this product does it the only way
+            the server understands: the job is routed around the step, and the step stays exactly
+            where it is. Nothing can reach it, so it never runs — including if you uninstall the
+            worker. Tick <em>Runs</em> to put it back in the flow.
+          </span>
+        </div>
+      ) : null}
+
       {editable ? (
         <div className="faint" style={{ padding: '0 11px 9px' }}>
           Drag a row to reorder, or use the arrows. SQL Agent numbers steps by position, so any
-          &ldquo;go to step&rdquo; branches are repointed to follow the steps they name.
+          &ldquo;go to step&rdquo; branches are repointed to follow the steps they name, and a step
+          arriving at the end of the list stops the job rather than running off it.
         </div>
       ) : null}
     </Panel>

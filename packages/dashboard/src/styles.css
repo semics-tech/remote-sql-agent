@@ -558,6 +558,16 @@ td a:hover {
     inset 0 -2px 0 var(--accent);
 }
 
+/* A step nothing can reach. Muted rather than struck through: it is still part
+ * of the job and still editable, it just never runs. */
+.step-row.step-off > td {
+  opacity: 0.55;
+}
+
+.step-row.step-off > td:nth-child(2) {
+  opacity: 1;
+}
+
 .step-detail-row > td {
   padding: 0;
   background: var(--bg-raised);

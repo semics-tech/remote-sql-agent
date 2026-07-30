@@ -1,11 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { JobDefinition, JobStep } from '@remote-sql-agent/protocol/browser';
 import { StepAction } from '@remote-sql-agent/protocol/browser';
-import {
-  buildHistoricRun,
-  buildLiveRun,
-  inferRunningStep,
-} from '../src/pages/RunTimeline.js';
+import { buildHistoricRun, buildLiveRun } from '../src/pages/RunTimeline.js';
 import type { HistoryRun, JobStats } from '../src/api.js';
 
 /**
@@ -117,58 +113,9 @@ function stats(completedSteps: CompletedStep[]): JobStats {
   };
 }
 
-describe('inferRunningStep', () => {
-  it('is the start step before anything has finished', () => {
-    // The bug this pins: msdb reports last_executed_step_id = 0 here, so relying
-    // on it left the timeline blank for the whole of step one.
-    expect(inferRunningStep(THREE_STEPS, [])).toBe(1);
-  });
-
-  it('respects a job that does not start at step 1', () => {
-    const def = definition(
-      [step({ stepId: 1 }), step({ stepId: 2 }), step({ stepId: 3 })],
-      2,
-    );
-    expect(inferRunningStep(def, [])).toBe(2);
-  });
-
-  it('advances to the next step after a success', () => {
-    expect(inferRunningStep(THREE_STEPS, [completed({ stepId: 1 })])).toBe(2);
-  });
-
-  it('follows an explicit go-to-step branch', () => {
-    const def = definition([
-      step({ stepId: 1, onSuccessAction: StepAction.GoToStep, onSuccessStepId: 3 }),
-      step({ stepId: 2 }),
-      step({ stepId: 3, onSuccessAction: StepAction.QuitWithSuccess }),
-    ]);
-    expect(inferRunningStep(def, [completed({ stepId: 1 })])).toBe(3);
-  });
-
-  it('follows the failure branch when the step failed', () => {
-    const def = definition([
-      step({ stepId: 1, onFailAction: StepAction.GoToStep, onFailStepId: 3 }),
-      step({ stepId: 2 }),
-      step({ stepId: 3, onSuccessAction: StepAction.QuitWithSuccess }),
-    ]);
-    expect(inferRunningStep(def, [completed({ stepId: 1, runStatus: 0 })])).toBe(3);
-  });
-
-  it('reports nothing running once the flow quits', () => {
-    expect(
-      inferRunningStep(THREE_STEPS, [completed({ stepId: 3, stepName: 'Load' })]),
-    ).toBeNull();
-    // A failed step whose action is quit ends the run too.
-    expect(
-      inferRunningStep(THREE_STEPS, [completed({ stepId: 1, runStatus: 0 })]),
-    ).toBeNull();
-  });
-
-  it('reports nothing running when go-to-next has nowhere to go', () => {
-    const def = definition([step({ stepId: 1, onSuccessAction: StepAction.GoToNextStep })]);
-    expect(inferRunningStep(def, [completed({ stepId: 1 })])).toBeNull();
-  });
-});
+// The flow inference itself lives in the protocol package and is tested
+// there (test/job-flow.test.ts). What remains here is the timeline
+// arithmetic built on top of it.
 
 describe('buildLiveRun', () => {
   it('draws the running step from the start of the run', () => {

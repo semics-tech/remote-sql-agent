@@ -60,6 +60,30 @@ badge, and the Versions tab diffs it against what was there before.
 Drift is normal and expected — DBAs will keep using SSMS, and they should be
 able to. It is surfaced, never silently overwritten.
 
+## How can a step be disabled when SQL Agent has no such feature?
+
+By routing the job around it. Clearing **Runs** on a step rewrites the flow so
+nothing arrives there any more: whatever used to fall into the step now goes
+wherever that step would have gone, and any explicit *go to step* branch aimed
+at it is repointed too. The step keeps its row in `sysjobsteps` — name, command,
+retries, output file, all of it.
+
+This is a real edit to the job, so it produces a new version, a diff, and needs
+`job.write` like any other change.
+
+Doing it this way is what makes it safe. SSMS sees an ordinary job with ordinary
+branching. **Uninstall the worker and the step stays switched off**, because the
+job on the server genuinely no longer reaches it — nothing depends on this
+product being present to honour a flag it invented. A stored `disabled: true`
+would have had the opposite failure mode: the moment the tool went away, a step
+everyone believed was off would start running again.
+
+The consequence is that "disabled" is read from the job rather than stored
+beside it — a step nothing can reach is a step that will not run, however it got
+that way. So a job a DBA rewired by hand in SSMS is described the same way, and
+re-enabling needs nothing that was saved anywhere: step ids are positions, so a
+step sitting at 3 belongs between 2 and 4.
+
 ## What if two people edit the same job at once?
 
 The second one is refused with a `Conflict`, and the job is left untouched.

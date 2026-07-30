@@ -1,4 +1,4 @@
-import { StepAction, type JobDefinition } from '@remote-sql-agent/protocol/browser';
+import { inferRunningStep, type JobDefinition } from '@remote-sql-agent/protocol/browser';
 import type { HistoryRun, JobStats } from '../api.js';
 import { formatDateTime, formatDuration, runStatusClass, runStatusLabel } from '../format.js';
 import { useTicker } from '../ticker.js';
@@ -105,47 +105,6 @@ export function buildLiveRun(
     runStatus: null,
     steps,
   };
-}
-
-/**
- * Which step is running, derived from the job's own flow.
- *
- * `sysjobactivity.last_executed_step_id` is the last step that **finished**,
- * not the one in progress — using it directly puts the live bar one step behind
- * and leaves the timeline empty for the whole of step one. Following the
- * definition instead is exact: Agent starts at `startStepId` and then obeys the
- * on-success / on-failure action of whatever just completed.
- *
- * Returns null when the last step's action ends the job, because at that point
- * nothing is running — the run is finishing.
- */
-export function inferRunningStep(
-  definition: JobDefinition,
-  completed: JobStats['currentRun'] extends infer R
-    ? R extends { completedSteps: infer C }
-      ? C
-      : never
-    : never,
-): number | null {
-  if (completed.length === 0) return definition.startStepId;
-
-  const last = completed[completed.length - 1]!;
-  const step = definition.steps.find((s) => s.stepId === last.stepId);
-  if (!step) return null;
-
-  const succeeded = last.runStatus === 1;
-  const action = succeeded ? step.onSuccessAction : step.onFailAction;
-  const target = succeeded ? step.onSuccessStepId : step.onFailStepId;
-
-  if (action === StepAction.GoToStep) return target || null;
-  if (action === StepAction.GoToNextStep) {
-    const next = definition.steps
-      .filter((s) => s.stepId > last.stepId)
-      .sort((a, b) => a.stepId - b.stepId)[0];
-    return next?.stepId ?? null;
-  }
-  // QuitWithSuccess / QuitWithFailure: the run is ending, nothing follows.
-  return null;
 }
 
 /** Build the timeline for a run that has finished, from its history rows. */

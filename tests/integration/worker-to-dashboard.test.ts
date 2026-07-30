@@ -25,7 +25,10 @@ import { commands as commandsTable, users } from '@remote-sql-agent/server/src/d
 import { eq } from 'drizzle-orm';
 import {
   canonicaliseJobWithHash,
+  disableStep,
+  enableStep,
   generateCommandSigningKeyPair,
+  isStepDisabled,
   signCommand,
   type CommandSigningKeyPair,
   type JobDefinition,
@@ -620,6 +623,66 @@ describe('write path', () => {
     expect(got.steps).toHaveLength(4);
     expect(got.steps[0]!.onFailStepId).toBe(4);
     expect(got.schedules).toHaveLength(1);
+  }, 180_000);
+
+  it('keeps a disabled step in msdb, unreachable and intact', async () => {
+    // The claim behind the whole disable feature: SQL Agent has no flag for
+    // this, so it is expressed as control flow. That is only safe if the step
+    // genuinely survives the trip — command and all — while becoming
+    // unreachable. If msdb dropped it, or the flow came back rewired, then
+    // uninstalling the worker would silently start running a step the operator
+    // believed was switched off.
+    const [instance] = await getEstateOverview(db);
+    const jobs = await listJobs(db, instance!.instanceId);
+    const target = jobs.find((j) => j.name === 'RSAgent Fixture - Nightly Maintenance')!;
+    const detail = await getJob(db, instance!.instanceId, target.jobUuid);
+    const before = detail!.definition as JobDefinition;
+
+    const victim = before.steps[1]!;
+    const { definition: edited, warnings } = disableStep(before, victim.stepId);
+    expect(warnings).toEqual([]);
+
+    const { canonicalJson, hash: sentHash } = canonicaliseJobWithHash(edited);
+    const settled = await issueAndSettle(
+      'upsertJob',
+      target.jobUuid,
+      {
+        jobUuid: target.jobUuid,
+        canonicalJson,
+        baseDefinitionHash: detail!.currentDefinitionHash,
+        allowOverwrite: false,
+      },
+      detail!.currentDefinitionHash ?? undefined,
+    );
+    expect(settled.state).toBe('succeeded');
+
+    const after = await eventually(
+      () => getJob(db, instance!.instanceId, target.jobUuid),
+      (job) => job?.currentDefinitionHash === sentHash,
+      { timeoutMs: 60_000 },
+    );
+    // Byte-for-byte: the rewiring is expressible in ordinary msdb columns, so
+    // nothing about it needs special handling on the way back.
+    expect(after!.currentDefinitionHash).toBe(sentHash);
+
+    const got = after!.definition as JobDefinition;
+    expect(got.steps).toHaveLength(before.steps.length);
+    expect(isStepDisabled(got, victim.stepId)).toBe(true);
+
+    // The step is still in msdb with its command — assert against the server,
+    // not our mirror, because that is what runs when this product is gone.
+    const live = await pool
+      .request()
+      .input('jobUuid', sql.UniqueIdentifier, target.jobUuid)
+      .input('stepId', sql.Int, victim.stepId)
+      .query<{ command: string; step_name: string }>(
+        'SELECT command, step_name FROM msdb.dbo.sysjobsteps WHERE job_id = @jobUuid AND step_id = @stepId',
+      );
+    expect(live.recordset[0]!.step_name).toBe(victim.name);
+    expect(live.recordset[0]!.command).toBe(victim.command);
+
+    // ...and putting it back needs nothing that was stored anywhere.
+    expect(enableStep(got, victim.stepId).definition).toEqual(before);
   }, 180_000);
 
   it('refuses an edit made against a stale version and leaves the job untouched', async () => {

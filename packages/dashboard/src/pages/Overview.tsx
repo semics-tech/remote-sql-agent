@@ -153,8 +153,22 @@ function RunningTable({ rows, fetchedAt }: { rows: RunningJob[]; fetchedAt: numb
                   {r.hostName}\{r.instanceName}
                 </td>
                 <td className="nowrap muted">
-                  {r.currentStepId ? `${r.currentStepId}. ` : ''}
-                  {r.currentStepName ?? '—'}
+                  {r.currentStepName ? (
+                    <>
+                      {r.currentStepId ? `${r.currentStepId}. ` : ''}
+                      {r.currentStepName}
+                      {r.currentStepNumber !== null && r.stepCount !== null ? (
+                        <span className="faint">
+                          {' '}
+                          ({r.currentStepNumber} of {r.stepCount})
+                        </span>
+                      ) : null}
+                    </>
+                  ) : (
+                    // The flow has run out of steps: the run is finishing and
+                    // the final history row has not landed yet.
+                    <span className="faint">finishing</span>
+                  )}
                 </td>
                 <td
                   className="right nowrap mono"
