@@ -39,6 +39,10 @@ export interface CurrentRunStep {
   stepId: number;
   stepName: string | null;
   runStatus: number;
+  /** When the step began. msdb records this alongside the duration on the row
+   * it writes when the step *finishes*, which is what lets a timeline place
+   * each bar rather than just stacking them end to end. */
+  startedAt: Date;
   runDurationSeconds: number;
   message: string | null;
 }
@@ -234,6 +238,7 @@ async function getCurrentRun(
           stepId: jobHistory.stepId,
           stepName: jobHistory.stepName,
           runStatus: jobHistory.runStatus,
+          startedAt: jobHistory.runDatetime,
           runDurationSeconds: jobHistory.runDurationSeconds,
           message: jobHistory.message,
         })

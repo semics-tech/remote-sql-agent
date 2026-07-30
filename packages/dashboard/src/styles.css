@@ -1214,3 +1214,182 @@ button.action:disabled {
 .tabs.inline {
   margin-top: 0;
 }
+
+/* ---------------------------------------------------------------------------
+ * Run timeline: steps down the side, elapsed time across.
+ *
+ * A Gantt rather than a list, because the useful question is *when* each step
+ * ran relative to the others — a step sitting at four minutes against a usual
+ * two seconds is obvious here and invisible in a table.
+ * ------------------------------------------------------------------------ */
+
+.timeline-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  font-size: 12.5px;
+}
+
+.timeline-grid {
+  position: relative;
+}
+
+/* Label column width is shared by the axis offset and every lane, so the
+   gridlines line up with the tick labels above them. */
+.timeline {
+  --timeline-label-w: 190px;
+  --timeline-duration-w: 64px;
+}
+
+.timeline-axis {
+  position: relative;
+  height: 16px;
+  margin-left: var(--timeline-label-w);
+  margin-right: var(--timeline-duration-w);
+  border-bottom: 1px solid var(--border);
+}
+
+.timeline-tick {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  font: 10.5px/1.4 var(--font-mono);
+  color: var(--fg-faint);
+  white-space: nowrap;
+}
+
+.timeline-tick:first-child {
+  transform: none;
+}
+
+.timeline-lanes {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.timeline-lane {
+  display: flex;
+  align-items: center;
+  height: 26px;
+}
+
+.timeline-label {
+  flex: 0 0 var(--timeline-label-w);
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding-right: 10px;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.timeline-step-id {
+  font: 600 10.5px/1 var(--font-mono);
+  color: var(--fg-faint);
+}
+
+.timeline-track {
+  position: relative;
+  flex: 1 1 auto;
+  height: 100%;
+}
+
+.timeline-gridline {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+  opacity: 0.5;
+}
+
+.timeline-bar {
+  position: absolute;
+  top: 50%;
+  height: 12px;
+  transform: translateY(-50%);
+  min-width: 3px;
+  border-radius: 2px;
+  background: var(--status-unknown);
+  transition: width 0.9s linear;
+}
+
+.timeline-bar.succeeded {
+  background: var(--status-succeeded);
+}
+.timeline-bar.failed {
+  background: var(--status-failed);
+}
+.timeline-bar.retry {
+  background: var(--status-retry);
+}
+.timeline-bar.cancelled {
+  background: var(--status-cancelled);
+}
+
+/* The step in flight: a moving edge rather than a solid block, so it reads as
+   "still going" rather than "this is how long it took". */
+.timeline-bar.running {
+  background: linear-gradient(
+    90deg,
+    var(--status-running) 0%,
+    var(--status-running) 70%,
+    color-mix(in srgb, var(--status-running) 45%, transparent) 100%
+  );
+  animation: timeline-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes timeline-pulse {
+  0%,
+  100% {
+    opacity: 0.85;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.timeline-duration {
+  flex: 0 0 var(--timeline-duration-w);
+  padding-left: 10px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  text-align: right;
+}
+
+/* The advancing "now" edge, pinned to the right of the track area. */
+.timeline-now {
+  position: absolute;
+  top: 16px;
+  bottom: 0;
+  right: var(--timeline-duration-w);
+  width: 2px;
+  background: var(--status-running);
+  opacity: 0.75;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .timeline-bar {
+    transition: none;
+  }
+  .timeline-bar.running {
+    animation: none;
+  }
+}
+
+/* --- Live stream indicator ------------------------------------------------ */
+
+.live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--status-succeeded);
+}
+
+.live-dot.off {
+  background: var(--status-unknown);
+}

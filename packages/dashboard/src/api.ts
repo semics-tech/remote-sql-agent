@@ -530,6 +530,7 @@ export interface CurrentRun {
     stepId: number;
     stepName: string | null;
     runStatus: number;
+    startedAt: string;
     runDurationSeconds: number;
     message: string | null;
   }>;

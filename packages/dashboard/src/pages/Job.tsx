@@ -13,7 +13,7 @@ import { formatDateTime, formatDuration, runStatusClass, runStatusLabel } from '
 import { JobActions } from './JobActions.jsx';
 import { JobEditor } from './JobEditor.jsx';
 import { JobSummary } from './JobSummary.jsx';
-import { StepGraph } from './StepGraph.jsx';
+import { RunTimeline } from './RunTimeline.jsx';
 
 // Monaco is ~2 MB; the diff view only appears on the Versions tab, so it must
 // not be in the bundle that renders the estate grid.
@@ -98,19 +98,22 @@ export function Job() {
         </div>
       ) : null}
 
-      {running || starting ? (
-        <Panel title="This run">
-          <div style={{ padding: 11 }}>
-            {starting && !running ? (
-              <p className="muted" style={{ margin: '0 0 8px' }}>
-                Start sent. SQL Agent reports activity a moment after it begins — this updates
-                itself.
-              </p>
-            ) : null}
-            <StepGraph definition={definition} stats={stats.data} running={running} />
-          </div>
-        </Panel>
-      ) : null}
+      <Panel title={running ? 'This run' : starting ? 'Starting' : 'Last run'}>
+        <div style={{ padding: 11 }}>
+          {starting && !running ? (
+            <p className="muted" style={{ margin: '0 0 8px' }}>
+              Start sent. A short job can finish before SQL Server reports it as running — the
+              timeline below will show the completed run either way.
+            </p>
+          ) : null}
+          <RunTimeline
+            definition={definition}
+            stats={stats.data}
+            history={history.data?.runs ?? []}
+            running={running}
+          />
+        </div>
+      </Panel>
 
       <JobSummary stats={stats.data} />
 

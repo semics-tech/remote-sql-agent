@@ -6,6 +6,7 @@ import { createDatabase, type Database } from '@remote-sql-agent/server/src/db/c
 import { runMigrations } from '@remote-sql-agent/server/src/db/migrate.js';
 import { createGrpcServer } from '@remote-sql-agent/server/src/hub/hub.js';
 import { NotificationService } from '@remote-sql-agent/server/src/domain/notifications/service.js';
+import { EventBroker } from '@remote-sql-agent/server/src/api/events.js';
 import { WorkerRegistry } from '@remote-sql-agent/server/src/hub/registry.js';
 import { loadConfig } from '@remote-sql-agent/server/src/config.js';
 import {
@@ -174,6 +175,8 @@ beforeAll(async () => {
     // Real service, no channels or rules configured: events are recorded and
     // nothing is queued, which is what the hub needs to exercise the path.
     notifications: new NotificationService(db, serverConfig, logger),
+    // Real broker with no subscribers: publishing is exercised, nothing listens.
+    events: new EventBroker(),
   });
 
   grpcPort = await new Promise<number>((resolve, reject) => {

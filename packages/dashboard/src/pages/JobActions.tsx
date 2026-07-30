@@ -34,16 +34,23 @@ export function JobActions({
 
   const running = job.activity?.state === 'executing';
 
-  async function issue(label: string, fn: () => Promise<{ requiresApproval: boolean }>): Promise<void> {
+  async function issue(
+    label: string,
+    fn: () => Promise<{ requiresApproval: boolean }>,
+    { silentOnSuccess = false } = {},
+  ): Promise<void> {
     setBusy(true);
     setError(null);
     try {
       const result = await fn();
-      onIssued(
-        result.requiresApproval
-          ? `${label} is waiting for a second person to approve it.`
-          : `${label} sent to the worker.`,
-      );
+      if (result.requiresApproval) {
+        onIssued(`${label} is waiting for a second person to approve it.`);
+      } else if (!silentOnSuccess) {
+        onIssued(`${label} sent to the worker.`);
+      }
+      // Otherwise say nothing: the state badge and the run timeline already
+      // show what happened, and a banner repeating it is one more thing to
+      // dismiss.
     } catch (err) {
       setError(err instanceof Error ? err.message : 'That did not work.');
     } finally {
@@ -75,7 +82,11 @@ export function JobActions({
 
         {workerCan('job.run') && can('job.run') ? (
           running ? (
-            <button className="action" disabled={busy} onClick={() => void issue('Stop job', actions.stop)}>
+            <button
+              className="action"
+              disabled={busy}
+              onClick={() => void issue('Stop job', actions.stop, { silentOnSuccess: true })}
+            >
               Stop
             </button>
           ) : (
@@ -83,14 +94,18 @@ export function JobActions({
               className="action"
               disabled={busy}
               onClick={() =>
-                void issue('Start job', async () => {
-                  const result = await actions.run();
-                  // Only after the command is accepted. Flipping the UI to
-                  // "running" on click would show a state that a refused
-                  // command never reaches.
-                  if (!result.requiresApproval) onStarting?.();
-                  return result;
-                })
+                void issue(
+                  'Start job',
+                  async () => {
+                    const result = await actions.run();
+                    // Only after the command is accepted. Flipping the UI to
+                    // "running" on click would show a state that a refused
+                    // command never reaches.
+                    if (!result.requiresApproval) onStarting?.();
+                    return result;
+                  },
+                  { silentOnSuccess: true },
+                )
               }
             >
               Start job
