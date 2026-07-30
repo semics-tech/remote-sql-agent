@@ -619,7 +619,7 @@ export function useJobGroups(groupBy: GroupKey, filter: string) {
   return useQuery({
     queryKey: ['job-groups', groupBy, filter],
     queryFn: () =>
-      get<{ groupBy: GroupKey; groups: JobGroup[] }>(
+      get<{ groupBy: GroupKey; groups: JobGroup[]; truncated: boolean }>(
         `/api/jobs/groups?by=${groupBy}${filter ? `&filter=${encodeURIComponent(filter)}` : ''}`,
       ),
     refetchInterval: LIVE_REFRESH_MS,

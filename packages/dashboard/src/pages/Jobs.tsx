@@ -68,6 +68,14 @@ export function Jobs() {
       <p className="page-sub">{active?.hint}</p>
 
       <QueryState isLoading={isLoading} error={error}>
+        {/* Never present a partial estate as the whole one. */}
+        {data?.truncated ? (
+          <div className="notice">
+            This estate has more jobs than one page can group. Narrow it with the filter — the
+            groups below are incomplete.
+          </div>
+        ) : null}
+
         {groups.length === 0 ? (
           <Empty
             title={all.length === 0 ? 'No jobs mirrored yet' : 'Nothing matches'}

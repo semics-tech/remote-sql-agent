@@ -237,7 +237,8 @@ export async function createApp(deps: AppDeps) {
         filter: z.string().max(128).optional(),
       })
       .parse(request.query);
-    return { groupBy: by, groups: await groupJobs(db, by, { filter }) };
+    const { groups, truncated } = await groupJobs(db, by, { filter });
+    return { groupBy: by, groups, truncated };
   });
 
   app.get(

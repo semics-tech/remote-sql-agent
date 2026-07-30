@@ -591,11 +591,19 @@ export interface JobGroup {
  * instead of thirty tabs, which is the question the estate grid cannot answer
  * because it aggregates per *instance* rather than per *job*.
  */
+export interface GroupJobsResult {
+  groups: JobGroup[];
+  /** True when the row cap was hit, so the caller can say so rather than
+   * presenting a partial estate as if it were the whole one. */
+  truncated: boolean;
+}
+
 export async function groupJobs(
   db: Database,
   groupBy: GroupKey,
   options: { filter?: string; limit?: number } = {},
-): Promise<JobGroup[]> {
+): Promise<GroupJobsResult> {
+  const limit = Math.min(options.limit ?? 20_000, 50_000);
   const rows = await db
     .select({
       instanceId: instances.id,
@@ -621,7 +629,7 @@ export async function groupJobs(
     )
     .where(isNull(jobs.deletedAt))
     .orderBy(asc(jobs.name), asc(workers.hostName), asc(instances.instanceName))
-    .limit(Math.min(options.limit ?? 5000, 20_000));
+    .limit(limit);
 
   // Schedules live inside the definition rather than a column, so the summary
   // is derived here rather than grouped in SQL.
@@ -676,9 +684,12 @@ export async function groupJobs(
   }
 
   // Anything failing first: this list is read top-down when something is wrong.
-  return [...groups.values()].sort(
-    (a, b) => b.failing - a.failing || b.total - a.total || a.label.localeCompare(b.label),
-  );
+  return {
+    groups: [...groups.values()].sort(
+      (a, b) => b.failing - a.failing || b.total - a.total || a.label.localeCompare(b.label),
+    ),
+    truncated: rows.length >= limit,
+  };
 }
 
 function groupLabel(groupBy: GroupKey, member: GroupMember): string {
@@ -709,7 +720,11 @@ async function scheduleSummaries(db: Database): Promise<Map<string, string>> {
     .select({
       instanceId: jobVersions.instanceId,
       jobUuid: jobVersions.jobUuid,
-      definition: jobVersions.definition,
+      // Only the schedules, extracted in Postgres. Selecting the whole
+      // definition pulls every step's T-SQL body across the wire — on a
+      // 50-instance estate that is tens of megabytes per request, to read one
+      // small array from each.
+      schedules: sql<unknown[] | null>`${jobVersions.definition} -> 'schedules'`,
     })
     .from(jobVersions)
     .innerJoin(
@@ -724,8 +739,7 @@ async function scheduleSummaries(db: Database): Promise<Map<string, string>> {
 
   const out = new Map<string, string>();
   for (const row of rows) {
-    const def = row.definition as { schedules?: unknown[] };
-    const schedules = def.schedules ?? [];
+    const schedules = Array.isArray(row.schedules) ? row.schedules : [];
     if (schedules.length === 0) continue;
     const described = schedules
       .map((s) => {
