@@ -14,7 +14,7 @@
     "@remote-sql-agent/worker": "workspace:*",
     "drizzle-orm": "^0.45.2",
     "mssql": "^12.7.0",
-    "pino": "^9.5.0",
+    "pino": "^10.3.1",
     "postgres": "^3.4.5"
   },
   "devDependencies": {
