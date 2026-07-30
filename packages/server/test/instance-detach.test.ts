@@ -98,10 +98,10 @@ describe('removing an instance configuration', () => {
     await seedJob(instanceId, JOB_UUID, 'Nightly Backup');
     const config = await configure(workerId);
 
-    expect(await groupJobs(db, 'name')).toHaveLength(1);
+    expect((await groupJobs(db, 'name')).groups).toHaveLength(1);
 
     await deleteInstanceConfig(db, config.id);
-    expect(await groupJobs(db, 'name')).toHaveLength(0);
+    expect((await groupJobs(db, 'name')).groups).toHaveLength(0);
   });
 
   it('comes back, with its history, when configured again', async () => {
