@@ -59,6 +59,12 @@ import {
 } from '../domain/worker-config.js';
 import type { NotificationService } from '../domain/notifications/service.js';
 import {
+  SSE_HEADERS,
+  SSE_KEEPALIVE_MS,
+  formatEvent,
+  type EventBroker,
+} from './events.js';
+import {
   NotificationConfigError,
   channelInputSchema,
   deleteChannel,
@@ -79,6 +85,7 @@ export interface AppDeps {
   entra: EntraClient | null;
   commands: CommandService;
   notifications: NotificationService;
+  events: EventBroker;
 }
 
 const instanceParam = z.object({ instanceId: z.string().uuid() });
@@ -180,6 +187,43 @@ export async function createApp(deps: AppDeps) {
     instances: await getEstateOverview(db),
   }));
 
+  /**
+   * Live update stream.
+   *
+   * Carries invalidation signals only — "this changed, refetch it" — so every
+   * permission decision stays on the REST routes the browser then calls.
+   */
+  app.get('/api/events', { preHandler: guard('instance.read') }, (request, reply) => {
+    const send = (chunk: string): void => {
+      if (!reply.raw.writableEnded) reply.raw.write(chunk);
+    };
+
+    const unsubscribe = deps.events.subscribe((event) => send(formatEvent(event)));
+    if (!unsubscribe) {
+      return reply
+        .status(503)
+        .send({ error: 'TooManyStreams', detail: 'Too many live connections. Try again shortly.' });
+    }
+
+    // Fastify must not try to serialise or close this response.
+    reply.hijack();
+    reply.raw.writeHead(200, SSE_HEADERS);
+    // An initial comment flushes headers immediately, so EventSource fires
+    // `open` rather than sitting in `connecting` until the first real event.
+    send(': connected\n\n');
+
+    const keepalive = setInterval(() => send(': keepalive\n\n'), SSE_KEEPALIVE_MS);
+    keepalive.unref();
+
+    const close = (): void => {
+      clearInterval(keepalive);
+      unsubscribe();
+    };
+    request.raw.on('close', close);
+    request.raw.on('error', close);
+    return reply;
+  });
+
   /** The operations overview: what is running, what is late, what broke. */
   app.get('/api/overview', { preHandler: guard('instance.read') }, async () =>
     getOverview(db, (workerId) => registry.isOnline(workerId)),
@@ -193,7 +237,8 @@ export async function createApp(deps: AppDeps) {
         filter: z.string().max(128).optional(),
       })
       .parse(request.query);
-    return { groupBy: by, groups: await groupJobs(db, by, { filter }) };
+    const { groups, truncated } = await groupJobs(db, by, { filter });
+    return { groupBy: by, groups, truncated };
   });
 
   app.get(

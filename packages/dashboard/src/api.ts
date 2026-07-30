@@ -446,9 +446,13 @@ export interface RunningJob {
   jobName: string;
   currentStepId: number | null;
   currentStepName: string | null;
+  currentStepNumber: number | null;
+  stepCount: number | null;
   startedAt: string | null;
+  /** Measured by the server when it replied; tick it forward from there. */
   elapsedSeconds: number | null;
   averageSeconds: number | null;
+  lastDurationSeconds: number | null;
   overrunRatio: number | null;
   isLongRunning: boolean;
 }
@@ -530,6 +534,7 @@ export interface CurrentRun {
     stepId: number;
     stepName: string | null;
     runStatus: number;
+    startedAt: string;
     runDurationSeconds: number;
     message: string | null;
   }>;
@@ -614,7 +619,7 @@ export function useJobGroups(groupBy: GroupKey, filter: string) {
   return useQuery({
     queryKey: ['job-groups', groupBy, filter],
     queryFn: () =>
-      get<{ groupBy: GroupKey; groups: JobGroup[] }>(
+      get<{ groupBy: GroupKey; groups: JobGroup[]; truncated: boolean }>(
         `/api/jobs/groups?by=${groupBy}${filter ? `&filter=${encodeURIComponent(filter)}` : ''}`,
       ),
     refetchInterval: LIVE_REFRESH_MS,

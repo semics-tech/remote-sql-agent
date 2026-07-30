@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, gte, inArray, isNull, ne, sql } from 'drizzle-orm';
+import { inferRunningStep, type JobDefinition } from '@remote-sql-agent/protocol';
 import type { Database } from '../db/client.js';
-import { instances, jobActivity, jobHistory, jobs, workers } from '../db/schema.js';
+import { instances, jobActivity, jobHistory, jobs, jobVersions, workers } from '../db/schema.js';
 
 /**
  * The operations overview — "what is happening right now, and what should I
@@ -36,12 +37,31 @@ export interface RunningJob {
   hostName: string;
   jobUuid: string;
   jobName: string;
+  /**
+   * The step running now — inferred from the job's own flow, not read from
+   * `sysjobactivity`.
+   *
+   * msdb's `last_executed_step_id` is the last step that *finished*, so taking
+   * it at face value names the previous step for the whole of every step, and
+   * names nothing at all during the first one. See `inferRunningStep`.
+   */
   currentStepId: number | null;
   currentStepName: string | null;
+  /** Position of the running step, and how many the job has: "2 of 5". */
+  currentStepNumber: number | null;
+  stepCount: number | null;
   startedAt: Date | null;
   elapsedSeconds: number | null;
   /** Mean duration of recent successful runs, or null with too little history. */
   averageSeconds: number | null;
+  /**
+   * How long the previous successful run took.
+   *
+   * Reported even when there is no average, because one prior run is still a
+   * far better answer to "should I be worried yet" than nothing at all — it is
+   * only too thin a sample to *judge* an overrun against.
+   */
+  lastDurationSeconds: number | null;
   /** elapsed / average, once both are known. */
   overrunRatio: number | null;
   isLongRunning: boolean;
@@ -162,17 +182,22 @@ export async function getRunningJobs(db: Database, now: Date): Promise<RunningJo
 
   if (rows.length === 0) return [];
 
-  const baselines = await durationBaselines(
-    db,
-    rows.map((r) => ({ instanceId: r.instanceId, jobUuid: r.jobUuid })),
-    now,
-  );
+  const keys = rows.map((r) => ({ instanceId: r.instanceId, jobUuid: r.jobUuid }));
+  const [baselines, progress] = await Promise.all([
+    durationBaselines(db, keys, now),
+    runningStepProgress(
+      db,
+      rows.map((r) => ({ ...r, startedAt: r.startedAt })),
+    ),
+  ]);
 
   return rows.map((r) => {
     const elapsedSeconds = r.startedAt
       ? Math.max(0, Math.round((now.getTime() - r.startedAt.getTime()) / 1000))
       : null;
-    const averageSeconds = baselines.get(`${r.instanceId}:${r.jobUuid}`) ?? null;
+    const baseline = baselines.get(`${r.instanceId}:${r.jobUuid}`);
+    const averageSeconds = baseline?.averageSeconds ?? null;
+    const lastDurationSeconds = baseline?.lastDurationSeconds ?? null;
 
     let overrunRatio: number | null = null;
     let isLongRunning = false;
@@ -185,12 +210,145 @@ export async function getRunningJobs(db: Database, now: Date): Promise<RunningJo
       isLongRunning = elapsedSeconds >= NO_BASELINE_ALERT_SECONDS;
     }
 
-    return { ...r, elapsedSeconds, averageSeconds, overrunRatio, isLongRunning };
+    const step = progress.get(`${r.instanceId}:${r.jobUuid}`);
+
+    return {
+      ...r,
+      // Fall back to msdb's own answer only when the definition is not
+      // mirrored yet. It is the wrong step, but a wrong step is still more
+      // use than a blank cell, and it is what this showed before.
+      currentStepId: step ? step.currentStepId : r.currentStepId,
+      currentStepName: step ? step.currentStepName : r.currentStepName,
+      currentStepNumber: step?.currentStepNumber ?? null,
+      stepCount: step?.stepCount ?? null,
+      elapsedSeconds,
+      averageSeconds,
+      lastDurationSeconds,
+      overrunRatio,
+      isLongRunning,
+    };
   });
 }
 
+interface StepProgress {
+  currentStepId: number | null;
+  currentStepName: string | null;
+  currentStepNumber: number | null;
+  stepCount: number;
+}
+
 /**
- * Mean duration of recent *successful* runs, keyed "instanceId:jobUuid".
+ * Work out which step each running job is actually on.
+ *
+ * Two things are needed and neither is in `job_activity`: the job's definition,
+ * to know what follows what, and the steps this run has already finished, to
+ * know how far along the flow it has got. Both are fetched for the whole set at
+ * once — the input is only the jobs currently executing, which is a handful
+ * even on a large estate.
+ */
+async function runningStepProgress(
+  db: Database,
+  running: Array<{ instanceId: string; jobUuid: string; startedAt: Date | null }>,
+): Promise<Map<string, StepProgress>> {
+  const out = new Map<string, StepProgress>();
+  if (running.length === 0) return out;
+
+  const instanceIds = [...new Set(running.map((r) => r.instanceId))];
+  const jobUuids = [...new Set(running.map((r) => r.jobUuid))];
+
+  const [definitionRows, historyRows] = await Promise.all([
+    db
+      .select({
+        instanceId: jobVersions.instanceId,
+        jobUuid: jobVersions.jobUuid,
+        definition: jobVersions.definition,
+      })
+      .from(jobVersions)
+      .innerJoin(
+        jobs,
+        and(
+          eq(jobs.instanceId, jobVersions.instanceId),
+          eq(jobs.jobUuid, jobVersions.jobUuid),
+          eq(jobs.currentVersionNo, jobVersions.versionNo),
+        ),
+      )
+      .where(
+        and(inArray(jobVersions.instanceId, instanceIds), inArray(jobVersions.jobUuid, jobUuids)),
+      ),
+    db
+      .select({
+        instanceId: jobHistory.instanceId,
+        jobUuid: jobHistory.jobUuid,
+        stepId: jobHistory.stepId,
+        runStatus: jobHistory.runStatus,
+        runDatetime: jobHistory.runDatetime,
+        sqlInstanceId: jobHistory.sqlInstanceId,
+      })
+      .from(jobHistory)
+      .where(
+        and(
+          inArray(jobHistory.instanceId, instanceIds),
+          inArray(jobHistory.jobUuid, jobUuids),
+          ne(jobHistory.stepId, 0),
+          // Only rows from the current run. The earliest start across the set
+          // bounds the query; each job is filtered to its own start below.
+          gte(jobHistory.runDatetime, earliestStart(running)),
+        ),
+      )
+      .orderBy(asc(jobHistory.sqlInstanceId)),
+  ]);
+
+  const definitions = new Map(
+    definitionRows.map((r) => [`${r.instanceId}:${r.jobUuid}`, r.definition as JobDefinition]),
+  );
+
+  for (const job of running) {
+    const key = `${job.instanceId}:${job.jobUuid}`;
+    const definition = definitions.get(key);
+    if (!definition || definition.steps.length === 0) continue;
+
+    const completed = historyRows.filter(
+      (h) =>
+        h.instanceId === job.instanceId &&
+        h.jobUuid === job.jobUuid &&
+        job.startedAt !== null &&
+        // msdb timestamps are second-resolution, so a step finishing in the
+        // same second the job started would be lost to a strict comparison.
+        h.runDatetime.getTime() >= job.startedAt.getTime() - 1000,
+    );
+
+    const stepId = inferRunningStep(definition, completed);
+    const ordered = [...definition.steps].sort((a, b) => a.stepId - b.stepId);
+    const index = stepId === null ? -1 : ordered.findIndex((s) => s.stepId === stepId);
+
+    out.set(key, {
+      currentStepId: stepId,
+      currentStepName: index === -1 ? null : (ordered[index]?.name ?? null),
+      currentStepNumber: index === -1 ? null : index + 1,
+      stepCount: ordered.length,
+    });
+  }
+
+  return out;
+}
+
+function earliestStart(running: Array<{ startedAt: Date | null }>): Date {
+  const times = running.map((r) => r.startedAt?.getTime()).filter((t): t is number => t !== undefined);
+  // No start times at all means nothing can be attributed to a run anyway; a
+  // recent bound keeps the query cheap rather than scanning all of history.
+  if (times.length === 0) return new Date(Date.now() - 60 * 60 * 1000);
+  return new Date(Math.min(...times) - 1000);
+}
+
+export interface DurationBaseline {
+  /** Null until there are enough runs to mean anything. */
+  averageSeconds: number | null;
+  /** The most recent successful run, however few there have been. */
+  lastDurationSeconds: number | null;
+}
+
+/**
+ * Duration baselines from recent *successful* runs, keyed "instanceId:jobUuid".
  *
  * Failures are excluded on purpose: a job that fails after two seconds would
  * otherwise drag the baseline down and make every healthy run look like an
@@ -200,7 +358,7 @@ export async function durationBaselines(
   db: Database,
   keys: Array<{ instanceId: string; jobUuid: string }>,
   now: Date,
-): Promise<Map<string, number>> {
+): Promise<Map<string, DurationBaseline>> {
   if (keys.length === 0) return new Map();
 
   const since = new Date(now.getTime() - BASELINE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
@@ -214,6 +372,11 @@ export async function durationBaselines(
       instanceId: jobHistory.instanceId,
       jobUuid: jobHistory.jobUuid,
       averageSeconds: sql<number>`AVG(${jobHistory.runDurationSeconds})`,
+      // The latest row's value, not the largest — array_agg with an ORDER BY is
+      // the one aggregate that can pick it out without a second round trip.
+      lastDurationSeconds: sql<
+        number | null
+      >`(ARRAY_AGG(${jobHistory.runDurationSeconds} ORDER BY ${jobHistory.runDatetime} DESC))[1]`,
       runs: sql<number>`COUNT(*)`,
     })
     .from(jobHistory)
@@ -229,12 +392,17 @@ export async function durationBaselines(
     .groupBy(jobHistory.instanceId, jobHistory.jobUuid);
 
   const wanted = new Set(keys.map((k) => `${k.instanceId}:${k.jobUuid}`));
-  const out = new Map<string, number>();
+  const out = new Map<string, DurationBaseline>();
   for (const row of rows) {
     const key = `${row.instanceId}:${row.jobUuid}`;
-    // One sample is an anecdote, not a baseline.
-    if (!wanted.has(key) || Number(row.runs) < 3) continue;
-    out.set(key, Number(row.averageSeconds));
+    if (!wanted.has(key)) continue;
+    out.set(key, {
+      // One sample is an anecdote, not a baseline — but it is still worth
+      // showing, so only the average is withheld.
+      averageSeconds: Number(row.runs) < 3 ? null : Number(row.averageSeconds),
+      lastDurationSeconds:
+        row.lastDurationSeconds === null ? null : Number(row.lastDurationSeconds),
+    });
   }
   return out;
 }
@@ -435,11 +603,19 @@ export interface JobGroup {
  * instead of thirty tabs, which is the question the estate grid cannot answer
  * because it aggregates per *instance* rather than per *job*.
  */
+export interface GroupJobsResult {
+  groups: JobGroup[];
+  /** True when the row cap was hit, so the caller can say so rather than
+   * presenting a partial estate as if it were the whole one. */
+  truncated: boolean;
+}
+
 export async function groupJobs(
   db: Database,
   groupBy: GroupKey,
   options: { filter?: string; limit?: number } = {},
-): Promise<JobGroup[]> {
+): Promise<GroupJobsResult> {
+  const limit = Math.min(options.limit ?? 20_000, 50_000);
   const rows = await db
     .select({
       instanceId: instances.id,
@@ -465,7 +641,7 @@ export async function groupJobs(
     )
     .where(and(isNull(jobs.deletedAt), isNull(instances.detachedAt)))
     .orderBy(asc(jobs.name), asc(workers.hostName), asc(instances.instanceName))
-    .limit(Math.min(options.limit ?? 5000, 20_000));
+    .limit(limit);
 
   // Schedules live inside the definition rather than a column, so the summary
   // is derived here rather than grouped in SQL.
@@ -520,9 +696,12 @@ export async function groupJobs(
   }
 
   // Anything failing first: this list is read top-down when something is wrong.
-  return [...groups.values()].sort(
-    (a, b) => b.failing - a.failing || b.total - a.total || a.label.localeCompare(b.label),
-  );
+  return {
+    groups: [...groups.values()].sort(
+      (a, b) => b.failing - a.failing || b.total - a.total || a.label.localeCompare(b.label),
+    ),
+    truncated: rows.length >= limit,
+  };
 }
 
 function groupLabel(groupBy: GroupKey, member: GroupMember): string {
@@ -553,7 +732,11 @@ async function scheduleSummaries(db: Database): Promise<Map<string, string>> {
     .select({
       instanceId: jobVersions.instanceId,
       jobUuid: jobVersions.jobUuid,
-      definition: jobVersions.definition,
+      // Only the schedules, extracted in Postgres. Selecting the whole
+      // definition pulls every step's T-SQL body across the wire — on a
+      // 50-instance estate that is tens of megabytes per request, to read one
+      // small array from each.
+      schedules: sql<unknown[] | null>`${jobVersions.definition} -> 'schedules'`,
     })
     .from(jobVersions)
     .innerJoin(
@@ -568,8 +751,7 @@ async function scheduleSummaries(db: Database): Promise<Map<string, string>> {
 
   const out = new Map<string, string>();
   for (const row of rows) {
-    const def = row.definition as { schedules?: unknown[] };
-    const schedules = def.schedules ?? [];
+    const schedules = Array.isArray(row.schedules) ? row.schedules : [];
     if (schedules.length === 0) continue;
     const described = schedules
       .map((s) => {

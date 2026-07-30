@@ -253,6 +253,36 @@ describe('rule scoping', () => {
     expect(await db.select().from(notificationDeliveries)).toHaveLength(1);
   });
 
+  it('lets the shortest throttle window win when rules disagree', async () => {
+    const { instanceId } = await seedInstance(db);
+    await seedJob(db, instanceId, JOB_UUID, 'Flapping job');
+    const channelId = await seedChannel();
+    await seedRule(channelId, { name: 'everything', throttleMinutes: 0 });
+    await seedRule(channelId, { name: 'quiet', throttleMinutes: 60 });
+
+    const first = await ingestHistory(db, instanceId, [
+      historyRow({ instanceId: 100, jobUuid: JOB_UUID, runStatus: 0 }),
+    ]);
+    await service.onRunsIngested(instanceId, first.newRuns);
+    await db
+      .update(notificationDeliveries)
+      .set({ state: 'sent', sentAt: new Date() })
+      .where(eq(notificationDeliveries.channelId, channelId));
+
+    const second = await ingestHistory(db, instanceId, [
+      historyRow({ instanceId: 101, jobUuid: JOB_UUID, runStatus: 0, seconds: 60 }),
+    ]);
+    await service.onRunsIngested(instanceId, second.newRuns);
+
+    // A rule set to zero means "send me all of these". An unrelated chattier
+    // rule must not silently mute it — that is a surprise in the direction of
+    // missing an incident.
+    const pending = (await db.select().from(notificationDeliveries)).filter(
+      (d) => d.state === 'pending',
+    );
+    expect(pending).toHaveLength(1);
+  });
+
   it('sends one delivery when two rules name the same channel', async () => {
     const { instanceId } = await seedInstance(db);
     await seedJob(db, instanceId, JOB_UUID, 'Nightly Backup');

@@ -103,7 +103,12 @@ export async function recordCredentialKey(
     .from(workers)
     .where(eq(workers.id, workerId));
 
-  const changed = existing?.fingerprint !== undefined && existing.fingerprint !== fingerprint;
+  // `!= null` rather than `!== undefined`: the column is null until a worker
+  // first publishes a key, and drizzle returns that null on the row. Comparing
+  // against undefined made every worker's *first* connection look like a
+  // re-key, raising a false audit event and telling operators to re-enter
+  // credentials that had never been set.
+  const changed = existing?.fingerprint != null && existing.fingerprint !== fingerprint;
 
   await db
     .update(workers)

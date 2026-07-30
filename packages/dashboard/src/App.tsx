@@ -1,6 +1,7 @@
 import { NavLink, Route, Routes, useParams } from 'react-router-dom';
 import { useCommands, useEstate } from './api.js';
 import { useAuth } from './auth.jsx';
+import { useLiveEvents } from './live.js';
 import { Commands } from './pages/Commands.jsx';
 import { Estate } from './pages/Estate.jsx';
 import { Overview } from './pages/Overview.jsx';
@@ -14,6 +15,10 @@ import { SignIn } from './pages/SignIn.jsx';
 
 export function App() {
   const { user, loading, can, signOut } = useAuth();
+  // Server-sent events refresh the views the moment something changes. Polling
+  // stays on underneath as a fallback, so a dropped stream degrades to the old
+  // behaviour rather than a frozen page.
+  const live = useLiveEvents();
   // Surfaced in the nav so an approver notices work waiting for them without
   // having to go looking for it.
   const commands = useCommands('pending_approval');
@@ -59,6 +64,15 @@ export function App() {
           ) : null}
         </nav>
         <div className="titlebar-user">
+          <span
+            className={`live-dot ${live.connected ? 'on' : 'off'}`}
+            title={
+              live.connected
+                ? 'Live updates connected'
+                : 'Live updates disconnected — falling back to polling'
+            }
+            aria-label={live.connected ? 'Live updates connected' : 'Live updates disconnected'}
+          />
           <span className="badge neutral" title={`Signed in via ${user.identityProvider}`}>
             {user.role}
           </span>

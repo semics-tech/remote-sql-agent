@@ -12,6 +12,7 @@ import { WorkerRegistry } from './hub/registry.js';
 import { pruneRetention } from './domain/ingest.js';
 import { AuditExporter } from './domain/audit-export.js';
 import { NotificationService } from './domain/notifications/service.js';
+import { EventBroker } from './api/events.js';
 import { WorkerAuthenticator } from './worker-auth/authenticate.js';
 import { CommandService } from './domain/commands.js';
 import { loadOrCreateCa } from './worker-auth/ca.js';
@@ -160,6 +161,8 @@ async function main(): Promise<void> {
   const notifications = new NotificationService(db, config, logger);
   notifications.start();
 
+  const events = new EventBroker();
+
   // ---- gRPC worker hub -----------------------------------------------------
   const tls = await resolveHubTls(db, config, logger);
   const grpcServer = createGrpcServer({
@@ -171,6 +174,7 @@ async function main(): Promise<void> {
     commands: commandService,
     commandSigningPublicKey: signingKey.publicKeyPem,
     notifications,
+    events,
   });
 
   await new Promise<void>((resolve, reject) => {
@@ -194,6 +198,7 @@ async function main(): Promise<void> {
     entra,
     commands: commandService,
     notifications,
+    events,
   });
   await app.listen({ host: config.httpHost, port: config.httpPort });
   logger.info({ port: config.httpPort, publicUrl: config.publicUrl }, 'API listening');
