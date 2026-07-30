@@ -6,6 +6,12 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 10
+    # Pull request titles are checked against the conventional commit format
+    # and are what lands on main, so dependabot has to title its own the same
+    # way. Without a prefix it opens "Bump x from 1 to 2", which fails.
+    commit-message:
+      prefix: build(deps)
+      prefix-development: build(deps-dev)
     groups:
       # One PR for the routine churn; anything major still comes separately so
       # it gets read properly.
@@ -24,10 +30,14 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    commit-message:
+      prefix: ci(deps)
     labels: ['dependencies', 'ci']
 
   - package-ecosystem: docker
     directory: /deploy
     schedule:
       interval: monthly
+    commit-message:
+      prefix: build(docker)
     labels: ['dependencies']
