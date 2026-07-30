@@ -32,6 +32,15 @@ type Tab = 'job' | 'history' | 'versions';
 const TOGGLE_TIMEOUT_MS = 20_000;
 
 /**
+ * How long to keep showing "Starting…" before giving up on it.
+ *
+ * Generous: SQL Agent's activity poll is ten seconds by default, and a worker
+ * that has just applied the command polls immediately, so anything that is
+ * going to start has started well inside this.
+ */
+const STARTING_TIMEOUT_MS = 30_000;
+
+/**
  * A job.
  *
  * Opening a job puts you straight into its definition, editable if you are
@@ -52,6 +61,10 @@ export function Job() {
   // as `starting`: the operator pressed a button and something must change.
   const [pendingEnabled, setPendingEnabled] = useState<boolean | null>(null);
   const [toggleStalled, setToggleStalled] = useState(false);
+  // The last run recorded when the start was issued. A short job can finish
+  // before any poll observes it executing, and then "running" never becomes
+  // true — this is what notices it ran anyway.
+  const [startedFrom, setStartedFrom] = useState<string | null>(null);
 
   const settling = starting || pendingEnabled !== null;
   const jobQuery = useJob(instanceId, jobUuid, settling);
@@ -62,11 +75,26 @@ export function Job() {
   const history = useJobHistory(instanceId, jobUuid, running || starting);
   const stats = useJobStats(instanceId, jobUuid, running || starting);
 
-  // Once SQL Agent reports it as executing, the optimistic state has done its
-  // job. It also clears if the run finished before the first poll landed.
+  // Three ways out of the optimistic state, because a job can finish faster
+  // than the poll interval and "running" would then never be observed:
+  //   1. SQL Agent reports it executing — the normal case;
+  //   2. a new run appears in history — it started and finished between polls;
+  //   3. a timeout — it never started, and a badge stuck on "Starting…" for
+  //      the rest of the session is worse than admitting we do not know.
   useEffect(() => {
-    if (running) setStarting(false);
-  }, [running]);
+    if (!starting) return undefined;
+    if (running) {
+      setStarting(false);
+      return undefined;
+    }
+    if (job?.lastRunAt && job.lastRunAt !== startedFrom) {
+      setStarting(false);
+      return undefined;
+    }
+
+    const timer = setTimeout(() => setStarting(false), STARTING_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [starting, running, job?.lastRunAt, startedFrom]);
 
   useEffect(() => {
     if (pendingEnabled === null) return undefined;
@@ -121,7 +149,10 @@ export function Job() {
             job={job}
             pendingEnabled={pendingEnabled}
             onIssued={(message) => setNotice(message)}
-            onStarting={() => setStarting(true)}
+            onStarting={() => {
+              setStartedFrom(job.lastRunAt);
+              setStarting(true);
+            }}
             onToggling={(next) => {
               setToggleStalled(false);
               setPendingEnabled(next);

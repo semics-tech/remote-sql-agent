@@ -6,7 +6,7 @@
 
 Report privately through GitHub Security Advisories:
 
-**[Report a vulnerability](https://github.com/semics/remote-sql-agent/security/advisories/new)**
+**[Report a vulnerability](https://github.com/semics-tech/remote-sql-agent/security/advisories/new)**
 
 Please include:
 

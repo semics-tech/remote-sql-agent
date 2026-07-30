@@ -16,7 +16,7 @@ Bug fixes, documentation, and tests need no discussion — just send them.
 Node.js 22+, pnpm 10+, Docker.
 
 ```bash
-git clone https://github.com/semics/remote-sql-agent
+git clone https://github.com/semics-tech/remote-sql-agent
 cd remote-sql-agent
 pnpm install
 pnpm dev:up      # Postgres + SQL Server 2022 with Agent enabled

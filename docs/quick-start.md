@@ -11,7 +11,7 @@ Server host to put a worker on.
 ## 1. Control plane
 
 ```bash
-git clone https://github.com/semics/remote-sql-agent
+git clone https://github.com/semics-tech/remote-sql-agent
 cd remote-sql-agent/deploy
 cp .env.example .env
 ```
