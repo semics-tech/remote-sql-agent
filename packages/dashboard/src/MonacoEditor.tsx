@@ -1,8 +1,8 @@
 import { Editor, loader } from '@monaco-editor/react';
-import * as monaco from 'monaco-editor/esm/vs/editor/editor.api';
-import 'monaco-editor/esm/vs/basic-languages/sql/sql.contribution';
-import 'monaco-editor/esm/vs/basic-languages/powershell/powershell.contribution';
-import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
+import * as monaco from 'monaco-editor/editor/editor.api';
+import 'monaco-editor/languages/definitions/sql/register';
+import 'monaco-editor/languages/definitions/powershell/register';
+import editorWorker from 'monaco-editor/editor/editor.worker?worker';
 
 /**
  * Editable step body. Shares Monaco with the diff viewer, and like it is
