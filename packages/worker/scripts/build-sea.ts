@@ -30,7 +30,15 @@ const build = join(dist, 'sea');
 
 const isWindows = process.platform === 'win32';
 const isMac = process.platform === 'darwin';
-const target = `${process.platform}-${process.arch}`;
+
+// Not process.platform directly. Node reports `win32` on 64-bit Windows too,
+// so the raw value would name the file rsagent-worker-win32-x64.exe — which
+// reads as a 32-bit build to anyone choosing a download, and does not match
+// the target names the release matrix and the release notes both use.
+const PLATFORM_NAMES: Record<string, string> = { win32: 'win', darwin: 'darwin', linux: 'linux' };
+const platform = PLATFORM_NAMES[process.platform] ?? process.platform;
+
+const target = `${platform}-${process.arch}`;
 const outputName = `rsagent-worker-${target}${isWindows ? '.exe' : ''}`;
 const output = join(dist, outputName);
 
