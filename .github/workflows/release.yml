@@ -379,23 +379,50 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # One named artifact per step, each into its own directory.
+      #
+      # The obvious form — a single unfiltered download with merge-multiple —
+      # failed on v0.1.0-rc.1 and failed again identically on a re-run, so it
+      # is not flakiness: five artifacts totalling ~168 MB were fetched
+      # concurrently and extracted into one shared path, and the batch died
+      # after five retries having already completed some of them.
+      #
+      # Naming them also keeps buildx's `*.dockerbuild` build trace out. The
+      # unfiltered version swept it in, so a build-log blob would have been
+      # published as a release asset and listed in SHA256SUMS beside the
+      # binaries, as though it were something to install.
       - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          merge-multiple: true
+        with: { name: executable-linux-x64, path: artifacts/linux }
+      - uses: actions/download-artifact@v4
+        with: { name: executable-win-x64, path: artifacts/win }
+      - uses: actions/download-artifact@v4
+        with: { name: executable-darwin-arm64, path: artifacts/mac }
+      - uses: actions/download-artifact@v4
+        with: { name: worker-distribution, path: artifacts/dist }
 
       - name: Collect and checksum
         run: |
           mkdir -p release
           find artifacts -type f -exec cp {} release/ \;
 
+          # Nothing but the worker should ever be a release asset. If the set
+          # of jobs changes and something else lands here, fail rather than
+          # publishing it.
+          if find release -type f ! -name 'rsagent-worker-*' | grep -q .; then
+            echo "::error::Unexpected files staged for the release:"
+            find release -type f ! -name 'rsagent-worker-*'
+            exit 1
+          fi
+
           # upload-artifact does not preserve the mode bit. Restored here so a
           # downloaded Linux or macOS binary runs, rather than needing a chmod
           # nobody documents.
           chmod +x release/rsagent-worker-linux-x64 release/rsagent-worker-darwin-arm64
 
+          # Globbed on the prefix rather than `*`, so SHA256SUMS cannot list
+          # itself depending on when the shell creates the redirect target.
           cd release
-          sha256sum -- * > SHA256SUMS
+          sha256sum -- rsagent-worker-* > SHA256SUMS
           echo '## Assets'
           cat SHA256SUMS
 
