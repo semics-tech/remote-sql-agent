@@ -13,15 +13,22 @@ import { useAuth } from '../auth.jsx';
 export function JobActions({
   instanceId,
   job,
+  pendingEnabled,
   onIssued,
   onStarting,
+  onToggling,
 }: {
   instanceId: string;
   job: JobDetail;
+  /** The enabled state asked for and not yet confirmed, or null when settled. */
+  pendingEnabled: boolean | null;
   onIssued: (message: string) => void;
   /** Fired the instant a start is accepted, so the page can show it running
    * before SQL Agent's activity poll catches up. */
   onStarting?: () => void;
+  /** Likewise for enable/disable — the page owns the optimistic state because
+   * the heading badge and the polling rate both depend on it. */
+  onToggling?: (enabled: boolean) => void;
 }) {
   const capabilities = useInstanceCapabilities(instanceId);
   const actions = useJobActions(instanceId, job.jobUuid);
@@ -34,16 +41,23 @@ export function JobActions({
 
   const running = job.activity?.state === 'executing';
 
-  async function issue(label: string, fn: () => Promise<{ requiresApproval: boolean }>): Promise<void> {
+  async function issue(
+    label: string,
+    fn: () => Promise<{ requiresApproval: boolean }>,
+    { silentOnSuccess = false } = {},
+  ): Promise<void> {
     setBusy(true);
     setError(null);
     try {
       const result = await fn();
-      onIssued(
-        result.requiresApproval
-          ? `${label} is waiting for a second person to approve it.`
-          : `${label} sent to the worker.`,
-      );
+      if (result.requiresApproval) {
+        onIssued(`${label} is waiting for a second person to approve it.`);
+      } else if (!silentOnSuccess) {
+        onIssued(`${label} sent to the worker.`);
+      }
+      // Otherwise say nothing: the state badge and the run timeline already
+      // show what happened, and a banner repeating it is one more thing to
+      // dismiss.
     } catch (err) {
       setError(err instanceof Error ? err.message : 'That did not work.');
     } finally {
@@ -62,20 +76,46 @@ export function JobActions({
         {workerCan('job.toggle') && can('job.toggle') ? (
           <button
             className="action"
-            disabled={busy}
+            // Disabled while the change is in flight rather than hidden: the
+            // button is where the operator is looking, so it is where the
+            // progress belongs.
+            disabled={busy || pendingEnabled !== null}
             onClick={() =>
-              void issue(job.enabled ? 'Disable job' : 'Enable job', () =>
-                actions.toggle(!job.enabled, job.currentDefinitionHash ?? undefined),
+              void issue(
+                job.enabled ? 'Disable job' : 'Enable job',
+                async () => {
+                  const next = !job.enabled;
+                  const result = await actions.toggle(
+                    next,
+                    job.currentDefinitionHash ?? undefined,
+                  );
+                  // Only once accepted, and never when it is queued for
+                  // approval — showing "Disabling…" for a change nobody has
+                  // approved would be a lie the page never resolves.
+                  if (!result.requiresApproval) onToggling?.(next);
+                  return result;
+                },
+                { silentOnSuccess: true },
               )
             }
           >
-            {job.enabled ? 'Disable' : 'Enable'}
+            {pendingEnabled !== null
+              ? pendingEnabled
+                ? 'Enabling…'
+                : 'Disabling…'
+              : job.enabled
+                ? 'Disable'
+                : 'Enable'}
           </button>
         ) : null}
 
         {workerCan('job.run') && can('job.run') ? (
           running ? (
-            <button className="action" disabled={busy} onClick={() => void issue('Stop job', actions.stop)}>
+            <button
+              className="action"
+              disabled={busy}
+              onClick={() => void issue('Stop job', actions.stop, { silentOnSuccess: true })}
+            >
               Stop
             </button>
           ) : (
@@ -83,14 +123,18 @@ export function JobActions({
               className="action"
               disabled={busy}
               onClick={() =>
-                void issue('Start job', async () => {
-                  const result = await actions.run();
-                  // Only after the command is accepted. Flipping the UI to
-                  // "running" on click would show a state that a refused
-                  // command never reaches.
-                  if (!result.requiresApproval) onStarting?.();
-                  return result;
-                })
+                void issue(
+                  'Start job',
+                  async () => {
+                    const result = await actions.run();
+                    // Only after the command is accepted. Flipping the UI to
+                    // "running" on click would show a state that a refused
+                    // command never reaches.
+                    if (!result.requiresApproval) onStarting?.();
+                    return result;
+                  },
+                  { silentOnSuccess: true },
+                )
               }
             >
               Start job

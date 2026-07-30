@@ -6,6 +6,7 @@ import { createDatabase, type Database } from '@remote-sql-agent/server/src/db/c
 import { runMigrations } from '@remote-sql-agent/server/src/db/migrate.js';
 import { createGrpcServer } from '@remote-sql-agent/server/src/hub/hub.js';
 import { NotificationService } from '@remote-sql-agent/server/src/domain/notifications/service.js';
+import { EventBroker } from '@remote-sql-agent/server/src/api/events.js';
 import { WorkerRegistry } from '@remote-sql-agent/server/src/hub/registry.js';
 import { loadConfig } from '@remote-sql-agent/server/src/config.js';
 import {
@@ -24,7 +25,10 @@ import { commands as commandsTable, users } from '@remote-sql-agent/server/src/d
 import { eq } from 'drizzle-orm';
 import {
   canonicaliseJobWithHash,
+  disableStep,
+  enableStep,
   generateCommandSigningKeyPair,
+  isStepDisabled,
   signCommand,
   type CommandSigningKeyPair,
   type JobDefinition,
@@ -214,6 +218,8 @@ beforeAll(async () => {
     // Real service, no channels or rules configured: events are recorded and
     // nothing is queued, which is what the hub needs to exercise the path.
     notifications: new NotificationService(db, serverConfig, logger),
+    // Real broker with no subscribers: publishing is exercised, nothing listens.
+    events: new EventBroker(),
   });
 
   grpcPort = await new Promise<number>((resolve, reject) => {
@@ -664,6 +670,97 @@ describe('write path', () => {
     expect(got.steps).toHaveLength(4);
     expect(got.steps[0]!.onFailStepId).toBe(4);
     expect(got.schedules).toHaveLength(1);
+  }, 180_000);
+
+  it('keeps a disabled step in msdb, unreachable and intact', async () => {
+    // The claim behind the whole disable feature: SQL Agent has no flag for
+    // this, so it is expressed as control flow. That is only safe if the step
+    // genuinely survives the trip — command and all — while becoming
+    // unreachable. If msdb dropped it, or the flow came back rewired, then
+    // uninstalling the worker would silently start running a step the operator
+    // believed was switched off.
+    const [instance] = await getEstateOverview(db);
+    const jobs = await listJobs(db, instance!.instanceId);
+    const target = jobs.find((j) => j.name === 'RSAgent Fixture - Nightly Maintenance')!;
+    let detail = await getJob(db, instance!.instanceId, target.jobUuid);
+
+    // This test disables a step and leaves it that way, so a second run against
+    // the same SQL Server would otherwise start from an already-unreachable
+    // step — which is not the thing under test, and fails on the round trip at
+    // the end. CI seeds a fresh instance every time and never noticed; running
+    // the suite twice locally did. Put the step back first.
+    const victimId = (detail!.definition as JobDefinition).steps[1]!.stepId;
+    if (isStepDisabled(detail!.definition as JobDefinition, victimId)) {
+      const restored = enableStep(detail!.definition as JobDefinition, victimId);
+      const { canonicalJson: restoredJson, hash: restoredHash } = canonicaliseJobWithHash(
+        restored.definition,
+      );
+      const put = await issueAndSettle(
+        'upsertJob',
+        target.jobUuid,
+        {
+          jobUuid: target.jobUuid,
+          canonicalJson: restoredJson,
+          baseDefinitionHash: detail!.currentDefinitionHash,
+          allowOverwrite: false,
+        },
+        detail!.currentDefinitionHash ?? undefined,
+      );
+      expect(put.state).toBe('succeeded');
+      detail = await eventually(
+        () => getJob(db, instance!.instanceId, target.jobUuid),
+        (job) => job?.currentDefinitionHash === restoredHash,
+        { timeoutMs: 60_000 },
+      );
+    }
+
+    const before = detail!.definition as JobDefinition;
+
+    const victim = before.steps[1]!;
+    const { definition: edited, warnings } = disableStep(before, victim.stepId);
+    expect(warnings).toEqual([]);
+
+    const { canonicalJson, hash: sentHash } = canonicaliseJobWithHash(edited);
+    const settled = await issueAndSettle(
+      'upsertJob',
+      target.jobUuid,
+      {
+        jobUuid: target.jobUuid,
+        canonicalJson,
+        baseDefinitionHash: detail!.currentDefinitionHash,
+        allowOverwrite: false,
+      },
+      detail!.currentDefinitionHash ?? undefined,
+    );
+    expect(settled.state).toBe('succeeded');
+
+    const after = await eventually(
+      () => getJob(db, instance!.instanceId, target.jobUuid),
+      (job) => job?.currentDefinitionHash === sentHash,
+      { timeoutMs: 60_000 },
+    );
+    // Byte-for-byte: the rewiring is expressible in ordinary msdb columns, so
+    // nothing about it needs special handling on the way back.
+    expect(after!.currentDefinitionHash).toBe(sentHash);
+
+    const got = after!.definition as JobDefinition;
+    expect(got.steps).toHaveLength(before.steps.length);
+    expect(isStepDisabled(got, victim.stepId)).toBe(true);
+
+    // The step is still in msdb with its command — assert against the server,
+    // not our mirror, because that is what runs when this product is gone.
+    const live = await pool
+      .request()
+      .input('jobUuid', sql.UniqueIdentifier, target.jobUuid)
+      .input('stepId', sql.Int, victim.stepId)
+      .query<{ command: string; step_name: string }>(
+        'SELECT command, step_name FROM msdb.dbo.sysjobsteps WHERE job_id = @jobUuid AND step_id = @stepId',
+      );
+    expect(live.recordset[0]!.step_name).toBe(victim.name);
+    expect(live.recordset[0]!.command).toBe(victim.command);
+
+    // ...and putting it back needs nothing that was stored anywhere.
+    expect(enableStep(got, victim.stepId).definition).toEqual(before);
   }, 180_000);
 
   it('refuses an edit made against a stale version and leaves the job untouched', async () => {

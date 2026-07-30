@@ -34,6 +34,7 @@ import {
 import { markJobsMissingFromSnapshot, recordJobVersion } from '../domain/versioning.js';
 import { writeAudit } from '../domain/audit.js';
 import type { NotificationService } from '../domain/notifications/service.js';
+import type { EventBroker } from '../api/events.js';
 import {
   pushInstanceConfigs,
   recordCredentialKey,
@@ -61,6 +62,7 @@ export interface HubDeps {
   commands: CommandService;
   commandSigningPublicKey: string;
   notifications: NotificationService;
+  events: EventBroker;
 }
 
 /**
@@ -258,7 +260,15 @@ async function handleSession(
             },
             connectedAt: new Date(),
           };
-          registry.register(session);
+          const superseded = registry.register(session);
+          if (superseded) {
+            log.warn(
+              { hostName, workerId: worker.id },
+              'This worker replaced an existing live session for the same identity. ' +
+                'If it repeats every few seconds, two worker processes are sharing one ' +
+                'credential and are disconnecting each other — stop one of them.',
+            );
+          }
 
           await writeAudit(db, {
             actorType: 'worker',
@@ -306,6 +316,8 @@ async function handleSession(
 
           // Anything approved while this worker was offline goes out now,
           // provided it has not passed its TTL.
+          deps.events.publish({ type: 'worker' });
+
           const dispatched = await deps.commands.dispatchPendingFor(worker.id);
           if (dispatched > 0) {
             log.info({ hostName, dispatched }, 'Dispatched commands queued while the worker was offline');
@@ -352,6 +364,11 @@ async function handleSession(
           });
 
           if (result.changed) {
+            deps.events.publish({
+              type: 'definition',
+              instanceId,
+              jobUuid: delta.job.jobUuid,
+            });
             log.info(
               {
                 hostName,
@@ -380,6 +397,8 @@ async function handleSession(
           // Only genuinely new outcome rows reach here, so a replayed outbox
           // batch cannot re-alert on a failure that was handled last week.
           // Notification faults must never fail ingestion.
+          if (result.inserted > 0) deps.events.publish({ type: 'history', instanceId });
+
           await deps.notifications
             .onRunsIngested(instanceId, result.newRuns)
             .catch((err: unknown) => {
@@ -393,6 +412,7 @@ async function handleSession(
           const instanceId = instanceIds.get(update.instanceName);
           if (!instanceId) break;
           await upsertActivity(db, instanceId, update.rows);
+          deps.events.publish({ type: 'activity', instanceId });
           break;
         }
 
@@ -446,6 +466,10 @@ async function handleSession(
             sqlErrorNumber: result.sqlErrorNumber,
             hostName,
           });
+
+          if (command) {
+            deps.events.publish({ type: 'command', instanceId: command.instanceId });
+          }
 
           if (!result.success && command) {
             await deps.notifications
@@ -503,6 +527,7 @@ async function handleSession(
       if (session && workerId) {
         registry.unregister(workerId, session);
         await markWorkerDisconnected(db, workerId);
+        deps.events.publish({ type: 'worker' });
         await writeAudit(db, {
           actorType: 'worker',
           actor: hostName,

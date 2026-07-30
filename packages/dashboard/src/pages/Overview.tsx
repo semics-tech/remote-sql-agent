@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 import { useOverview, type FailedRun, type RunningJob, type WorkerHealth } from '../api.js';
 import { Panel, QueryState, Empty } from '../components.jsx';
 import { formatDateTime, formatDuration, formatRelative } from '../format.js';
+import { liveElapsedSeconds, useTicker } from '../ticker.js';
 
 /**
  * The operations overview.
@@ -12,7 +13,7 @@ import { formatDateTime, formatDuration, formatRelative } from '../format.js';
  * failures, then workers.
  */
 export function Overview() {
-  const { data, isLoading, error } = useOverview();
+  const { data, isLoading, error, dataUpdatedAt } = useOverview();
   const totals = data?.totals;
   const running = data?.running ?? [];
   const longRunning = running.filter((r) => r.isLongRunning);
@@ -66,7 +67,7 @@ export function Overview() {
 
         {longRunning.length > 0 ? (
           <Panel title={`Running longer than usual (${longRunning.length})`}>
-            <RunningTable rows={longRunning} showBaseline />
+            <RunningTable rows={longRunning} fetchedAt={dataUpdatedAt} />
           </Panel>
         ) : null}
 
@@ -77,7 +78,7 @@ export function Overview() {
               hint="Jobs appear here the moment SQL Agent reports them as executing."
             />
           ) : (
-            <RunningTable rows={running} showBaseline />
+            <RunningTable rows={running} fetchedAt={dataUpdatedAt} />
           )}
         </Panel>
 
@@ -104,7 +105,16 @@ export function Overview() {
   );
 }
 
-function RunningTable({ rows, showBaseline }: { rows: RunningJob[]; showBaseline: boolean }) {
+/**
+ * What is running, counting up in real time.
+ *
+ * The elapsed figure the server sends is a measurement taken when it replied,
+ * so it is stale the moment it arrives. Ticking it forward locally is what
+ * makes this read as a live view rather than a page that refreshes.
+ */
+function RunningTable({ rows, fetchedAt }: { rows: RunningJob[]; fetchedAt: number }) {
+  const now = useTicker(rows.length > 0);
+
   return (
     <div className="table-scroll">
       <table>
@@ -114,55 +124,127 @@ function RunningTable({ rows, showBaseline }: { rows: RunningJob[]; showBaseline
             <th>Instance</th>
             <th>Current step</th>
             <th className="right">Running for</th>
-            {showBaseline ? <th className="right">Usually</th> : null}
+            <th className="right">Expected</th>
             <th>Progress</th>
           </tr>
         </thead>
         <tbody>
-          {rows.map((r) => (
-            <tr key={`${r.instanceId}:${r.jobUuid}`}>
-              <td className="nowrap">
-                <Link to={`/instances/${r.instanceId}/jobs/${r.jobUuid}`}>{r.jobName}</Link>
-                {r.isLongRunning ? (
-                  <>
-                    {' '}
-                    <span
-                      className="badge drift"
-                      title="Well past this job's own average for a successful run"
-                    >
-                      long
-                    </span>
-                  </>
-                ) : null}
-              </td>
-              <td className="nowrap muted mono">
-                {r.hostName}\{r.instanceName}
-              </td>
-              <td className="nowrap muted">
-                {r.currentStepId ? `${r.currentStepId}. ` : ''}
-                {r.currentStepName ?? '—'}
-              </td>
-              <td className="right nowrap mono">{formatDuration(r.elapsedSeconds)}</td>
-              {showBaseline ? (
-                <td className="right nowrap mono muted">
-                  {r.averageSeconds === null ? (
-                    <span className="faint" title="Fewer than three successful runs on record">
-                      no baseline
-                    </span>
+          {rows.map((r) => {
+            const elapsed = liveElapsedSeconds(r.elapsedSeconds, fetchedAt, now);
+            const eta = describeEta(elapsed, r.averageSeconds);
+
+            return (
+              <tr key={`${r.instanceId}:${r.jobUuid}`}>
+                <td className="nowrap">
+                  <Link to={`/instances/${r.instanceId}/jobs/${r.jobUuid}`}>{r.jobName}</Link>
+                  {r.isLongRunning ? (
+                    <>
+                      {' '}
+                      <span
+                        className="badge drift"
+                        title="Well past this job's own average for a successful run"
+                      >
+                        long
+                      </span>
+                    </>
+                  ) : null}
+                </td>
+                <td className="nowrap muted mono">
+                  {r.hostName}\{r.instanceName}
+                </td>
+                <td className="nowrap muted">
+                  {r.currentStepName ? (
+                    <>
+                      {r.currentStepId ? `${r.currentStepId}. ` : ''}
+                      {r.currentStepName}
+                      {r.currentStepNumber !== null && r.stepCount !== null ? (
+                        <span className="faint">
+                          {' '}
+                          ({r.currentStepNumber} of {r.stepCount})
+                        </span>
+                      ) : null}
+                    </>
                   ) : (
-                    formatDuration(Math.round(r.averageSeconds))
+                    // The flow has run out of steps: the run is finishing and
+                    // the final history row has not landed yet.
+                    <span className="faint">finishing</span>
                   )}
                 </td>
-              ) : null}
-              <td style={{ minWidth: 140 }}>
-                <ProgressBar elapsed={r.elapsedSeconds} average={r.averageSeconds} />
-              </td>
-            </tr>
-          ))}
+                <td
+                  className="right nowrap mono"
+                  title={describeBaseline(r.averageSeconds, r.lastDurationSeconds)}
+                >
+                  {formatDuration(elapsed)}
+                </td>
+                <td className={`right nowrap mono ${eta ? `eta-${eta.state}` : 'faint'}`}>
+                  {eta ? eta.label : <span title={NO_BASELINE_HINT}>—</span>}
+                </td>
+                <td style={{ minWidth: 140 }}>
+                  <ProgressBar elapsed={elapsed} average={r.averageSeconds} />
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
   );
+}
+
+const NO_BASELINE_HINT =
+  'No estimate: this job has fewer than three successful runs in the last 30 days.';
+
+export interface EtaReading {
+  label: string;
+  state: 'ok' | 'near' | 'over';
+}
+
+/**
+ * How much longer this run has to go, against its own average.
+ *
+ * Phrased as time rather than a percentage because the question being asked is
+ * "can I wait for this, or should I go and look at it", and an answer of "84%"
+ * does not settle that for a job that takes six hours.
+ *
+ * Past the average it keeps counting, as an overrun rather than a stalled
+ * "0s left" — a run that is late is the one thing on this page worth reading,
+ * and rounding it away to zero would hide exactly that.
+ */
+export function describeEta(
+  elapsedSeconds: number | null,
+  averageSeconds: number | null,
+): EtaReading | null {
+  if (elapsedSeconds === null || averageSeconds === null || averageSeconds <= 0) return null;
+
+  const remaining = Math.round(averageSeconds) - elapsedSeconds;
+  if (remaining > 0) {
+    return { label: `${formatDuration(remaining)} left`, state: 'ok' };
+  }
+
+  const over = -remaining;
+  // Matches the server's overrun test, so the wording and the "long" badge
+  // never contradict each other.
+  const state = elapsedSeconds >= averageSeconds * 2 ? 'over' : 'near';
+  return { label: `over by ${formatDuration(over)}`, state };
+}
+
+/** The tooltip behind the running timer: what this job normally does. */
+export function describeBaseline(
+  averageSeconds: number | null,
+  lastDurationSeconds: number | null,
+): string {
+  const parts: string[] = [];
+  if (averageSeconds !== null) {
+    parts.push(`Usually ${formatDuration(Math.round(averageSeconds))}`);
+  }
+  if (lastDurationSeconds !== null) {
+    parts.push(`last run ${formatDuration(lastDurationSeconds)}`);
+  }
+  if (parts.length === 0) return 'No successful run on record to compare this against.';
+  if (averageSeconds === null) {
+    return `${parts.join(' · ')}. Too few successful runs for an average.`;
+  }
+  return `${parts.join(' · ')}. Averaged over successful runs in the last 30 days.`;
 }
 
 /**

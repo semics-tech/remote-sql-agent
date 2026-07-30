@@ -32,6 +32,17 @@ export default defineWorkspace([
   },
   {
     test: {
+      // Pure functions only — the timeline and ETA arithmetic. No DOM, because
+      // what is worth pinning here is the numbers behind the chart, not that
+      // React renders a div.
+      name: 'dashboard',
+      root: './packages/dashboard',
+      environment: 'node',
+      include: ['test/**/*.test.ts'],
+    },
+  },
+  {
+    test: {
       name: 'integration',
       root: './tests/integration',
       environment: 'node',
