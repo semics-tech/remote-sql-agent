@@ -34,10 +34,13 @@ rmSync(out, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });
 
 console.log('Bundling worker...');
-// `.cmd` on Windows: execFileSync cannot launch a shim directly.
-execFileSync(process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm', ['run', 'bundle'], {
+// `shell: true` on Windows: pnpm is a `.cmd` shim there, and since the fix for
+// CVE-2024-27980 Node refuses to spawn one without a shell, failing with a
+// bare EINVAL. Nothing on this line comes from outside this file.
+execFileSync('pnpm', ['run', 'bundle'], {
   cwd: workerRoot,
   stdio: 'inherit',
+  shell: process.platform === 'win32',
 });
 
 cpSync(join(workerRoot, 'dist', 'rsagent-worker.mjs'), join(out, 'rsagent-worker.mjs'));

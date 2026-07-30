@@ -41,12 +41,21 @@ function run(command: string, args: string[], cwd = workerRoot): void {
 /**
  * Run a package manager binary.
  *
- * On Windows these are `.cmd` shims, which execFileSync cannot launch
- * directly — it needs a real executable. This runs on a windows-latest runner
- * in the release matrix, so the naive form fails there and only there.
+ * On Windows these are `.cmd` shims, and since the fix for CVE-2024-27980
+ * Node refuses to spawn one at all without a shell — `execFileSync` fails with
+ * `EINVAL`, naming the file rather than saying why. `shell: true` is the
+ * documented remedy, and is safe here because nothing on this line comes from
+ * outside this file.
+ *
+ * Pointing at `pnpm.cmd` explicitly is not enough on its own; that was the
+ * first attempt, and it failed on the windows-latest runner and nowhere else.
  */
 function runTool(tool: string, args: string[]): void {
-  run(isWindows ? `${tool}.cmd` : tool, args);
+  if (!isWindows) {
+    run(tool, args);
+    return;
+  }
+  execFileSync(tool, args, { cwd: workerRoot, stdio: 'inherit', shell: true });
 }
 
 rmSync(build, { recursive: true, force: true });
