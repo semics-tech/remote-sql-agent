@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { constants, publicEncrypt } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -53,6 +53,33 @@ describe('credential key', () => {
     // Anything that can read this file can read this host's SQL password.
     const mode = statSync(path).mode & 0o777;
     expect(mode).toBe(0o600);
+  });
+
+  it('refuses to write the key through a symlink planted at the path', () => {
+    const path = join(dir, 'credential.key');
+    const elsewhere = join(dir, 'attacker-readable.key');
+    symlinkSync(elsewhere, path);
+
+    // The dangerous shape is check-then-create: the path is empty when asked
+    // about and a symlink by the time it is written, so the private key lands
+    // wherever the link points. Creating with O_EXCL makes that unreachable —
+    // the kernel refuses the path outright, and the worker fails to start
+    // rather than quietly handing out the key.
+    expect(() => loadOrCreateCredentialKey(path)).toThrow();
+    expect(existsSync(elsewhere)).toBe(false);
+  });
+
+  it('adopts the key already on disk when another process wins the race', () => {
+    const path = join(dir, 'credential.key');
+    const winner = loadOrCreateCredentialKey(path);
+
+    // Standing in for a second worker that got there first: whatever is on
+    // disk is what this host can decrypt with, so a later start must load it
+    // rather than overwrite it and strand every credential encrypted to it.
+    const loser = loadOrCreateCredentialKey(path);
+
+    expect(loser.fingerprint).toBe(winner.fingerprint);
+    expect(readFileSync(path, 'utf8')).toBe(winner.privateKeyPem);
   });
 
   it('exports only the public half', () => {
