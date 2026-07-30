@@ -124,6 +124,46 @@ async function eventually<T>(
   }
 }
 
+/**
+ * Get an Agent job to a standstill so it can be started deliberately.
+ *
+ * `sp_start_job` is refused outright while the job is already executing, and
+ * the seed starts two fixtures to give a fresh estate some history. On CI the
+ * seed runs seconds before the tests, so a fixture that retries — and the
+ * failure fixture retries twice, a minute apart — is still in flight when a
+ * test wants to drive it. Locally the same job finished long ago, which is why
+ * this only ever failed on CI.
+ */
+async function quiesceJob(jobName: string): Promise<void> {
+  const running = async (): Promise<boolean> => {
+    const result = await pool
+      .request()
+      .input('jobName', sql.NVarChar, jobName)
+      .query<{ running: number }>(`
+        SELECT COUNT(*) AS running
+        FROM   msdb.dbo.sysjobactivity a
+        JOIN   msdb.dbo.sysjobs j ON j.job_id = a.job_id
+        WHERE  j.name = @jobName
+          AND  a.start_execution_date IS NOT NULL
+          AND  a.stop_execution_date IS NULL
+      `);
+    return (result.recordset[0]?.running ?? 0) > 0;
+  };
+
+  if (!(await running())) return;
+
+  try {
+    await pool
+      .request()
+      .input('jobName', sql.NVarChar, jobName)
+      .query('EXEC msdb.dbo.sp_stop_job @job_name = @jobName');
+  } catch {
+    // It finished between the check and the stop — which is the state we want.
+  }
+
+  await eventually(running, (isRunning) => !isRunning, { timeoutMs: 30_000 });
+}
+
 beforeAll(async () => {
   const admin = postgres(ADMIN_URL, { max: 1 });
   try {
@@ -412,13 +452,17 @@ describe('run history', () => {
     // old rows are legitimately never shipped.
     //
     // Retries are dropped to zero first: the fixture's two one-minute retries
-    // would otherwise make this a two-minute test for no extra coverage.
+    // would otherwise make this a two-minute test for no extra coverage. That
+    // only governs the run started below, so the seeded run still has to be
+    // brought to a halt before this one can begin.
     await pool
       .request()
       .input('jobName', sql.NVarChar, 'RSAgent Fixture - Known Failure')
       .query(
         'EXEC msdb.dbo.sp_update_jobstep @job_name = @jobName, @step_id = 1, @retry_attempts = 0',
       );
+
+    await quiesceJob('RSAgent Fixture - Known Failure');
 
     await pool
       .request()
@@ -434,11 +478,14 @@ describe('run history', () => {
       { timeoutMs: 90_000 },
     );
 
-    expect(runs[0]!.runStatus).toBe(0); // Failed
+    // Found by status rather than by position: stopping the seeded run leaves a
+    // cancelled row behind, and sysjobhistory timestamps are only accurate to
+    // the second, so "the newest row" is not reliably the one just produced.
+    const failed = runs.find((run) => run.runStatus === 0)!;
     // Severity 16 is what RAISERROR(..., 16, 1) produces; capturing it is how a
     // DBA tells a genuine error from a cancelled run.
-    expect(runs[0]!.steps.some((s) => s.sqlSeverity === 16)).toBe(true);
-    expect(runs[0]!.message).toMatch(/failed/iu);
+    expect(failed.steps.some((s) => s.sqlSeverity === 16)).toBe(true);
+    expect(failed.message).toMatch(/failed/iu);
   }, 120_000);
 });
 
