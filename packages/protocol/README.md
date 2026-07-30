@@ -2,19 +2,26 @@
 
 Shared contracts for [Remote SQL Agent](https://github.com/semics-tech/remote-sql-agent).
 
-Published so that integrations can speak the same language as the product: read
-a job definition out of the control plane's API and hash it identically, or
-build a tool against the same wire protocol.
+Consumed from source by the worker, the control plane and the dashboard, so all
+three derive byte-identical canonical bytes from the same job — which is what
+makes drift detection mean anything.
 
-Consumed by the worker, the control plane and the dashboard, so all three derive
-byte-identical canonical bytes from the same job — which is what makes drift
-detection mean anything.
+## Not published to npm
 
-## Install
+This package is internal. Nothing installs it: the worker inlines it into its
+bundle, and the control plane image carries it.
 
-```bash
-npm install @remote-sql-agent/protocol
-```
+Publishing it would turn these contracts into a public API with semver
+expectations attached, which is a promise worth making only once someone
+actually needs it. `JobDefinition.v1` can currently change shape whenever the
+worker and server change together — the property that keeps drift detection
+honest — and that freedom is worth more than a package nobody has asked for.
+
+Version `0.1.0` was published before this was decided and is deprecated. If you
+want to build against the wire protocol, the `.proto` files in `proto/` and the
+zod schemas in `src/` are the source of truth, and
+[an issue](https://github.com/semics-tech/remote-sql-agent/issues) asking for a
+published package is the way to change this.
 
 ## What is in it
 

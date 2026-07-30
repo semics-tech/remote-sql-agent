@@ -113,18 +113,21 @@ jobs:
           echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
           echo "All packages are at $VERSION (prerelease: $PRERELEASE)."
 
+  # One package. protocol, server and dashboard are all `private: true` and
+  # reach users another way — inlined into the worker bundle, or inside the
+  # control-plane image.
   npm:
-    name: Publish to npm
+    name: Publish the worker to npm
     needs: verify
     runs-on: ubuntu-latest
     permissions:
       contents: read
       # The whole npm credential. Trusted publishing exchanges this short-lived
       # OIDC token for publish rights, so there is no NPM_TOKEN in this
-      # repository to leak, expire, or forget to rotate. Both packages are
+      # repository to leak, expire, or forget to rotate. The package is
       # configured on npmjs.com to trust this repository and this workflow
-      # file, so renaming this file breaks publishing until the trusted
-      # publisher config is updated to match.
+      # file, so renaming this file breaks publishing until that config is
+      # updated to match.
       id-token: write
     steps:
       - uses: actions/checkout@v7
@@ -140,33 +143,15 @@ jobs:
       # A prerelease must not become what `npm install` gives people by
       # default. Publishing it under `next` means an rc can be exercised for
       # real without any existing install picking it up.
-      - name: Resolve dist-tag
-        id: tag
-        run: |
-          if [ "${{ needs.verify.outputs.prerelease }}" = "true" ]; then
-            echo "dist=next" >> "$GITHUB_OUTPUT"
-          else
-            echo "dist=latest" >> "$GITHUB_OUTPUT"
-          fi
-
-      # No --provenance and no NODE_AUTH_TOKEN. Trusted publishing generates
-      # the provenance attestation on its own, and asking for it explicitly is
-      # what makes a publish fail anywhere the OIDC token is absent.
       #
-      # protocol first: worker depends on it, and pnpm rewrites the
-      # workspace:* range to the real version at publish time.
-      - name: Publish @remote-sql-agent/protocol
-        run: |
-          pnpm --filter @remote-sql-agent/protocol publish \
-            --access public --no-git-checks \
-            --tag ${{ steps.tag.outputs.dist }} \
-            ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '--dry-run' || '' }}
-
+      # No --provenance and no NODE_AUTH_TOKEN: trusted publishing generates
+      # the attestation itself, and asking for it explicitly is what makes a
+      # publish fail anywhere the OIDC token is absent.
       - name: Publish @remote-sql-agent/worker
         run: |
+          if [ "${{ needs.verify.outputs.prerelease }}" = "true" ]; then DIST=next; else DIST=latest; fi
           pnpm --filter @remote-sql-agent/worker publish \
-            --access public --no-git-checks \
-            --tag ${{ steps.tag.outputs.dist }} \
+            --access public --no-git-checks --tag "$DIST" \
             ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '--dry-run' || '' }}
 
   container:
