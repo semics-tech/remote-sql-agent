@@ -2,10 +2,10 @@ import { DiffEditor, loader } from '@monaco-editor/react';
 // The editor core only. Importing 'monaco-editor' would drag in the TypeScript,
 // CSS, HTML and JSON language services — megabytes of machinery for languages
 // that cannot appear in a SQL Agent job step.
-import * as monaco from 'monaco-editor/esm/vs/editor/editor.api';
-import 'monaco-editor/esm/vs/basic-languages/sql/sql.contribution';
-import 'monaco-editor/esm/vs/basic-languages/powershell/powershell.contribution';
-import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
+import * as monaco from 'monaco-editor/editor/editor.api';
+import 'monaco-editor/languages/definitions/sql/register';
+import 'monaco-editor/languages/definitions/powershell/register';
+import editorWorker from 'monaco-editor/editor/editor.worker?worker';
 
 /**
  * Text diff for step bodies. Lazily loaded — Monaco is by far the largest
