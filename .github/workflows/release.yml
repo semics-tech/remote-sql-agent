@@ -98,7 +98,16 @@ jobs:
           # A hyphen is semver's prerelease marker. It decides whether npm's
           # `latest` and Docker's `latest` move, so it is computed once here
           # rather than re-derived in three places.
-          if echo "$VERSION" | grep -q -- '-'; then PRERELEASE=true; else PRERELEASE=false; fi
+          #
+          # A case statement rather than `grep -q -- '-'`: a lone hyphen as a
+          # pattern is exactly the argument grep implementations disagree about,
+          # and getting it wrong here does not fail the build — it silently
+          # answers "false" and publishes a release candidate as `latest` to
+          # both registries. This form needs no external command at all.
+          case "$VERSION" in
+            *-*) PRERELEASE=true ;;
+            *)   PRERELEASE=false ;;
+          esac
 
           echo "version=$VERSION"       >> "$GITHUB_OUTPUT"
           echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
