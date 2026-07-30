@@ -145,7 +145,7 @@ jobs:
 
       - name: Attest provenance
         if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-name: ${{ env.REGISTRY }}/${{ github.repository }}/control-plane
           subject-digest: ${{ steps.build.outputs.digest }}
