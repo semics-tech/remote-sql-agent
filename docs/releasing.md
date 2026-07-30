@@ -59,8 +59,14 @@ versions cannot be reused after they are unpublished.
 
 | Secret | Used by | Notes |
 |---|---|---|
-| `DOCKERHUB_USERNAME` | container job | |
-| `DOCKERHUB_TOKEN` | container job | A Docker Hub **access token**, not the account password |
+| `DOCKERHUB_USERNAME` | container job | Your Docker Hub login. Not necessarily the namespace, if the namespace is an organisation |
+| `DOCKERHUB_TOKEN` | container job | A Docker Hub **access token** with **read/write** scope, not the account password |
+
+Read/write is enough to push. The README-sync step wants `read/write/delete`,
+which is more than a release workflow should hold — a credential that can
+delete published images is a much larger blast radius than one that can add
+them. That step is marked `continue-on-error`, so a read/write token is the
+right choice and the listing description is pasted by hand instead.
 
 There is deliberately **no `NPM_TOKEN`**. npm publishing uses trusted
 publishing: the workflow's `id-token: write` permission mints a short-lived

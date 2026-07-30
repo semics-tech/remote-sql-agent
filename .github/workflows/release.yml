@@ -226,8 +226,19 @@ jobs:
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
 
+      # Cosmetic, and deliberately allowed to fail.
+      #
+      # Docker Hub's description API needs a token with read/write/**delete**
+      # scope, which pushing does not. A release workflow holding a credential
+      # that can delete published images, so the listing page has a README on
+      # it, is the wrong trade — anything that compromises the workflow could
+      # then remove every tag in the namespace. Use a read/write token and let
+      # this step fail; paste the README into Docker Hub by hand instead. If
+      # you would rather have it synced, issue a delete-scoped token knowing
+      # what it can do.
       - name: Update the Docker Hub description
         if: ${{ github.ref_type == 'tag' && needs.verify.outputs.prerelease == 'false' }}
+        continue-on-error: true
         uses: peter-evans/dockerhub-description@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
