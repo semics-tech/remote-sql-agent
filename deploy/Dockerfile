@@ -77,6 +77,14 @@ COPY --from=build /packages                      ./worker-packages
 # tsx runs the TypeScript sources directly. The alternative is a bundling step
 # for a server that starts once and runs for months; the startup cost is not
 # worth the extra build complexity here.
+#
+# It is a runtime dependency of the server, not a dev one, so `pnpm --prod
+# deploy` includes it. That is load-bearing: this used to run `npx tsx`, and
+# because tsx was a devDependency, npx downloaded it from npmjs.org on every
+# container start. A control plane that cannot boot without reaching the public
+# internet contradicts the whole point of a product built for segmented
+# networks — and it meant fetching and executing an unpinned package at boot,
+# in the component that holds every job definition in the estate.
 ENV RSAGENT_DASHBOARD_DIR=/app/dashboard
 ENV RSAGENT_WORKER_PACKAGE_DIR=/app/worker-packages
 ENV RSAGENT_HTTP_HOST=0.0.0.0
@@ -94,4 +102,9 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.RSAGENT_HTTP_PORT||8080)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["npx", "tsx", "src/index.ts"]
+
+# node --import rather than `npx tsx`. npx falls back to downloading a package
+# it cannot resolve, so a packaging mistake surfaces as a slow start and a
+# network dependency instead of an error — which is exactly how the previous
+# one survived a published release. This fails immediately if tsx is missing.
+CMD ["node", "--import", "tsx", "src/index.ts"]

@@ -8,6 +8,21 @@ While at `0.x`, breaking changes may land in minor versions.
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-07-30
+
+### Fixed
+
+- **The control plane downloaded a package from npmjs.org on every start.**
+  `tsx` runs the TypeScript sources, but it was a devDependency, so
+  `pnpm --prod deploy` excluded it from the image and `npx tsx` fetched it at
+  boot. A control plane that cannot start without reaching the public internet
+  contradicts the point of a product built for segmented networks, and it meant
+  executing an unpinned package on the host that holds every job definition in
+  the estate. It is a runtime dependency now, and the image runs
+  `node --import tsx` rather than `npx`, so a packaging mistake fails loudly
+  instead of quietly reaching for the network. Verified by booting the image
+  with `--network none`
+
 ### Changed
 
 - **`@remote-sql-agent/protocol` is no longer published to npm.** Nothing
@@ -176,5 +191,6 @@ reasoning outlives the change.
 See [docs/migration.md](docs/migration.md). The significant ones: no
 control-plane HA, manual certificate rotation in mTLS mode, no MSI.
 
-[Unreleased]: https://github.com/semics-tech/remote-sql-agent/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/semics-tech/remote-sql-agent/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/semics-tech/remote-sql-agent/releases/tag/v0.1.1
 [0.1.0]: https://github.com/semics-tech/remote-sql-agent/releases/tag/v0.1.0
