@@ -119,6 +119,46 @@ conventions:
   the worker, the write path, or auth.
 - CI must be green.
 
+### Title your PR as a conventional commit
+
+Pull requests are squashed, so **the PR title becomes the commit subject on
+`main`** — it is the permanent record, not a label for the review. CI checks it.
+
+```
+type(scope): description
+type: description
+```
+
+`type` is one of `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `build`,
+`ci`, `chore`, `revert`, `style`. `scope` is optional, lowercase, and names the
+area touched — `worker`, `server`, `dashboard`, `protocol`, `deploy`, `deps`,
+`ci`. Append `!` before the colon for a breaking change.
+
+```
+feat(dashboard): show the step a running job is actually on
+fix(worker): create the credential key with O_EXCL
+build(deps): raise drizzle-orm past its injection advisory
+feat(protocol)!: require a signature on every command
+```
+
+Write the description as an instruction — "show the step", not "shows" or
+"showing" — with no full stop, under 100 characters.
+
+Individual commits inside the branch are not checked. They are squashed away, so
+gating them would police text that never lands anywhere. Use whatever helps
+review; the convention is worth following there too, and the guidance below on
+commit bodies applies to the PR body, which becomes the commit body.
+
+### Say why in the body
+
+The subject says what changed. The body says why it needed to, what else was
+considered, and anything that would surprise the next reader. A change to the
+worker, the write path or auth should say what widens if it is wrong.
+
+This matters more here than in most codebases: much of this work is choosing
+between two defensible options, and a year from now the diff will not remember
+which one you rejected.
+
 Files that get extra scrutiny, and why:
 
 | Path | Why |

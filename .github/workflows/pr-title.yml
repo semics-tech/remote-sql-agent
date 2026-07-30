@@ -1,0 +1,86 @@
+name: PR title
+
+on:
+  pull_request:
+    # `edited` matters as much as `opened`: the title is the thing being
+    # checked, and it is routinely fixed after the fact. `synchronize` re-runs
+    # the check against each new head commit so branch protection has a result
+    # to look at on the commit it is actually gating.
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  conventional:
+    name: Conventional commit format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the title
+        env:
+          # Passed through the environment rather than interpolated into the
+          # script. `${{ }}` substitution happens before bash sees the line, so
+          # a title containing $(...) or backticks would otherwise execute on
+          # the runner — and anyone can open a pull request.
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+
+          # Squash is the only merge option, so this title becomes the commit
+          # subject on main. Checking it is checking the history; checking the
+          # individual commits would gate text that never lands anywhere.
+          TYPES='feat|fix|perf|refactor|docs|test|build|ci|chore|revert|style'
+          PATTERN="^(${TYPES})(\([a-z0-9][a-z0-9._/-]*\))?!?: .+"
+
+          fail() {
+            echo "::error title=PR title is not a conventional commit::$1"
+            cat <<EOF
+
+          Title:  ${TITLE}
+
+          Expected:  type(scope): description
+                     type: description
+
+          Type is one of: ${TYPES//|/, }
+          Scope is optional and lowercase — the area touched, such as
+          worker, server, dashboard, protocol, deploy, deps or ci.
+
+          Examples:
+            feat(dashboard): show the step a running job is actually on
+            fix(worker): create the credential key with O_EXCL
+            build(deps): raise drizzle-orm past its injection advisory
+            feat(protocol)!: require a signature on every command
+
+          Append ! before the colon for a breaking change.
+          See CONTRIBUTING.md for the full convention.
+          EOF
+            exit 1
+          }
+
+          if [ -z "${TITLE}" ]; then
+            fail "The title is empty."
+          fi
+
+          if ! printf '%s' "${TITLE}" | grep -qE "${PATTERN}"; then
+            fail "It does not match 'type(scope): description'."
+          fi
+
+          DESCRIPTION="${TITLE#*: }"
+
+          case "${DESCRIPTION}" in
+            *.) fail "Drop the full stop — the subject line is a title, not a sentence." ;;
+          esac
+
+          # A subject that is only a couple of words is almost never describing
+          # the change, and it is the thing a reader sees first in git log.
+          if [ "${#DESCRIPTION}" -lt 10 ]; then
+            fail "The description is too short to say what changed."
+          fi
+
+          # GitHub appends " (#123)" when it squashes, so the subject that lands
+          # on main is a little longer than what is checked here.
+          if [ "${#TITLE}" -gt 100 ]; then
+            fail "The title is ${#TITLE} characters; keep it under 100."
+          fi
+
+          echo "OK: ${TITLE}"
