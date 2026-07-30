@@ -22,6 +22,13 @@
       "when": 1785360398005,
       "tag": "0002_youthful_firebird",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1785365439184,
+      "tag": "0003_fair_whizzer",
+      "breakpoints": true
     }
   ]
 }

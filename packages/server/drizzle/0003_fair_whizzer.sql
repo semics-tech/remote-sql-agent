@@ -1,0 +1,1 @@
+ALTER TABLE "instances" ADD COLUMN "detached_at" timestamp with time zone;
