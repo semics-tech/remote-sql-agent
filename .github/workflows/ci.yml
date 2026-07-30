@@ -15,7 +15,10 @@ permissions:
   contents: read
 
 env:
-  NODE_VERSION: '22'
+  # Node 24 is the current LTS ("Krypton"). Deliberately not 26: that is the
+  # Current line, and the worker ships a bundled runtime onto customer database
+  # servers, where a line that takes breaking changes is the wrong trade.
+  NODE_VERSION: '24'
 
 jobs:
   build:

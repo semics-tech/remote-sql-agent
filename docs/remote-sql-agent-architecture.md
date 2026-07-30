@@ -87,7 +87,7 @@ A lightweight **worker** is deployed next to each SQL Server instance. The worke
 
 | Component | Stack | Rationale |
 |---|---|---|
-| Runtime | **Node.js 22 LTS** + **TypeScript** (strict mode) everywhere | Maintainer fluency; mature ecosystem for every required capability |
+| Runtime | **Node.js 24 LTS** + **TypeScript** (strict mode) everywhere | Maintainer fluency; mature ecosystem for every required capability |
 | Worker | Node service bundled with **esbuild**; runs as a Windows Service via **WinSW** wrapper (battle-tested; used by Jenkins); systemd unit for SQL-on-Linux hosts | Long-running daemon with clean service lifecycle on both platforms |
 | SQL Server driver | **`mssql`** (tedious under the hood — Microsoft-stewarded) | Mature, parameterised queries, connection pooling per instance |
 | Worker ↔ control plane protocol | **gRPC over HTTP/2 with mTLS** via **`@grpc/grpc-js`**, bidirectional streaming; contracts defined in protobuf, types generated with **`ts-proto`** (buf toolchain) | Streaming for live logs, strongly typed both ends from one `.proto` source, handles reconnects; runs on 443 through most corporate egress |

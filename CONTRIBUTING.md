@@ -13,7 +13,7 @@ Bug fixes, documentation, and tests need no discussion — just send them.
 
 ## Getting set up
 
-Node.js 22+, pnpm 10+, Docker.
+Node.js 24+, pnpm 10+, Docker.
 
 ```bash
 git clone https://github.com/semics-tech/remote-sql-agent

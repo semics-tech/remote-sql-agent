@@ -6,7 +6,7 @@
   "description": "Centrally view, monitor and manage SQL Server Agent jobs across firewalled estates via outbound-only workers.",
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   },
   "packageManager": "pnpm@10.23.0",
   "scripts": {
@@ -48,7 +48,7 @@
   "devDependencies": {
     "@bufbuild/buf": "^1.47.2",
     "@eslint/js": "^9.17.0",
-    "@types/node": "^26.1.2",
+    "@types/node": "^24.13.3",
     "eslint": "^10.8.0",
     "ts-proto": "^2.6.1",
     "tsx": "^4.19.2",

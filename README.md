@@ -226,7 +226,7 @@ tracked with impact and effort in [docs/migration.md](docs/migration.md).
 
 ## Development
 
-Requires Node.js 22+, pnpm 10+ and Docker.
+Requires Node.js 24+, pnpm 10+ and Docker.
 
 ```bash
 pnpm install
