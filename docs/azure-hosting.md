@@ -152,6 +152,78 @@ here. Leave it.
 
 ---
 
+## Could the app be restructured to hit Azure's free tiers?
+
+Yes, on paper. The arithmetic says don't.
+
+Azure's cheap tiers are cheap because you pay nothing while idle. This control
+plane is never idle: workers hold a socket open and heartbeat every 30s. Two
+things force always-on compute — the held stream, and Postgres, which has no
+auto-pause (you can stop a Flexible Server manually, and billing does stop
+immediately, but nothing does it for you). Removing one without the other saves
+nothing, so a serverless rewrite is all-or-nothing.
+
+The all-in version would be: dashboard on Static Web Apps (free), REST API on
+Functions (1M free executions/month), SSE and the worker hub both on
+[Web PubSub](https://azure.microsoft.com/en-us/pricing/details/web-pubsub/)
+(free tier, 20 concurrent connections, 20,000 messages/day), commands dispatched
+through a Storage Queue, and state in the
+[Azure SQL free offer](https://learn.microsoft.com/en-us/azure/azure-sql/database/free-offer?view=azuresql)
+(100,000 vCore-seconds and 32 GB per database per month, for the lifetime of the
+subscription). That really does total about $0.
+
+Three things break it.
+
+**The free database cannot stay awake.** 100,000 vCore-seconds at the serverless
+minimum of 0.5 vCore is **55 hours of activity per month**. A control plane
+taking heartbeats every 30s never idles long enough to auto-pause, so it would
+exhaust the monthly allowance in about **2.3 days** and then auto-pause until the
+next calendar month. Auto-pause on the database holding every job definition in
+the estate is not a failure mode worth designing toward.
+
+**The free ceilings bite exactly when the product starts working.** Web PubSub
+free is 20 concurrent connections — worker sockets and browser streams share
+that budget. At 25 SQL hosts you are on Standard, which costs more than the VM.
+Free tiers are sized for demos, and this outgrows them at the point where it is
+proving useful.
+
+**The rewrite is in the most expensive places.** Moving the hub off gRPC means
+changing [`worker.proto`](../packages/protocol/proto/rsagent/v1/worker.proto) and
+reshipping every deployed worker in lockstep, or supporting two transports
+forever. `mtls` almost certainly does not survive the move to WebSocket clients,
+and the threat model relies on it for sites that cannot hold an API key.
+Outbound-only *is* preserved — WebSockets still dial out — so the central
+property survives, but that is the only thing that comes through cleanly.
+Separately, Postgres → SQL Server means porting 11 `jsonb` columns whose type is
+a deliberate choice (see [faq.md](faq.md)) onto a different JSON story, and
+Drizzle only gained an MSSQL dialect in 1.0.0-beta against the 0.45 line this
+repo pins.
+
+Set against a saving of $10–20/month, none of that pays. Several of the pieces
+you would trade away are listed in [CLAUDE.md](../CLAUDE.md) as deliberate rather
+than accidental.
+
+### The restructure that does pay
+
+It is not a hosting change. The constraint that actually limits this system is
+the single replica, and the fix is worth making on its own merits:
+
+- Every deploy currently drops every worker stream, because there is only ever
+  one process and it restarts. Shared state buys zero-downtime rollouts.
+- It is the precondition for scaling out on any platform, Azure or otherwise.
+- It touches no credential path, no worker protocol and no deployed binary.
+
+The shape: persist worker→node affinity so dispatch knows which process holds a
+given stream, route commands to that node, and replace `EventBroker`'s in-process
+fan-out with the same mechanism. Postgres `LISTEN`/`NOTIFY` covers both and adds
+no new infrastructure, since Postgres is already there.
+
+Worth taking regardless, and free: if you do move to a managed Flexible Server,
+scheduling a stop overnight and at weekends roughly halves the compute bill and
+needs no code change at all.
+
+---
+
 ## Recommendation
 
 Start on **Option A**: a free-tier B-series VM running the Compose file you
