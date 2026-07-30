@@ -25,7 +25,7 @@
   },
   "devDependencies": {
     "tsx": "^4.19.2",
-    "typescript": "^5.7.2",
+    "typescript": "^6.0.3",
     "vitest": "^3.2.7"
   },
   "description": "Shared contracts for Remote SQL Agent: protobuf wire protocol, the canonical JobDefinition.v1 schema, SQL Agent schedule codec, and the capability model.",
