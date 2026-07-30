@@ -22,7 +22,7 @@ env:
   # changing it changes what customers run, not only what CI runs.
   NODE_VERSION: '24'
   GHCR_IMAGE: ghcr.io/${{ github.repository }}/control-plane
-  DOCKERHUB_IMAGE: semics/remote-sql-agent
+  DOCKERHUB_IMAGE: techsemics/remote-sql-agent
 
 jobs:
   # Nothing is published until the same checks that guard main have passed on

@@ -15,8 +15,8 @@ While at `0.x`, breaking changes may land in minor versions.
   database server that has nothing on it. Built by the OS they target and
   self-tested before upload
 - **The control plane image is published to Docker Hub** as
-  `semics/remote-sql-agent`, alongside GHCR. Same build, same digest; pulling
-  no longer requires a GitHub login
+  `techsemics/remote-sql-agent`, alongside GHCR. Same build, same digest;
+  pulling no longer requires a GitHub login
 - **Release assets are verifiable**: `SHA256SUMS` plus a build attestation on
   every artefact, so a download traces back to the workflow run that made it.
   The Windows Node runtime is now checked against nodejs.org's published

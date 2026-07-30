@@ -112,7 +112,7 @@ docker compose up -d
 The image is published to both registries, same digest:
 
 ```bash
-docker pull semics/remote-sql-agent:latest
+docker pull techsemics/remote-sql-agent:latest
 docker pull ghcr.io/semics-tech/remote-sql-agent/control-plane:latest
 ```
 

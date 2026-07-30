@@ -11,7 +11,7 @@ tests and `pnpm audit --audit-level high`.
 |---|---|---|
 | npm | `@remote-sql-agent/protocol` | Anyone building against the wire contract |
 | npm | `@remote-sql-agent/worker` | Hosts that already run Node 24 |
-| Docker Hub | `semics/remote-sql-agent` | Running the control plane |
+| Docker Hub | `techsemics/remote-sql-agent` | Running the control plane |
 | GHCR | `ghcr.io/semics-tech/remote-sql-agent/control-plane` | The same image, same digest |
 | Release | `rsagent-worker-{linux-x64,win-x64.exe,darwin-arm64}` | Hosts with nothing installed |
 | Release | `rsagent-worker-<version>-win-x64.zip` | Windows service install via `install.ps1` |
@@ -177,17 +177,20 @@ gh attestation verify oci://ghcr.io/semics-tech/remote-sql-agent/control-plane:0
 
 ## Before the first publish
 
-1. Create the `@remote-sql-agent` npm organisation
-2. Bootstrap-publish the two `0.0.0` placeholders, as above
-3. Configure a trusted publisher on each package
-4. Create the Docker Hub repository `semics/remote-sql-agent`, and add
-   `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`
-5. Run the Release workflow manually with `dry_run: true` and read the output.
+1. ~~Create the `@remote-sql-agent` npm organisation~~ — done
+2. ~~Create the Docker Hub repository `techsemics/remote-sql-agent`~~ — done,
+   and public
+3. Bootstrap-publish the two `0.0.0` placeholders, as above, and check they
+   appear on the registry before moving on:
+   `npm view @remote-sql-agent/worker version`
+4. Configure a trusted publisher on each of the two packages
+5. Add `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` as repository secrets
+6. Run the Release workflow manually with `dry_run: true` and read the output.
    `workflow_dispatch` only fires from the default branch, so this cannot be
    tested from a pull request
-6. Cut `v0.1.0-rc.1` and install it from each of the three routes on a machine
+7. Cut `v0.1.0-rc.1` and install it from each of the three routes on a machine
    that has never built this repository
 
-Step 6 is not optional ceremony. A publish pipeline that has never run is not a
+Step 7 is not optional ceremony. A publish pipeline that has never run is not a
 publish pipeline that works, and **npm versions cannot be reused** — an
 unpublished version number is spent for good.
