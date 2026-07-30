@@ -8,7 +8,16 @@ While at `0.x`, breaking changes may land in minor versions.
 
 ## [Unreleased]
 
-_Nothing yet._
+### Changed
+
+- **`@remote-sql-agent/protocol` is no longer published to npm.** Nothing
+  installed it: the worker inlines it into its bundle and the control-plane
+  image carries it. Publishing it turned internal contracts into a public API
+  with semver expectations attached, in exchange for a consumer nobody had
+  asked for — and `JobDefinition.v1` being free to change whenever the worker
+  and server change together is what keeps drift detection honest. `0.1.0`
+  remains on npm, deprecated. The `.proto` files and zod schemas are still the
+  source of truth for anyone building against the wire protocol
 
 ## [0.1.0] — 2026-07-30
 
@@ -113,8 +122,7 @@ reasoning outlives the change.
   Node, no dependencies, no installer — enough to enrol a database server that
   has nothing on it. Built by the OS they target, and each self-tested before
   upload
-- **npm**: `@remote-sql-agent/worker` for hosts that already run Node 24, and
-  `@remote-sql-agent/protocol` for anyone building against the wire contract.
+- **npm**: `@remote-sql-agent/worker`, for hosts that already run Node 24.
   Published by CI with provenance, via trusted publishing — there is no npm
   token in the repository
 - **Container image** on Docker Hub as `techsemics/remote-sql-agent` and on

@@ -9,7 +9,6 @@ tests and `pnpm audit --audit-level high`.
 
 | Route | Artefact | Who it is for |
 |---|---|---|
-| npm | `@remote-sql-agent/protocol` | Anyone building against the wire contract |
 | npm | `@remote-sql-agent/worker` | Hosts that already run Node 24 |
 | Docker Hub | `techsemics/remote-sql-agent` | Running the control plane |
 | GHCR | `ghcr.io/semics-tech/remote-sql-agent/control-plane` | The same image, same digest |
@@ -19,8 +18,12 @@ tests and `pnpm audit --audit-level high`.
 | Release | `rsagent-worker-<version>.mjs` | The bare bundle |
 | Release | `SHA256SUMS` | Verifying any of the above |
 
-The server and dashboard are not published to npm. They ship as the container
-image, which is why their `package.json` files are `private`.
+One npm package, not two. `protocol`, `server` and `dashboard` are all
+`private: true`: the worker inlines protocol into its bundle, and the control
+plane image carries all three. Publishing protocol was tried and undone —
+`0.1.0` exists on npm and is deprecated — because it turned internal contracts
+into a public API with semver expectations, in exchange for nothing anyone had
+asked for.
 
 ## Cutting a release
 
@@ -91,19 +94,15 @@ So each new package name needs one manual publish, once, ever:
 npm login                       # interactive, 2FA; no token is stored anywhere
 
 cd "$(mktemp -d)"
-for pkg in protocol worker; do
-  mkdir -p "$pkg" && cd "$pkg"
-  cat > package.json <<JSON
+cat > package.json <<'JSON'
 {
-  "name": "@remote-sql-agent/$pkg",
+  "name": "@remote-sql-agent/<name>",
   "version": "0.0.0",
   "description": "Placeholder to enable trusted publishing. See https://github.com/semics-tech/remote-sql-agent",
   "license": "Apache-2.0"
 }
 JSON
-  npm publish --access public
-  cd ..
-done
+npm publish --access public
 ```
 
 `0.0.0` on purpose: it is below any real release, it is published from a
@@ -112,13 +111,12 @@ version anyone actually installs was published by CI with provenance. Deprecate
 it once the first real release is out:
 
 ```bash
-npm deprecate "@remote-sql-agent/protocol@0.0.0" "Placeholder. Use 0.1.0 or later."
-npm deprecate "@remote-sql-agent/worker@0.0.0"   "Placeholder. Use 0.1.0 or later."
+npm deprecate "@remote-sql-agent/worker@0.0.0" "Placeholder. Use 0.1.0 or later."
 ```
 
 ### Configuring the trusted publisher
 
-On npmjs.com, for **each** of the two packages — Settings → Trusted Publisher:
+On npmjs.com, on the package — Settings → Trusted Publisher:
 
 | Field | Value |
 |---|---|
@@ -130,10 +128,10 @@ On npmjs.com, for **each** of the two packages — Settings → Trusted Publishe
 | Allowed actions | `npm publish` |
 
 The workflow filename is matched exactly, so **renaming
-`.github/workflows/release.yml` breaks publishing** until both packages are
-updated to match. Adding a third published package means repeating this for it;
-until then its release job will fail with a 404, which is what an
-unauthenticated publish looks like.
+`.github/workflows/release.yml` breaks publishing** until the package is updated
+to match. Publishing a second package means repeating all of this for it —
+bootstrap included — and until it is configured its publish fails with a 404,
+which is what an unauthenticated publish looks like.
 
 Requires pnpm 10.20 or later — pnpm implements the OIDC exchange itself, and
 this repository pins `pnpm@10.23.0` via `packageManager`.
@@ -180,10 +178,9 @@ gh attestation verify oci://ghcr.io/semics-tech/remote-sql-agent/control-plane:0
 1. ~~Create the `@remote-sql-agent` npm organisation~~ — done
 2. ~~Create the Docker Hub repository `techsemics/remote-sql-agent`~~ — done,
    and public
-3. Bootstrap-publish the two `0.0.0` placeholders, as above, and check they
-   appear on the registry before moving on:
-   `npm view @remote-sql-agent/worker version`
-4. Configure a trusted publisher on each of the two packages
+3. Bootstrap-publish a `0.0.0` placeholder, as above, and check it appears on
+   the registry before moving on: `npm view @remote-sql-agent/worker version`
+4. Configure a trusted publisher on the package
 5. Add `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` as repository secrets
 6. Run the Release workflow manually with `dry_run: true` and read the output.
    `workflow_dispatch` only fires from the default branch, so this cannot be
