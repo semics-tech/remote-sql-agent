@@ -36,7 +36,7 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
-    image: ghcr.io/${GITHUB_REPOSITORY:-semics/remote-sql-agent}/control-plane:${RSAGENT_VERSION:-latest}
+    image: ghcr.io/${GITHUB_REPOSITORY:-semics-tech/remote-sql-agent}/control-plane:${RSAGENT_VERSION:-latest}
     restart: unless-stopped
     depends_on:
       postgres:

@@ -1,30 +1,30 @@
 # Default owner for everything.
-*                                       @semics
+*                                       @semics-tech
 
 # --- Anything that can change a customer's SQL Server -------------------------
 # agent-writer.ts is the only code in the product that mutates msdb, and
 # command-handler.ts holds the five gates in front of it.
-/packages/worker/src/sql/agent-writer.ts    @semics
-/packages/worker/src/command-handler.ts     @semics
+/packages/worker/src/sql/agent-writer.ts    @semics-tech
+/packages/worker/src/command-handler.ts     @semics-tech
 
 # --- Authentication and authorisation -----------------------------------------
-/packages/server/src/auth/                  @semics
-/packages/server/src/worker-auth/           @semics
-/packages/protocol/src/capabilities.ts      @semics
-/packages/protocol/src/roles.ts             @semics
-/packages/protocol/src/signing.ts           @semics
+/packages/server/src/auth/                  @semics-tech
+/packages/server/src/worker-auth/           @semics-tech
+/packages/protocol/src/capabilities.ts      @semics-tech
+/packages/protocol/src/roles.ts             @semics-tech
+/packages/protocol/src/signing.ts           @semics-tech
 
 # --- The wire contract --------------------------------------------------------
 # Adding a command type is a deliberate protocol change, reviewed as one.
-/packages/protocol/proto/                   @semics
+/packages/protocol/proto/                   @semics-tech
 
 # --- Canonical serialisation --------------------------------------------------
 # A change here can flag every job in every estate as drifted.
-/packages/protocol/src/canonical.ts         @semics
-/packages/protocol/src/job-definition.ts    @semics
+/packages/protocol/src/canonical.ts         @semics-tech
+/packages/protocol/src/job-definition.ts    @semics-tech
 
 # --- Things that ship to customers --------------------------------------------
-/deploy/                                    @semics
-/.github/workflows/                         @semics
-/docs/security.md                           @semics
-/docs/threat-model.md                       @semics
+/deploy/                                    @semics-tech
+/.github/workflows/                         @semics-tech
+/docs/security.md                           @semics-tech
+/docs/threat-model.md                       @semics-tech

@@ -4,7 +4,7 @@
 
 **Manage SQL Server Agent jobs across every server you own — without opening a single inbound port.**
 
-[![CI](https://github.com/semics/remote-sql-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/semics/remote-sql-agent/actions/workflows/ci.yml)
+[![CI](https://github.com/semics-tech/remote-sql-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/semics-tech/remote-sql-agent/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![npm](https://img.shields.io/npm/v/@remote-sql-agent/worker.svg)](https://www.npmjs.com/package/@remote-sql-agent/worker)
 [![Node](https://img.shields.io/badge/node-%E2%89%A522-brightgreen.svg)](https://nodejs.org)
@@ -103,7 +103,7 @@ minutes, most of it waiting for containers.
 ### Control plane
 
 ```bash
-git clone https://github.com/semics/remote-sql-agent
+git clone https://github.com/semics-tech/remote-sql-agent
 cd remote-sql-agent/deploy
 cp .env.example .env      # set RSAGENT_PUBLIC_URL and POSTGRES_PASSWORD
 docker compose up -d
