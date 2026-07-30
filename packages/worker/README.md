@@ -22,7 +22,7 @@ SSMS calls. Stop the worker and every job keeps running.
 npm install -g @remote-sql-agent/worker
 ```
 
-Requires Node.js 22 or newer.
+Requires Node.js 24 or newer. The Windows package ships a pinned runtime, so this only applies if you run the bundle yourself.
 
 For Azure managed identity authentication, also install the optional peer:
 

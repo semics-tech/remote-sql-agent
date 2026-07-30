@@ -14,7 +14,10 @@ permissions:
   contents: read
 
 env:
-  NODE_VERSION: '22'
+  # Node 24 is the current LTS ("Krypton"). Deliberately not 26: that is the
+  # Current line, and the worker ships a bundled runtime onto customer database
+  # servers, where a line that takes breaking changes is the wrong trade.
+  NODE_VERSION: '24'
   REGISTRY: ghcr.io
 
 jobs:
@@ -171,7 +174,7 @@ jobs:
 
       - name: Fetch pinned Node runtime for Windows
         run: |
-          NODE_FULL="v22.20.1"
+          NODE_FULL="v24.18.1"
           curl -fsSL "https://nodejs.org/dist/${NODE_FULL}/node-${NODE_FULL}-win-x64.zip" -o node-win.zip
           unzip -q node-win.zip
           mkdir -p packages/worker/dist/package/node

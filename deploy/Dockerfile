@@ -4,7 +4,7 @@
 # The dashboard is built in and served by the API process, so a deployment is
 # one container plus Postgres.
 
-FROM node:22-bookworm-slim AS build
+FROM node:24-bookworm-slim AS build
 
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
@@ -19,6 +19,20 @@ COPY packages/server/package.json    packages/server/
 COPY packages/worker/package.json    packages/worker/
 COPY packages/dashboard/package.json packages/dashboard/
 COPY tests/integration/package.json  tests/integration/
+
+# better-sqlite3 has no prebuilt binary for every platform-and-Node combination
+# this image is built on — arm64 in particular — and falls back to compiling
+# from source, which slim has no toolchain for. It belongs to the worker, whose
+# bundle marks it --external, so nothing here ever loads it; it is built purely
+# because pnpm resolves the whole workspace.
+#
+# Installed in the build stage only, so none of it reaches the runtime image.
+# Excluding the package instead would be tidier, but pnpm's CLI overrides for
+# onlyBuiltDependencies do not take, and a toolchain that is thrown away is a
+# smaller price than an install command nobody can predict the behaviour of.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 build-essential \
+ && rm -rf /var/lib/apt/lists/*
 
 # The worker is not part of this image, but pnpm resolves the whole workspace.
 RUN pnpm install --frozen-lockfile
@@ -46,7 +60,7 @@ RUN pnpm --filter @remote-sql-agent/worker bundle \
 RUN pnpm --filter @remote-sql-agent/server --prod --legacy deploy /prod/server
 
 
-FROM node:22-bookworm-slim AS runtime
+FROM node:24-bookworm-slim AS runtime
 
 # tini reaps zombies and forwards signals, so SIGTERM reaches Node and the
 # graceful shutdown path actually runs.
