@@ -10,9 +10,9 @@ While at `0.x`, breaking changes may land in minor versions.
 
 _Nothing yet._
 
-## [0.1.0-rc.1] — 2026-07-30
+## [0.1.0] — 2026-07-30
 
-First release candidate, and the first build published to npm, Docker Hub and
+First release, and the first build published to npm, Docker Hub and
 GitHub Releases. Implements all six milestones of the architecture
 specification.
 
@@ -168,5 +168,5 @@ reasoning outlives the change.
 See [docs/migration.md](docs/migration.md). The significant ones: no
 control-plane HA, manual certificate rotation in mTLS mode, no MSI.
 
-[Unreleased]: https://github.com/semics-tech/remote-sql-agent/compare/v0.1.0-rc.1...HEAD
-[0.1.0-rc.1]: https://github.com/semics-tech/remote-sql-agent/releases/tag/v0.1.0-rc.1
+[Unreleased]: https://github.com/semics-tech/remote-sql-agent/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/semics-tech/remote-sql-agent/releases/tag/v0.1.0
