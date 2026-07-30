@@ -20,20 +20,18 @@ COPY packages/worker/package.json    packages/worker/
 COPY packages/dashboard/package.json packages/dashboard/
 COPY tests/integration/package.json  tests/integration/
 
-# better-sqlite3 has no prebuilt binary for every platform-and-Node combination
-# this image is built on — arm64 in particular — and falls back to compiling
-# from source, which slim has no toolchain for. It belongs to the worker, whose
-# bundle marks it --external, so nothing here ever loads it; it is built purely
-# because pnpm resolves the whole workspace.
+# No build toolchain. This stage used to install python3 and build-essential
+# purely so better-sqlite3 could compile on arm64, where no prebuilt binary
+# matched. The worker's outbox now uses the runtime's own node:sqlite, so
+# nothing in the image imports a native module.
 #
-# Installed in the build stage only, so none of it reaches the runtime image.
-# Excluding the package instead would be tidier, but pnpm's CLI overrides for
-# onlyBuiltDependencies do not take, and a toolchain that is thrown away is a
-# smaller price than an install command nobody can predict the behaviour of.
-RUN apt-get update \
- && apt-get install -y --no-install-recommends python3 build-essential \
- && rm -rf /var/lib/apt/lists/*
-
+# better-sqlite3 is still *downloaded* — drizzle-orm lists it as an optional
+# peer and auto-install-peers pulls it in — but it is off the
+# onlyBuiltDependencies list in pnpm-workspace.yaml, so its build script never
+# runs and there is nothing to compile. An unbuilt copy nothing requires is
+# inert. If a genuinely required native dependency is ever added, this install
+# fails here rather than producing an image that breaks at runtime.
+#
 # The worker is not part of this image, but pnpm resolves the whole workspace.
 RUN pnpm install --frozen-lockfile
 

@@ -80,6 +80,8 @@ account for most of the risk:
 
 ## Security-relevant dependencies
 
-Kept deliberately small. Native modules are limited to `better-sqlite3` (worker)
-and `argon2` (control plane). `pnpm audit --audit-level high` runs in CI, the
-lockfile is committed, and CI installs with `--frozen-lockfile`.
+Kept deliberately small. `argon2` (control plane) is the only native module
+compiled anywhere in the tree — the worker's outbox uses the runtime's own
+`node:sqlite`, so nothing on a customer's database server is built from C++ at
+install time. `pnpm audit --audit-level high` runs in CI, the lockfile is
+committed, and CI installs with `--frozen-lockfile`.

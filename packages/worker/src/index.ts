@@ -18,9 +18,27 @@ const WORKER_VERSION = '0.1.0';
 const OUTBOX_DRAIN_BATCH = 50;
 
 async function main(): Promise<void> {
+  // Offsets are the same whether this runs as `node rsagent-worker.mjs ...` or
+  // as the single executable: a SEA gets argv [realExePath, invokedPath, ...],
+  // so argv[2] is the first real argument either way. Verified, because the
+  // plausible-sounding assumption that a binary has no argv[1] is wrong and
+  // would make `rsagent enrol` read the executable as its config file.
+  const argv = process.argv.slice(2);
+
+  // Prints what this build is and exits, touching no config, no disk and no
+  // network. The release build runs it against every executable it produces:
+  // a botched injection leaves a working copy of `node` behind, which looks
+  // entirely healthy until someone tries to use it.
+  if (argv[0] === '--rsagent-selftest' || argv[0] === '--version') {
+    console.log(
+      `rsagent-worker ${WORKER_VERSION} (node ${process.versions.node}, ${process.platform}-${process.arch})`,
+    );
+    process.exit(0);
+  }
+
   // `rsagent enrol --token <t> [config]` is the one-time registration path.
-  if (process.argv[2] === 'enrol') {
-    const args = process.argv.slice(3);
+  if (argv[0] === 'enrol') {
+    const args = argv.slice(1);
     const tokenIndex = args.indexOf('--token');
     const token = tokenIndex >= 0 ? args[tokenIndex + 1] : undefined;
     const configPath =
@@ -38,7 +56,7 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  const configPath = process.argv[2] ?? process.env.RSAGENT_WORKER_CONFIG ?? './worker.yaml';
+  const configPath = argv[0] ?? process.env.RSAGENT_WORKER_CONFIG ?? './worker.yaml';
   const config = loadWorkerConfig(configPath);
   const logger = pino({
     level: config.logLevel,

@@ -48,6 +48,22 @@ before concluding anything about the code.
 
 Never report work as finished on the strength of a plan. Run the checks.
 
+If you touched the worker bundle, its dependencies or the SEA build, also run:
+
+```bash
+pnpm build:sea          # builds and self-tests a single-file executable
+```
+
+and check the bundle starts with nothing beside it, which is how it actually
+ships:
+
+```bash
+cd "$(mktemp -d)" && cp <repo>/packages/worker/dist/rsagent-worker.mjs .
+node rsagent-worker.mjs --rsagent-selftest
+```
+
+A bundle that only runs from inside the repository passes every test in CI.
+
 ## Staging
 
 Stage named paths. **Never `git add -A` or `git add .`** — the working tree
@@ -76,6 +92,14 @@ raising, not a fix to slip into an unrelated branch.
   and they should be able to.
 - **No "run arbitrary T-SQL" command,** and adding one is not a shortcut to
   anything.
+- **The worker bundle marks nothing external.** It ships as a single `.mjs`
+  with no `node_modules` beside it — that is what the tarball, the executables
+  and `npm i -g` all rely on. Marking a dependency `--external` to save a
+  megabyte makes every one of those fail to start, and the npm route hides it
+  because npm happens to install the package anyway.
+- **The worker's `dependencies` are empty and its build inputs are
+  devDependencies.** Everything is already inside the bundle; declaring it
+  again just makes consumers download it twice.
 
 ## Two things worth knowing before reading msdb code
 

@@ -1,6 +1,6 @@
-import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { DatabaseSync, type Database } from './sqlite.js';
 
 /**
  * Local durable outbox (§5.4).
@@ -30,19 +30,26 @@ export interface OutboxStats {
 }
 
 export class Outbox {
-  readonly #db: Database.Database;
+  readonly #db: Database;
   readonly #maxRows: number;
   #evicted = 0;
 
   constructor(path: string, maxRows: number) {
     mkdirSync(dirname(path), { recursive: true });
-    this.#db = new Database(path);
+    this.#db = new DatabaseSync(path);
     this.#maxRows = maxRows;
 
     // WAL keeps the writer from blocking on reads during a drain, and is the
     // difference between a wedged poller and a smooth one on a busy instance.
-    this.#db.pragma('journal_mode = WAL');
-    this.#db.pragma('synchronous = NORMAL');
+    //
+    // Issued through exec() because node:sqlite has no pragma() helper. Worth
+    // knowing: journal_mode returns the mode it actually settled on, and
+    // exec() discards it. SQLite refuses WAL on a network filesystem and stays
+    // in delete mode instead, so a worker whose state directory is on a share
+    // is slower under drain but still correct. It is not silent corruption,
+    // which is why this does not fail the start.
+    this.#db.exec('PRAGMA journal_mode = WAL');
+    this.#db.exec('PRAGMA synchronous = NORMAL');
 
     this.#db.exec(`
       CREATE TABLE IF NOT EXISTS outbox (
@@ -92,7 +99,10 @@ export class Outbox {
     const result = this.#db
       .prepare('DELETE FROM outbox WHERE id IN (SELECT id FROM outbox ORDER BY id ASC LIMIT ?)')
       .run(excess);
-    this.#evicted += result.changes;
+    // node:sqlite types changes as number | bigint — it hands back a number
+    // until the count exceeds 2^53, which an outbox capped at maxRows never
+    // will. Narrowed rather than asserted so the arithmetic stays honest.
+    this.#evicted += Number(result.changes);
   }
 
   /** Read a batch without removing it; rows are only deleted once acknowledged. */
@@ -124,9 +134,19 @@ export class Outbox {
   acknowledge(ids: number[]): void {
     if (ids.length === 0) return;
     const del = this.#db.prepare('DELETE FROM outbox WHERE id = ?');
-    this.#db.transaction((batch: number[]) => {
-      for (const id of batch) del.run(id);
-    })(ids);
+
+    // Written out rather than wrapped in a helper because node:sqlite has no
+    // transaction() equivalent. The rollback matters: a partial acknowledgement
+    // would drop rows the control plane never confirmed, which is the one
+    // failure this whole table exists to prevent.
+    this.#db.exec('BEGIN');
+    try {
+      for (const id of ids) del.run(id);
+      this.#db.exec('COMMIT');
+    } catch (error) {
+      this.#db.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   stats(): OutboxStats {

@@ -12,7 +12,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.json --noEmit",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "bundle": "esbuild src/index.ts --bundle --platform=node --target=node24 --format=esm --outfile=dist/rsagent-worker.mjs --external:better-sqlite3 --external:@azure/identity --banner:js=\"#!/usr/bin/env node\nimport{createRequire}from'module';const require=createRequire(import.meta.url);\"",
+    "bundle": "esbuild src/index.ts --bundle --platform=node --target=node24 --format=esm --outfile=dist/rsagent-worker.mjs --banner:js=\"#!/usr/bin/env node\nimport{createRequire}from'module';const require=createRequire(import.meta.url);\"",
+    "bundle:cjs": "esbuild src/index.ts --bundle --platform=node --target=node24 --format=cjs --outfile=dist/rsagent-worker.cjs",
+    "build:sea": "tsx scripts/build-sea.ts",
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
     "test": "vitest run",
@@ -20,23 +22,25 @@
     "prepublishOnly": "pnpm run bundle && pnpm run bundle:chmod",
     "bundle:chmod": "chmod +x dist/rsagent-worker.mjs"
   },
-  "dependencies": {
+  "//dependencies": "There is no dependencies field, on purpose. dist/rsagent-worker.mjs is a complete bundle — grpc, mssql, pino, yaml, zod, protocol and @azure/identity are all inlined — so declaring them would make npm re-download the lot to sit unused beside it. They are devDependencies because only the bundle step needs them. Nothing is left external: the tarball and the single executable ship the .mjs with no node_modules beside it, so an external import has nowhere to resolve from. Before adding a runtime dependency, check it is not already in the bundle.",
+  "devDependencies": {
+    "@azure/identity": "^4.13.1",
     "@grpc/grpc-js": "^1.12.4",
     "@remote-sql-agent/protocol": "workspace:*",
-    "better-sqlite3": "^13.0.2",
-    "mssql": "^12.7.0",
-    "pino": "^10.3.1",
-    "yaml": "^2.6.1",
-    "zod": "^3.24.1"
-  },
-  "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
     "@types/mssql": "^12.3.0",
     "@types/node": "^24.13.3",
     "esbuild": "^0.28.1",
+    "mssql": "^12.7.0",
+    "pino": "^10.3.1",
+    "postject": "1.0.0-alpha.6",
     "tsx": "^4.19.2",
     "typescript": "^6.0.3",
-    "vitest": "^3.2.7"
+    "vitest": "^3.2.7",
+    "yaml": "^2.6.1",
+    "zod": "^3.24.1"
+  },
+  "engines": {
+    "node": ">=24"
   },
   "description": "Remote SQL Agent worker: mirrors a host's SQL Server Agent jobs to the control plane over an outbound-only connection, and applies approved changes.",
   "keywords": [
@@ -59,9 +63,6 @@
     "dist/rsagent-worker.mjs",
     "README.md"
   ],
-  "optionalDependencies": {
-    "@azure/identity": "^4.13.1"
-  },
   "publishConfig": {
     "access": "public",
     "main": "./dist/rsagent-worker.mjs",
