@@ -47,6 +47,10 @@ services:
       RSAGENT_LOG_LEVEL: ${RSAGENT_LOG_LEVEL:-info}
       # 0 unless something terminates TLS in front of this. See .env.example.
       RSAGENT_TRUSTED_PROXY_HOPS: ${RSAGENT_TRUSTED_PROXY_HOPS:-0}
+      # Only needed when the hub is not reachable at RSAGENT_PUBLIC_URL's host
+      # on 8443 — including when RSAGENT_GRPC_PORT below remaps the published
+      # port, which the container never sees.
+      RSAGENT_HUB_ADVERTISED_ADDRESS: ${RSAGENT_HUB_ADVERTISED_ADDRESS:-}
 
       # --- Dashboard identity (docs/authentication.md §1) ---
       RSAGENT_AUTH_MODE: ${RSAGENT_AUTH_MODE:-local}
@@ -73,6 +77,9 @@ services:
       # refuses to start, because in token mode TLS is the only thing keeping
       # worker API keys off the wire.
       - ${RSAGENT_TLS_DIR:-./tls}:/etc/rsagent/tls:ro
+    # Host side only — the container binds 8080 and 8443 regardless. Remapping
+    # the hub here does not change the address the dashboard hands out, so set
+    # RSAGENT_HUB_ADVERTISED_ADDRESS to match if you do.
     ports:
       - '${RSAGENT_HTTP_PORT:-8080}:8080'
       - '${RSAGENT_GRPC_PORT:-8443}:8443'

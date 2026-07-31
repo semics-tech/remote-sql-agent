@@ -54,6 +54,23 @@ const configSchema = z.object({
   publicUrl: z.string().url(),
 
   /**
+   * `host:port` workers should dial for the hub, when it is not simply the
+   * public URL's host and `grpcPort`.
+   *
+   * This is the address printed in the install one-liners, so it ends up in
+   * `worker.yaml` on every SQL host — getting it wrong is not a broken page,
+   * it is fifty machines configured to connect somewhere that does not answer.
+   * The derived default is right whenever the hub is published on its own port
+   * of the same name. It is wrong wherever the outside port differs from the
+   * one the process binds (a container platform mapping ports), or the hub has
+   * a name of its own (a load balancer separate from the HTTP ingress).
+   *
+   * Must include the port. Accepting a bare host and appending `grpcPort` would
+   * silently reintroduce the mismatch this exists to fix.
+   */
+  hubAdvertisedAddress: z.string().optional(),
+
+  /**
    * How many reverse proxies sit in front of the HTTP server.
    *
    * This decides where `request.ip` comes from, and `request.ip` is what
@@ -201,6 +218,34 @@ function list(value: string | undefined, fallback: string[]): string[] {
     .filter(Boolean);
 }
 
+/**
+ * Validate RSAGENT_HUB_ADVERTISED_ADDRESS as `host:port`.
+ *
+ * Rejected loudly at boot rather than corrected quietly. This value is copied
+ * into `worker.yaml` on every SQL host in the estate, and a worker pointed at
+ * the wrong port does not fail visibly — it retries on backoff forever while
+ * the dashboard simply shows it as never having connected. A typo has to stop
+ * the process here, where one person is looking at one log.
+ *
+ * Bracketed IPv6 is accepted because that is the literal form gRPC wants, and
+ * it is what `new URL(...).hostname` hands back for an IPv6 public URL.
+ */
+function hubAdvertisedAddress(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const trimmed = value.trim();
+  if (trimmed === '') return undefined;
+
+  const match = /^(\[[0-9a-f:]+\]|[^:]+):(\d+)$/iu.exec(trimmed);
+  const port = match ? Number(match[2]) : NaN;
+  if (!match || port < 1 || port > 65535) {
+    throw new Error(
+      `RSAGENT_HUB_ADVERTISED_ADDRESS must be host:port, e.g. rsagent.example.com:8443 — got "${value}". ` +
+        'The port is required: it is what workers dial, and it is not always the port the hub binds.',
+    );
+  }
+  return trimmed;
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const authMode = env.RSAGENT_AUTH_MODE ?? 'local';
   const tenantId = env.RSAGENT_ENTRA_TENANT_ID;
@@ -224,6 +269,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     dashboardDir: env.RSAGENT_DASHBOARD_DIR,
     workerPackageDir: env.RSAGENT_WORKER_PACKAGE_DIR,
     publicUrl: env.RSAGENT_PUBLIC_URL ?? 'http://localhost:8080',
+    hubAdvertisedAddress: hubAdvertisedAddress(env.RSAGENT_HUB_ADVERTISED_ADDRESS),
     trustedProxyHops: env.RSAGENT_TRUSTED_PROXY_HOPS ?? 0,
 
     auth: {
