@@ -1,6 +1,6 @@
 import sql from 'mssql';
 import type { JobDefinition, JobStep, ScheduleDefinition } from '@remote-sql-agent/protocol';
-import { SCHEMA_VERSION } from '@remote-sql-agent/protocol';
+import { SCHEMA_VERSION, type JobWriteMode } from '@remote-sql-agent/protocol';
 
 /**
  * Read access to msdb — the SQL Server Agent object graph.
@@ -19,25 +19,6 @@ export interface InstanceIdentity {
   sqlVersion: string;
   sqlEdition: string;
   agentStatus: 'running' | 'stopped' | 'unknown';
-}
-
-/**
- * What this worker can actually edit on this instance.
- *
- * SQL Server decides this, not us: sp_update_job refuses a job owned by another
- * login unless the caller is sysadmin. Reported rather than configured because
- * under Windows authentication the effective login is the service account,
- * which worker.yaml does not know.
- *
- * Enable, disable, start and stop are unaffected — SQL Server carves those out
- * for SQLAgentOperatorRole whoever owns the job.
- */
-export interface JobWriteMode {
-  sqlLoginName: string;
-  isSysadmin: boolean;
-  wrapperInstalled: boolean;
-  wrapperAllowsDashboardManagement: boolean;
-  allowlistedJobs: string[];
 }
 
 export interface JobRecord {
@@ -174,31 +155,6 @@ export async function readJobWriteMode(pool: sql.ConnectionPool): Promise<JobWri
   }
 
   return mode;
-}
-
-/**
- * Whether a job can be edited through this worker, given what it reported.
- *
- * Kept next to the query so the worker and the control plane cannot disagree
- * about it: the same rule is applied on the worker before attempting a write
- * and on the dashboard before offering one.
- */
-export function canEditJob(
-  mode: JobWriteMode,
-  job: { name: string; ownerLoginName: string | null },
-): boolean {
-  if (mode.isSysadmin) return true;
-  // Comparisons are case-insensitive throughout: SQL Server logins are, and the
-  // allowlist is matched by sp_update_job against a name SQL Server also treats
-  // case-insensitively under the default collation.
-  if (
-    job.ownerLoginName &&
-    job.ownerLoginName.toLowerCase() === mode.sqlLoginName.toLowerCase()
-  ) {
-    return true;
-  }
-  if (!mode.wrapperInstalled) return false;
-  return mode.allowlistedJobs.some((name) => name.toLowerCase() === job.name.toLowerCase());
 }
 
 // ---------------------------------------------------------------------------

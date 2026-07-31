@@ -74,7 +74,7 @@ message InstanceInfo {
   // What this worker can actually edit here. Reported rather than configured:
   // under Windows authentication the effective login is the service account,
   // which no config file knows.
-  JobWriteMode write_mode = 6;
+  JobWriteStatus write_mode = 6;
 }
 
 // Whether a job can be edited is decided by SQL Server, not by us: sp_update_job
@@ -84,7 +84,7 @@ message InstanceInfo {
 //
 // Enable, disable, start and stop are unaffected and always work — SQL Server
 // carves those out for SQLAgentOperatorRole regardless of ownership.
-message JobWriteMode {
+message JobWriteStatus {
   // SUSER_SNAME() as the worker sees it. A job whose owner matches this is
   // editable whatever else is true.
   string sql_login_name = 1;

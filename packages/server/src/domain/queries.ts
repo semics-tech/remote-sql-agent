@@ -124,6 +124,9 @@ export async function getInstance(db: Database, instanceId: string) {
       sqlVersion: instances.sqlVersion,
       sqlEdition: instances.sqlEdition,
       agentStatus: instances.agentStatus,
+      // What SQL Server will let the worker edit here, as the worker reported
+      // it. Separate from `capabilities`, which is what this product grants.
+      jobWriteMode: instances.jobWriteMode,
       environmentTag: instances.environmentTag,
       lastSeenAt: instances.lastSeenAt,
       workerId: workers.id,

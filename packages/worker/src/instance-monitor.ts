@@ -4,6 +4,7 @@ import type { Logger } from 'pino';
 import {
   canonicaliseJobWithHash,
   toTimestamp,
+  type JobWriteMode,
   toTimestampOrUndefined,
   type HistoryRow,
   type ActivityRow,
@@ -24,7 +25,6 @@ import {
   readJobsFingerprint,
   readMaxHistoryId,
   type InstanceIdentity,
-  type JobWriteMode,
   type JobsFingerprint,
 } from './sql/agent-repo.js';
 import { connectInstance } from './sql/pool.js';

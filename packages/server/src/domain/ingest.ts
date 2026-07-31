@@ -77,6 +77,7 @@ export async function upsertInstances(
         sqlVersion: info.sqlVersion || null,
         sqlEdition: info.sqlEdition || null,
         agentStatus: info.agentStatus || 'unknown',
+        jobWriteMode: info.writeMode ?? null,
         lastSeenAt: now,
       })
       .onConflictDoUpdate({
@@ -86,6 +87,11 @@ export async function upsertInstances(
           sqlVersion: info.sqlVersion || null,
           sqlEdition: info.sqlEdition || null,
           agentStatus: info.agentStatus || 'unknown',
+          // Overwritten on every Hello, never merged: a DBA who uninstalls the
+          // wrapper or empties the allowlist must see that reflected, and
+          // keeping a stale entry would leave the dashboard offering an edit
+          // that no longer works.
+          jobWriteMode: info.writeMode ?? null,
           lastSeenAt: now,
         },
       })

@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import type { JobDefinition } from '@remote-sql-agent/protocol/browser';
+import type { JobDefinition, JobWriteMode } from '@remote-sql-agent/protocol/browser';
 import { apiFetch } from './auth.jsx';
 
 /** Typed client for the control plane read API. */
@@ -326,6 +326,12 @@ export interface InstanceCapabilities {
   workerCapabilities: string[];
   yourPermissions: string[];
   approvalRequiredForJobWrite: boolean;
+  /**
+   * What SQL Server itself will permit on this instance, which is a separate
+   * question from what this product grants. A worker can hold job.write and
+   * still be unable to edit a job owned by another login.
+   */
+  jobWriteMode: JobWriteMode;
 }
 
 export interface IssuedCommand {
@@ -475,6 +481,19 @@ export function useJobActions(instanceId: string | undefined, jobUuid: string | 
     remove: async (baseDefinitionHash?: string) => {
       const result = await send<IssuedCommand>(base, 'DELETE', { baseDefinitionHash });
       await refresh();
+      return result;
+    },
+    /**
+     * Put this job under central management, or take it out.
+     *
+     * Also invalidates capabilities, because the allowlist lives there — the
+     * save button unlocks off the back of this and would otherwise stay
+     * disabled until something else happened to refetch.
+     */
+    setWriteAllowed: async (allowed: boolean) => {
+      const result = await send<IssuedCommand>(`${base}/write-allowed`, 'POST', { allowed });
+      await refresh();
+      await queryClient.invalidateQueries({ queryKey: ['capabilities'] });
       return result;
     },
   };

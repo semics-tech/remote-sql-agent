@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canEditJob, type JobWriteMode } from '../src/sql/agent-repo.js';
+import { canEditJob, explainJobWriteBlock, type JobWriteMode } from '@remote-sql-agent/protocol';
 
 /**
  * Whether a job can be edited is decided by SQL Server, and getting it wrong in
@@ -92,5 +92,48 @@ describe('canEditJob', () => {
     // A job whose owner_sid maps to no login reads as null. Treating that as a
     // match would make every orphaned job editable.
     expect(canEditJob(mode(), { name: 'Nightly load', ownerLoginName: null })).toBe(false);
+  });
+});
+
+describe('explainJobWriteBlock', () => {
+  it('says nothing when the edit would work', () => {
+    expect(
+      explainJobWriteBlock(mode({ isSysadmin: true }), { name: 'x', ownerLoginName: 'sa' }),
+    ).toBeNull();
+  });
+
+  it('points at the setup script when no wrapper is installed', () => {
+    const message = explainJobWriteBlock(mode(), { name: 'Nightly load', ownerLoginName: 'sa' });
+    expect(message).toMatch(/worker-write-wrapper\.sql/u);
+    // Must not read as "grant sysadmin", which is what SQL Server's own message
+    // implies and the wrong conclusion.
+    expect(message).toMatch(/without giving the worker sysadmin/u);
+  });
+
+  it('tells a DBA-managed instance to add the row there', () => {
+    const message = explainJobWriteBlock(
+      mode({ wrapperInstalled: true, wrapperAllowsDashboardManagement: false }),
+      { name: 'Nightly load', ownerLoginName: 'sa' },
+    );
+    expect(message).toMatch(/maintained by a DBA/iu);
+    expect(message).toMatch(/rsagent_write_allowlist/u);
+  });
+
+  it('offers central management when the instance permits it', () => {
+    const message = explainJobWriteBlock(
+      mode({ wrapperInstalled: true, wrapperAllowsDashboardManagement: true }),
+      { name: 'Nightly load', ownerLoginName: 'sa' },
+    );
+    expect(message).toMatch(/under central management/iu);
+  });
+
+  it('always says that enable and disable still work', () => {
+    // The single most useful fact for someone who has just been told they
+    // cannot edit: the out-of-hours action they actually came for is unaffected.
+    for (const m of [mode(), mode({ wrapperInstalled: true })]) {
+      expect(explainJobWriteBlock(m, { name: 'x', ownerLoginName: 'sa' })).toMatch(
+        /enabling, disabling, starting and stopping still work/iu,
+      );
+    }
   });
 });

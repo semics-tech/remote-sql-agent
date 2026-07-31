@@ -12,7 +12,14 @@ import rateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
 import { z } from 'zod';
 import type { Logger } from 'pino';
-import { ROLES, ROLE_PERMISSIONS, isCapability, type Role } from '@remote-sql-agent/protocol';
+import {
+  NO_JOB_WRITE,
+  ROLES,
+  ROLE_PERMISSIONS,
+  isCapability,
+  type JobWriteMode,
+  type Role,
+} from '@remote-sql-agent/protocol';
 import type { Database } from '../db/client.js';
 import type { ServerConfig } from '../config.js';
 import type { WorkerRegistry } from '../hub/registry.js';
@@ -396,9 +403,14 @@ export async function createApp(deps: AppDeps) {
     async (request) => {
       const { instanceId } = instanceParam.parse(request.params);
       const { capabilities, hostName } = await deps.commands.effectiveCapabilitiesFor(instanceId);
+      const instance = await getInstance(db, instanceId);
       return {
         hostName,
         workerCapabilities: capabilities,
+        // What SQL Server itself will permit, which is a separate question from
+        // what this product grants. A worker can hold job.write and still be
+        // unable to edit a job owned by another login.
+        jobWriteMode: (instance?.jobWriteMode as JobWriteMode | null) ?? NO_JOB_WRITE,
         yourPermissions: request.user ? ROLE_PERMISSIONS[request.user.role] : [],
         // Whether *this* user's saves will queue, not whether the rule exists:
         // an exempt Admin should not be warned about an approval step that will
@@ -447,6 +459,40 @@ export async function createApp(deps: AppDeps) {
         jobUuid,
         payload: { jobUuid, enabled, baseDefinitionHash: baseDefinitionHash ?? '' },
         baseDefinitionHash: baseDefinitionHash ?? null,
+      });
+    },
+  );
+
+  /**
+   * Put a job under central management, or take it out again.
+   *
+   * Guarded by job.write rather than a permission of its own: allowlisting a
+   * job is the act that makes editing it possible, so anyone who could do this
+   * could already edit it once done, and a second permission would only be one
+   * more thing to forget to revoke.
+   *
+   * The worker applies it through the wrapper's own procedure, so an instance
+   * installed as DBA-managed refuses it in msdb — this route issuing the
+   * command is not the same as the change being accepted.
+   */
+  app.post(
+    '/api/instances/:instanceId/jobs/:jobUuid/write-allowed',
+    { preHandler: guard('job.write') },
+    async (request) => {
+      const { instanceId, jobUuid } = jobParams.parse(request.params);
+      const { allowed } = z.object({ allowed: z.boolean() }).parse(request.body);
+
+      const job = await getJob(db, instanceId, jobUuid);
+      if (!job) throw new CommandError(404, 'NotFound', 'No such job.');
+
+      return issue(request, {
+        instanceId,
+        kind: 'setJobWriteAllowed',
+        jobUuid,
+        // The name is resolved here rather than taken from the request: the
+        // allowlist is keyed on it, and letting a caller supply a name that
+        // does not match the job they named would allowlist something else.
+        payload: { jobUuid, jobName: job.name, allowed },
       });
     },
   );
@@ -1069,6 +1115,17 @@ export async function createApp(deps: AppDeps) {
     );
     app.get('/install.sh', async (_request, reply) =>
       serveScript('bootstrap.sh', reply, 'text/x-shellscript; charset=utf-8'),
+    );
+
+    // The msdb setup a DBA runs. Served from here for the same reason the
+    // worker package is: a SQL host can reach the control plane and usually
+    // cannot reach GitHub, and the dashboard links to these at the moment it
+    // tells someone an edit is unavailable without them.
+    app.get('/sql/worker-permissions.sql', async (_request, reply) =>
+      serveScript('worker-permissions.sql', reply, 'text/plain; charset=utf-8'),
+    );
+    app.get('/sql/worker-write-wrapper.sql', async (_request, reply) =>
+      serveScript('worker-write-wrapper.sql', reply, 'text/plain; charset=utf-8'),
     );
 
     await app.register(fastifyStatic, {

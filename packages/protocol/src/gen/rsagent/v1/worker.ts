@@ -86,7 +86,7 @@ export interface InstanceInfo {
    * under Windows authentication the effective login is the service account,
    * which no config file knows.
    */
-  writeMode?: JobWriteMode | undefined;
+  writeMode?: JobWriteStatus | undefined;
 }
 
 /**
@@ -98,7 +98,7 @@ export interface InstanceInfo {
  * Enable, disable, start and stop are unaffected and always work — SQL Server
  * carves those out for SQLAgentOperatorRole regardless of ownership.
  */
-export interface JobWriteMode {
+export interface JobWriteStatus {
   /**
    * SUSER_SNAME() as the worker sees it. A job whose owner matches this is
    * editable whatever else is true.
@@ -1023,7 +1023,7 @@ export const InstanceInfo: MessageFns<InstanceInfo> = {
       writer.uint32(42).string(message.serverName);
     }
     if (message.writeMode !== undefined) {
-      JobWriteMode.encode(message.writeMode, writer.uint32(50).fork()).join();
+      JobWriteStatus.encode(message.writeMode, writer.uint32(50).fork()).join();
     }
     return writer;
   },
@@ -1080,7 +1080,7 @@ export const InstanceInfo: MessageFns<InstanceInfo> = {
             break;
           }
 
-          message.writeMode = JobWriteMode.decode(reader, reader.uint32());
+          message.writeMode = JobWriteStatus.decode(reader, reader.uint32());
           continue;
         }
       }
@@ -1120,9 +1120,9 @@ export const InstanceInfo: MessageFns<InstanceInfo> = {
         ? globalThis.String(object.server_name)
         : "",
       writeMode: isSet(object.writeMode)
-        ? JobWriteMode.fromJSON(object.writeMode)
+        ? JobWriteStatus.fromJSON(object.writeMode)
         : isSet(object.write_mode)
-        ? JobWriteMode.fromJSON(object.write_mode)
+        ? JobWriteStatus.fromJSON(object.write_mode)
         : undefined,
     };
   },
@@ -1145,7 +1145,7 @@ export const InstanceInfo: MessageFns<InstanceInfo> = {
       obj.serverName = message.serverName;
     }
     if (message.writeMode !== undefined) {
-      obj.writeMode = JobWriteMode.toJSON(message.writeMode);
+      obj.writeMode = JobWriteStatus.toJSON(message.writeMode);
     }
     return obj;
   },
@@ -1161,13 +1161,13 @@ export const InstanceInfo: MessageFns<InstanceInfo> = {
     message.agentStatus = object.agentStatus ?? "";
     message.serverName = object.serverName ?? "";
     message.writeMode = (object.writeMode !== undefined && object.writeMode !== null)
-      ? JobWriteMode.fromPartial(object.writeMode)
+      ? JobWriteStatus.fromPartial(object.writeMode)
       : undefined;
     return message;
   },
 };
 
-function createBaseJobWriteMode(): JobWriteMode {
+function createBaseJobWriteStatus(): JobWriteStatus {
   return {
     sqlLoginName: "",
     isSysadmin: false,
@@ -1177,8 +1177,8 @@ function createBaseJobWriteMode(): JobWriteMode {
   };
 }
 
-export const JobWriteMode: MessageFns<JobWriteMode> = {
-  encode(message: JobWriteMode, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+export const JobWriteStatus: MessageFns<JobWriteStatus> = {
+  encode(message: JobWriteStatus, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
     if (message.sqlLoginName !== "") {
       writer.uint32(10).string(message.sqlLoginName);
     }
@@ -1197,10 +1197,10 @@ export const JobWriteMode: MessageFns<JobWriteMode> = {
     return writer;
   },
 
-  decode(input: BinaryReader | Uint8Array, length?: number): JobWriteMode {
+  decode(input: BinaryReader | Uint8Array, length?: number): JobWriteStatus {
     const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
     const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseJobWriteMode();
+    const message = createBaseJobWriteStatus();
     while (reader.pos < end) {
       const tag = reader.uint32();
       switch (tag >>> 3) {
@@ -1253,7 +1253,7 @@ export const JobWriteMode: MessageFns<JobWriteMode> = {
     return message;
   },
 
-  fromJSON(object: any): JobWriteMode {
+  fromJSON(object: any): JobWriteStatus {
     return {
       sqlLoginName: isSet(object.sqlLoginName)
         ? globalThis.String(object.sqlLoginName)
@@ -1283,7 +1283,7 @@ export const JobWriteMode: MessageFns<JobWriteMode> = {
     };
   },
 
-  toJSON(message: JobWriteMode): unknown {
+  toJSON(message: JobWriteStatus): unknown {
     const obj: any = {};
     if (message.sqlLoginName !== "") {
       obj.sqlLoginName = message.sqlLoginName;
@@ -1303,11 +1303,11 @@ export const JobWriteMode: MessageFns<JobWriteMode> = {
     return obj;
   },
 
-  create<I extends Exact<DeepPartial<JobWriteMode>, I>>(base?: I): JobWriteMode {
-    return JobWriteMode.fromPartial(base ?? ({} as any));
+  create<I extends Exact<DeepPartial<JobWriteStatus>, I>>(base?: I): JobWriteStatus {
+    return JobWriteStatus.fromPartial(base ?? ({} as any));
   },
-  fromPartial<I extends Exact<DeepPartial<JobWriteMode>, I>>(object: I): JobWriteMode {
-    const message = createBaseJobWriteMode();
+  fromPartial<I extends Exact<DeepPartial<JobWriteStatus>, I>>(object: I): JobWriteStatus {
+    const message = createBaseJobWriteStatus();
     message.sqlLoginName = object.sqlLoginName ?? "";
     message.isSysadmin = object.isSysadmin ?? false;
     message.wrapperInstalled = object.wrapperInstalled ?? false;
