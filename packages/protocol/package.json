@@ -24,7 +24,7 @@
   "devDependencies": {
     "tsx": "^4.19.2",
     "typescript": "^6.0.3",
-    "vitest": "^3.2.7"
+    "vitest": "^4.1.10"
   },
   "description": "Shared contracts consumed by the worker, server and dashboard from source. Not published: see docs/faq.md.",
   "sideEffects": false
