@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import Fastify from 'fastify';
+import rateLimit from '@fastify/rate-limit';
 
 /**
  * `request.ip` is not cosmetic. It is what @fastify/rate-limit counts against,
@@ -76,5 +77,57 @@ describe('client IP attribution', () => {
     // defaults to 0 so that a deployment which never sets it cannot be fooled.
     const ip = await ipReportedBy(4, { 'x-forwarded-for': '1.2.3.4' });
     expect(ip).toBe('1.2.3.4');
+  });
+});
+
+/**
+ * The other half of the same claim.
+ *
+ * Everything above establishes which address `request.ip` resolves to. None of
+ * it means anything unless the rate limiter is counting against that address,
+ * which is an assumption about @fastify/rate-limit rather than about our own
+ * code — so it is worth holding the plugin to it across a major bump rather
+ * than reading a changelog and hoping.
+ */
+describe('rate limiting keys on the attributed address', () => {
+  async function limited(max: number) {
+    const app = Fastify({ trustProxy: trustProxyFor(1) });
+    await app.register(rateLimit, { max, timeWindow: '1 minute' });
+    app.get('/x', async () => ({ ok: true }));
+    await app.ready();
+    return {
+      hit: (forwardedFor: string) =>
+        app.inject({ method: 'GET', url: '/x', headers: { 'x-forwarded-for': forwardedFor } }),
+      close: () => app.close(),
+    };
+  }
+
+  it('refuses a caller past the limit', async () => {
+    const app = await limited(3);
+    try {
+      const codes: number[] = [];
+      for (let i = 0; i < 5; i++) codes.push((await app.hit('9.9.9.9, 10.0.0.1')).statusCode);
+      expect(codes).toEqual([200, 200, 200, 429, 429]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('counts per attributed address, not per connection', async () => {
+    // The reason the header walk above matters: exhausting one caller's budget
+    // must not spend anyone else's, and a caller must not be able to reset
+    // their own by writing a different X-Forwarded-For. Only the entry the
+    // trusted proxy appended distinguishes them here.
+    const app = await limited(2);
+    try {
+      await app.hit('9.9.9.9, 10.0.0.1');
+      await app.hit('9.9.9.9, 10.0.0.1');
+      expect((await app.hit('9.9.9.9, 10.0.0.1')).statusCode).toBe(429);
+
+      // Same forged leftmost entry, different proxy-added address.
+      expect((await app.hit('9.9.9.9, 10.0.0.2')).statusCode).toBe(200);
+    } finally {
+      await app.close();
+    }
   });
 });
