@@ -382,13 +382,13 @@ jobs:
       # improvements, but they change how this step behaves on the one path
       # that cannot be rehearsed before it runs against a real tag. Take v8 on
       # its own, not folded into a runtime bump.
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with: { name: executable-linux-x64, path: artifacts/linux }
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with: { name: executable-win-x64, path: artifacts/win }
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with: { name: executable-darwin-arm64, path: artifacts/mac }
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with: { name: worker-distribution, path: artifacts/dist }
 
       - name: Collect and checksum
