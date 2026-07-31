@@ -92,6 +92,59 @@ test.describe('job editor: steps', () => {
     await expect(page.getByText(/^Steps \(4\)/)).toBeVisible();
   });
 
+  /**
+   * The rules themselves are unit-tested. What cannot be proven without a
+   * browser is that they are wired to the editor at all: the debounce, the
+   * marker owner, and Monaco actually being handed the findings. The bar has
+   * been asserted rather than the squiggle because the squiggle is drawn on a
+   * canvas overlay and is not queryable.
+   */
+  test('reports a problem in the step body as it is typed', async ({ page }) => {
+    await mockApi(page);
+    await page.goto(JOB_URL);
+
+    const steps = panel(page, /^Steps/);
+    await steps.getByRole('row', { name: /Rebuild indexes/ }).click();
+
+    const editor = steps.locator('.monaco-editor').first();
+    await expect(editor).toBeVisible();
+    // The fixture body is clean, so nothing should be claimed before typing.
+    await expect(steps.locator('.lint-bar')).toHaveCount(0);
+
+    await editor.click();
+    await page.keyboard.press('ControlOrMeta+a');
+    await page.keyboard.type("RAISERROR('Import failed', 10, 1);");
+
+    const bar = steps.locator('.lint-bar');
+    await expect(bar).toContainText('1 warning');
+
+    await bar.getByRole('button', { name: /warning/ }).click();
+    await expect(bar).toContainText('tsql/raiserror-not-fatal');
+    await expect(bar).toContainText('does not fail the step');
+  });
+
+  test('re-lints under the other language when the step type changes', async ({ page }) => {
+    await mockApi(page);
+    await page.goto(JOB_URL);
+
+    const steps = panel(page, /^Steps/);
+    await steps.getByRole('row', { name: /Rebuild indexes/ }).click();
+
+    const editor = steps.locator('.monaco-editor').first();
+    await editor.click();
+    await page.keyboard.press('ControlOrMeta+a');
+    await page.keyboard.type('Write-Host "starting"');
+
+    // Still T-SQL, and nothing in the T-SQL rules has anything to say about it.
+    await expect(steps.locator('.lint-bar')).toHaveCount(0);
+
+    await steps.getByLabel('Type').selectOption('PowerShell');
+
+    // Two findings: Write-Host never reaches the job history, and nothing in
+    // the script can fail the step.
+    await expect(steps.locator('.lint-bar')).toContainText('2 warnings');
+  });
+
   test('offers Schedules and Notifications as their own sections', async ({ page }) => {
     await mockApi(page);
     await page.goto(JOB_URL);
