@@ -315,6 +315,7 @@ export interface CommandRow {
   approvedBy: string | null;
   resultCode: string | null;
   resultDetail: string | null;
+  sqlErrorNumber: number | null;
   issuedAt: string;
   completedAt: string | null;
   expiresAt: string | null;
@@ -364,6 +365,73 @@ export function useCommands(state?: CommandRow['state']) {
       ),
     refetchInterval: LIVE_REFRESH_MS,
   });
+}
+
+/** States a command will not move on from. */
+const TERMINAL_COMMAND_STATES = ['succeeded', 'failed', 'expired', 'rejected'] as const;
+
+/**
+ * Wait for a command the caller just issued to reach a terminal state.
+ *
+ * Issuing a command only queues and dispatches it. Whether msdb accepted it is
+ * decided on the SQL host and arrives seconds later, so anything that reports
+ * success at the point of issue is guessing — and until this existed, the job
+ * editor guessed, said "Saved and sent to the worker.", and never corrected
+ * itself when the worker refused the change.
+ *
+ * Resolves with the command however it ends, or null if it is still running
+ * when we stop waiting. Still-running is not failure: the worker may be
+ * offline and the command legitimately queued, which the caller words
+ * differently.
+ */
+export async function awaitCommandOutcome(
+  commandId: string,
+  { timeoutMs = 15_000, intervalMs = 700 }: { timeoutMs?: number; intervalMs?: number } = {},
+): Promise<CommandRow | null> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const command = await get<CommandRow>(`/api/commands/${commandId}`);
+    if ((TERMINAL_COMMAND_STATES as readonly string[]).includes(command.state)) return command;
+    if (Date.now() >= deadline) return null;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
+
+/**
+ * Turn a failed command into something an operator can act on.
+ *
+ * SQL Server's own text is kept — a DBA will want the exact wording — but the
+ * cases that have a specific remedy get told what it is, because the raw
+ * message describes the rule rather than the way out of it.
+ */
+export function explainCommandFailure(command: CommandRow): string {
+  const detail = command.resultDetail?.trim();
+
+  // 14525: the job is owned by another login and the worker is not sysadmin.
+  // The message names the rule and not one of the three things that resolve it.
+  if (command.sqlErrorNumber === 14525) {
+    return (
+      'SQL Server refused the change because this job is owned by a different login, ' +
+      'and the worker is not a member of sysadmin. Nothing was changed. ' +
+      'Enable and disable still work on jobs the worker does not own — only editing is refused.'
+    );
+  }
+
+  if (command.state === 'rejected') {
+    return detail ? `The change was rejected: ${detail}` : 'The change was rejected.';
+  }
+  if (command.state === 'expired') {
+    return 'The worker did not pick this change up before it expired. Nothing was changed.';
+  }
+  if (command.resultCode === 'CapabilityDenied') {
+    return detail ?? 'This worker is not permitted to make that change.';
+  }
+  if (command.resultCode === 'Conflict') {
+    return detail ?? 'The job changed on the server while you were editing it.';
+  }
+  return detail
+    ? `The worker could not apply the change: ${detail}`
+    : 'The worker could not apply the change. Nothing was changed.';
 }
 
 export function useJobActions(instanceId: string | undefined, jobUuid: string | undefined) {

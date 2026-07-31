@@ -435,8 +435,24 @@ export class CommandService {
       .where(eq(commands.id, commandId));
   }
 
-  async list(filter: { state?: CommandState; limit?: number } = {}) {
-    const conditions = filter.state ? [eq(commands.state, filter.state)] : [];
+  /**
+   * One command by id, with the same projection as `list`.
+   *
+   * Exists so the job editor can wait for the outcome of the save it just
+   * issued. Creating a command only means it was queued and dispatched — the
+   * worker may still refuse it seconds later, and until this existed there was
+   * no way to ask about a single command without pulling the last hundred.
+   */
+  async byId(commandId: string) {
+    const [row] = await this.list({ commandId, limit: 1 });
+    return row ?? null;
+  }
+
+  async list(filter: { state?: CommandState; limit?: number; commandId?: string } = {}) {
+    const conditions = [
+      ...(filter.state ? [eq(commands.state, filter.state)] : []),
+      ...(filter.commandId ? [eq(commands.id, filter.commandId)] : []),
+    ];
     return this.db
       .select({
         id: commands.id,
@@ -452,6 +468,11 @@ export class CommandService {
         approvedBy: commands.approvedBy,
         resultCode: commands.resultCode,
         resultDetail: commands.resultDetail,
+        // Written on failure since the write path shipped, but never selected —
+        // so the one thing that lets a caller tell "you do not own this job"
+        // (14525) from any other SQL failure was reaching the database and
+        // stopping there.
+        sqlErrorNumber: commands.sqlErrorNumber,
         issuedAt: commands.issuedAt,
         completedAt: commands.completedAt,
         expiresAt: commands.expiresAt,

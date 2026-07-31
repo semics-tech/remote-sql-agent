@@ -13,7 +13,13 @@ import {
   toHumaneSchedule,
   updateStep,
 } from '@remote-sql-agent/protocol/browser';
-import { useInstanceCapabilities, useJobActions, type JobDetail } from '../api.js';
+import {
+  awaitCommandOutcome,
+  explainCommandFailure,
+  useInstanceCapabilities,
+  useJobActions,
+  type JobDetail,
+} from '../api.js';
 import { Panel, Empty } from '../components.jsx';
 import { notifyLevel, stepAction } from '../format.js';
 import { useAuth } from '../auth.jsx';
@@ -107,10 +113,32 @@ export function JobEditor({
       );
       setConflict(false);
       setWarnings([]);
+
+      if (result.requiresApproval) {
+        onSaved('Saved. The change is waiting for a second person to approve it.');
+        return;
+      }
+
+      // Issuing the command only queued and dispatched it. Whether msdb
+      // accepted it is decided on the SQL host and comes back seconds later, so
+      // reporting success here would be a guess — and it used to be a wrong one
+      // often enough to matter: a job owned by another login fails every time,
+      // and the editor said "Saved and sent to the worker." regardless.
+      const outcome = await awaitCommandOutcome(result.id);
+
+      if (outcome && outcome.state !== 'succeeded') {
+        setError(explainCommandFailure(outcome));
+        if (outcome.resultCode === 'Conflict') setConflict(true);
+        return;
+      }
+
       onSaved(
-        result.requiresApproval
-          ? 'Saved. The change is waiting for a second person to approve it.'
-          : 'Saved and sent to the worker.',
+        outcome
+          ? 'Saved and applied on the server.'
+          : // Still queued: the worker is probably offline. Genuinely different
+            // from failure — it will apply when the worker reconnects — so it
+            // is worded as pending rather than reported as done.
+            'Saved and queued. The worker has not confirmed it yet — track it in Commands.',
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Save failed.';
