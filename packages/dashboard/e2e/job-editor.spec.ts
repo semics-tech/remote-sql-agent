@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import { INSTANCE_ID, JOB_UUID, mockApi, panel } from './fixtures.js';
 
 const JOB_URL = `/instances/${INSTANCE_ID}/jobs/${JOB_UUID}`;
@@ -12,6 +12,23 @@ const JOB_URL = `/instances/${INSTANCE_ID}/jobs/${JOB_UUID}`;
  * already have unit tests. What is unproven without a browser is that the
  * controls are wired to them at all.
  */
+
+/**
+ * Replace the step body Monaco is showing.
+ *
+ * `insertText` rather than `type`. Typing fires a key event per character, and
+ * Monaco's suggestion widget consumes some of them — the first version of this
+ * test intermittently ended up with `R10, 1);` in the buffer instead of the
+ * RAISERROR it typed, and passed or failed on the timing of a popup. The
+ * insertion still goes through the editor's real change pipeline, which is what
+ * these tests are actually about.
+ */
+async function replaceBody(page: Page, editor: Locator, body: string): Promise<void> {
+  await editor.click();
+  await page.keyboard.press('ControlOrMeta+a');
+  await page.keyboard.press('Delete');
+  await page.keyboard.insertText(body);
+}
 
 test.describe('job editor: steps', () => {
   test('lists steps collapsed, and expands the one clicked', async ({ page }) => {
@@ -111,9 +128,7 @@ test.describe('job editor: steps', () => {
     // The fixture body is clean, so nothing should be claimed before typing.
     await expect(steps.locator('.lint-bar')).toHaveCount(0);
 
-    await editor.click();
-    await page.keyboard.press('ControlOrMeta+a');
-    await page.keyboard.type("RAISERROR('Import failed', 10, 1);");
+    await replaceBody(page, editor, "RAISERROR('Import failed', 10, 1);");
 
     const bar = steps.locator('.lint-bar');
     await expect(bar).toContainText('1 warning');
@@ -131,9 +146,7 @@ test.describe('job editor: steps', () => {
     await steps.getByRole('row', { name: /Rebuild indexes/ }).click();
 
     const editor = steps.locator('.monaco-editor').first();
-    await editor.click();
-    await page.keyboard.press('ControlOrMeta+a');
-    await page.keyboard.type('Write-Host "starting"');
+    await replaceBody(page, editor, 'Write-Host "starting"');
 
     // Still T-SQL, and nothing in the T-SQL rules has anything to say about it.
     await expect(steps.locator('.lint-bar')).toHaveCount(0);

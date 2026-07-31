@@ -274,9 +274,14 @@ function wordAfter(masked: string, offset: number): string {
  */
 function raiserrorSeverity(masked: string, locate: Locator): Diagnostic[] {
   const out: Diagnostic[] = [];
-  // The message argument holds no comma once strings are masked, so a lazy
-  // "up to the first comma" read of it is safe here.
-  const pattern = /\bRAISERROR\s*\(\s*[^,()]*,\s*(\d+)\s*,/gi;
+  // The message argument holds no comma once strings are masked, so a "up to
+  // the first comma" read of it is safe here.
+  //
+  // No `\s*` after the bracket: `[^,()]` already matches whitespace, so the two
+  // quantifiers would overlap and every space could be attributed to either —
+  // quadratic on a long run, which at the 200KB body cap is a hang rather than
+  // a slow lint. Same mistake as the CTE pattern above, one order milder.
+  const pattern = /\bRAISERROR\s*\([^,()]*,\s*(\d+)\s*,/gi;
 
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(masked)) !== null && out.length < MAX_PER_RULE) {
@@ -306,8 +311,18 @@ function statementSeparators(masked: string, locate: Locator): Diagnostic[] {
   const checks: Array<{ pattern: RegExp; name: string }> = [
     // A CTE is `WITH <name> [(cols)] AS (`. Requiring the `AS (` is what tells
     // it apart from the hint and option forms of the same word.
+    //
+    // The name-and-whitespace run is one flat character class with a bounded
+    // lazy count, and deliberately not the more precise
+    // `(?:[A-Za-z_][\w$@#]*|\s)+`. That version is exponential: `_` matches
+    // both halves of the alternation, so a run of them can be divided between
+    // the inner and outer quantifiers in 2^n ways, and the regex only gives up
+    // after trying all of them. Measured before fixing — 28 underscores after
+    // `WITH` took 790ms, and every further two characters quadrupled it. This
+    // runs in the browser on every keystroke against text the operator is
+    // typing, so that is a frozen tab, not a slow lint.
     {
-      pattern: /\bWITH\s+(?:[A-Za-z_][\w$@#]*|\s)+(?:\([^()]{0,400}\)\s*)?AS\s*\(/gi,
+      pattern: /\bWITH\s[\w$@#\s]{0,200}?(?:\([^()]{0,400}\)\s*)?AS\s*\(/gi,
       name: 'a common table expression',
     },
     { pattern: /\bTHROW\b/gi, name: 'THROW' },

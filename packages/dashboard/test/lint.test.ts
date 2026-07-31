@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { lintPowerShell, lintTsql, summariseDiagnostics } from '../src/lint/index.js';
+import { lintPowerShell, lintStepBody, lintTsql, summariseDiagnostics } from '../src/lint/index.js';
 
 /**
  * The rules are only worth having if they are quiet.
@@ -252,6 +252,41 @@ describe('PowerShell: output and error handling advice', () => {
   it('says nothing about Invoke-Sqlcmd once the preference is set globally', () => {
     const body = "$ErrorActionPreference = 'Stop'\nInvoke-Sqlcmd -Query $q";
     expect(lintPowerShell(body)).toEqual([]);
+  });
+});
+
+/**
+ * The rules run in the browser, on every keystroke, over text the operator is
+ * typing. A pattern that backtracks is not a slow lint — it is a frozen tab,
+ * and the input that triggers it is one somebody types by accident.
+ *
+ * Both cases below were real. The first was found by CodeQL and measured at
+ * 790ms for 28 characters, quadrupling every further two. The second was found
+ * by checking the rest of the file for the same mistake — a quantifier whose
+ * character class overlaps the one before it, so the same text can be divided
+ * between them more than one way.
+ *
+ * The bounds are enormous relative to the fixed cost (microseconds at these
+ * sizes) and unreachable for the broken versions, so this is decisive without
+ * being timing-flaky.
+ */
+describe('pathological input', () => {
+  it.each([
+    ['a long identifier run after WITH', `WITH ${'_'.repeat(400)}!`],
+    ['a long unclosed RAISERROR argument', `RAISERROR(${' '.repeat(40_000)}!`],
+    ['deeply nested brackets', `SELECT ${'('.repeat(5_000)}`],
+    ['a body that is one long token', 'x'.repeat(100_000)],
+  ])('lints %s in reasonable time', (_name, body) => {
+    const started = performance.now();
+    lintTsql(body);
+    expect(performance.now() - started).toBeLessThan(1_000);
+  });
+
+  it('does not lint a body past the size cap at all', () => {
+    // The last line of defence: past this the pass is skipped rather than run
+    // slowly, because a generated script of this size is not one anybody is
+    // hand-editing and the cost lands on typing latency.
+    expect(lintStepBody('SELECT 1;'.repeat(40_000), 'sql')).toEqual([]);
   });
 });
 
