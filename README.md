@@ -98,16 +98,25 @@ worker write.
 ## Install
 
 Full walkthrough: **[docs/quick-start.md](docs/quick-start.md)** — about 30
-minutes, most of it waiting for containers.
+minutes, most of it waiting for containers. Where to run it, what it costs, and
+the two constraints that decide both: **[docs/deployment.md](docs/deployment.md)**.
 
 ### Control plane
 
+No checkout needed — it ships as an image. On any host with Docker:
+
 ```bash
-git clone https://github.com/semics-tech/remote-sql-agent
-cd remote-sql-agent/deploy
-cp .env.example .env      # set RSAGENT_PUBLIC_URL and POSTGRES_PASSWORD
-docker compose up -d
+mkdir -p rsagent && cd rsagent
+BASE=https://raw.githubusercontent.com/semics-tech/remote-sql-agent/main/deploy
+curl -fsSLO $BASE/docker-compose.yml
+curl -fsSLO $BASE/Caddyfile
+curl -fsSL  $BASE/.env.example -o .env    # then edit it
+
+docker compose --profile tls up -d        # with automatic HTTPS
 ```
+
+Or hand [`deploy/cloud-init.yaml`](deploy/cloud-init.yaml) to a fresh VM as
+user-data and it does all of the above on first boot.
 
 The image is published to both registries, same digest:
 
@@ -116,8 +125,9 @@ docker pull techsemics/remote-sql-agent:latest
 docker pull ghcr.io/semics-tech/remote-sql-agent/control-plane:latest
 ```
 
-Put a TLS certificate for the hub in `deploy/tls/`. The control plane refuses to
-start without one, because worker API keys are bearer secrets.
+Put a TLS certificate for the hub in `./tls`. The control plane refuses to start
+without one, because worker API keys are bearer secrets. From a checkout,
+`pnpm dev:cert <hostname>` writes a self-signed one for a lab.
 
 On first boot it creates an administrator and prints a generated password
 **once** — copy it from the log.

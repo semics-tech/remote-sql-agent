@@ -25,7 +25,7 @@
 #
 # Then read the bootstrap password out of the log — it is printed once:
 #
-#   ssh <machine> 'docker compose -f /opt/rsagent/repo/deploy/docker-compose.yml logs server | grep -i password'
+#   ssh <machine> 'cd /opt/rsagent/deploy && docker compose logs server | grep -i password'
 #
 # Sizing: 2 vCPU / 4 GB is the comfortable default (Standard_B2s, cx22). It runs
 # on 1 vCPU / 2 GB. Below that a cold boot plus a reconnect storm will OOM.
@@ -43,9 +43,16 @@ write_files:
       # ------------------------------------------------------------------
       RSAGENT_DOMAIN="rsagent.corp.example.com"
 
-      # Pin to a release rather than main, so rebuilding this machine in six
-      # months gives you the same thing it gave you today.
-      RSAGENT_REF="v0.1.1"
+      # The container image. Pin it: `latest` means rebuilding this machine in
+      # six months gives you whatever has shipped since, at a moment you did
+      # not choose. https://github.com/semics-tech/remote-sql-agent/releases
+      RSAGENT_VERSION="0.1.1"
+
+      # Which revision to take docker-compose.yml and Caddyfile from. `main`
+      # rather than a tag because the Caddy profile these use is newer than the
+      # last release; move this to the tag matching RSAGENT_VERSION once one
+      # contains them, so a rebuild is reproducible.
+      RSAGENT_REF="main"
       # ------------------------------------------------------------------
 
       if [[ "$RSAGENT_DOMAIN" == "rsagent.corp.example.com" ]]; then
@@ -53,13 +60,17 @@ write_files:
         exit 1
       fi
 
-      cd /opt/rsagent
-      if [[ ! -d repo ]]; then
-        git clone --depth 1 --branch "$RSAGENT_REF" \
-          https://github.com/semics-tech/remote-sql-agent.git repo
-      fi
+      mkdir -p /opt/rsagent/deploy
+      cd /opt/rsagent/deploy
 
-      cd repo/deploy
+      # Three small files, not a checkout. The control plane ships as a
+      # published image; cloning the repository onto a production host would
+      # put a build toolchain and the whole source tree somewhere neither is
+      # wanted, to run a container that is already built.
+      RAW="https://raw.githubusercontent.com/semics-tech/remote-sql-agent/${RSAGENT_REF}/deploy"
+      for f in docker-compose.yml Caddyfile .env.example; do
+        [[ -f "$f" ]] || curl -fsSL "${RAW}/${f}" -o "$f"
+      done
 
       # A self-signed certificate for the worker hub, valid for the same name.
       #
@@ -106,6 +117,7 @@ write_files:
           # Reachable only through Caddy, so the dashboard is never also served
           # over plain HTTP — where the browser refuses to encrypt credentials.
           echo "RSAGENT_HTTP_BIND=127.0.0.1"
+          echo "RSAGENT_VERSION=${RSAGENT_VERSION}"
         } >> .env
         # It holds the database password.
         chmod 600 .env
@@ -118,10 +130,10 @@ write_files:
       Control plane starting on https://${RSAGENT_DOMAIN}
 
         Bootstrap password (printed once, in the log):
-          docker compose -f /opt/rsagent/repo/deploy/docker-compose.yml logs server | grep -i password
+          cd /opt/rsagent/deploy && docker compose logs server | grep -i password
 
         Workers need this certificate, because it is self-signed:
-          /opt/rsagent/repo/deploy/tls/server.crt
+          /opt/rsagent/deploy/tls/server.crt
           install.sh --ca-cert ... / install.ps1 -CaCertPath ...
 
         Still to do: back up the Postgres volume, and set up audit export.
@@ -133,7 +145,6 @@ package_update: true
 packages:
   - ca-certificates
   - curl
-  - git
   - openssl
 
 runcmd:
