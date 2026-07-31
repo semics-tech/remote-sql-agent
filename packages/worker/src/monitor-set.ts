@@ -75,6 +75,16 @@ export class MonitorSet {
       sqlEdition: m.identity?.sqlEdition ?? '',
       agentStatus: m.identity?.agentStatus ?? 'unknown',
       serverName: m.identity?.serverName ?? '',
+      // Absent until the instance has connected once. An unknown write mode is
+      // reported as "can edit nothing", so the dashboard errs towards saying an
+      // edit is unavailable rather than offering one that fails.
+      writeMode: m.writeMode ?? {
+        sqlLoginName: '',
+        isSysadmin: false,
+        wrapperInstalled: false,
+        wrapperAllowsDashboardManagement: false,
+        allowlistedJobs: [],
+      },
     }));
   }
 

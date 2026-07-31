@@ -21,6 +21,25 @@ export interface InstanceIdentity {
   agentStatus: 'running' | 'stopped' | 'unknown';
 }
 
+/**
+ * What this worker can actually edit on this instance.
+ *
+ * SQL Server decides this, not us: sp_update_job refuses a job owned by another
+ * login unless the caller is sysadmin. Reported rather than configured because
+ * under Windows authentication the effective login is the service account,
+ * which worker.yaml does not know.
+ *
+ * Enable, disable, start and stop are unaffected — SQL Server carves those out
+ * for SQLAgentOperatorRole whoever owns the job.
+ */
+export interface JobWriteMode {
+  sqlLoginName: string;
+  isSysadmin: boolean;
+  wrapperInstalled: boolean;
+  wrapperAllowsDashboardManagement: boolean;
+  allowlistedJobs: string[];
+}
+
 export interface JobRecord {
   jobUuid: string;
   definition: JobDefinition;
@@ -114,6 +133,72 @@ export async function readIdentity(pool: sql.ConnectionPool): Promise<InstanceId
     sqlEdition: row?.sql_edition ?? '',
     agentStatus,
   };
+}
+
+/**
+ * Read what this worker may edit here.
+ *
+ * The wrapper is optional and usually absent, so its absence is the expected
+ * path rather than an error: SUSER_SNAME() and IS_SRVROLEMEMBER are always
+ * available, and everything else degrades to "not installed".
+ */
+export async function readJobWriteMode(pool: sql.ConnectionPool): Promise<JobWriteMode> {
+  const base = await pool.request().query<{ login_name: string; is_sysadmin: number }>(
+    `SELECT SUSER_SNAME() AS login_name,
+            ISNULL(IS_SRVROLEMEMBER('sysadmin'), 0) AS is_sysadmin`,
+  );
+  const row = base.recordset[0];
+  const mode: JobWriteMode = {
+    sqlLoginName: row?.login_name ?? '',
+    isSysadmin: row?.is_sysadmin === 1,
+    wrapperInstalled: false,
+    wrapperAllowsDashboardManagement: false,
+    allowlistedJobs: [],
+  };
+
+  try {
+    // Two result sets: one status row, then the allowlist.
+    const status = await pool.request().query<{
+      wrapper_installed: number;
+      dashboard_managed: number;
+    }>('EXEC msdb.dbo.rsagent_write_status');
+
+    mode.wrapperInstalled = status.recordset[0]?.wrapper_installed === 1;
+    mode.wrapperAllowsDashboardManagement = status.recordset[0]?.dashboard_managed === 1;
+
+    const allowlist = (status as unknown as { recordsets?: { job_name: string }[][] }).recordsets;
+    mode.allowlistedJobs = (allowlist?.[1] ?? []).map((r) => r.job_name);
+  } catch {
+    // Not installed, or the login cannot see it. Either way there is no wrapper
+    // to use, which is the default state and not worth logging on every poll.
+  }
+
+  return mode;
+}
+
+/**
+ * Whether a job can be edited through this worker, given what it reported.
+ *
+ * Kept next to the query so the worker and the control plane cannot disagree
+ * about it: the same rule is applied on the worker before attempting a write
+ * and on the dashboard before offering one.
+ */
+export function canEditJob(
+  mode: JobWriteMode,
+  job: { name: string; ownerLoginName: string | null },
+): boolean {
+  if (mode.isSysadmin) return true;
+  // Comparisons are case-insensitive throughout: SQL Server logins are, and the
+  // allowlist is matched by sp_update_job against a name SQL Server also treats
+  // case-insensitively under the default collation.
+  if (
+    job.ownerLoginName &&
+    job.ownerLoginName.toLowerCase() === mode.sqlLoginName.toLowerCase()
+  ) {
+    return true;
+  }
+  if (!mode.wrapperInstalled) return false;
+  return mode.allowlistedJobs.some((name) => name.toLowerCase() === job.name.toLowerCase());
 }
 
 // ---------------------------------------------------------------------------

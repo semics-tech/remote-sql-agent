@@ -90,6 +90,20 @@ GO
 -- ---------------------------------------------------------------------------
 DECLARE @login sysname = N'rsagent_worker';   -- <-- change this
 
+-- Whether the allowlist can be managed from the dashboard.
+--
+-- 1 (default): an operator with the job.write permission can put a job under
+--   management from the job page, and the change arrives as a signed command
+--   like any other. Every addition is recorded in rsagent_write_audit here and
+--   in the control plane's audit log.
+--
+-- 0: only a DBA adds rows, with the INSERT below. The dashboard then shows
+--   which jobs are editable and the exact statement to run, rather than a
+--   button that would fail. Choose this where the list of centrally-editable
+--   jobs is itself meant to be a change-controlled decision — a compromised
+--   control plane then cannot extend its own reach on this instance.
+DECLARE @allow_dashboard_management bit = 1;
+
 IF DATABASE_PRINCIPAL_ID(@login) IS NULL
 BEGIN
     RAISERROR('No user named "%s" in msdb. Run worker-permissions.sql first.', 16, 1, @login);
@@ -102,9 +116,9 @@ IF OBJECT_ID('tempdb..#rsagent_install') IS NOT NULL DROP TABLE #rsagent_install
 -- It protects the certificate's private key at rest in msdb; it is used to
 -- create and sign in this one run and is not needed again. Re-running this
 -- script recreates and re-signs, so there is nothing to recover.
-CREATE TABLE #rsagent_install (login sysname, cert_password nvarchar(128));
-INSERT #rsagent_install(login, cert_password)
-VALUES (@login, N'Rs' + REPLACE(CAST(NEWID() AS nvarchar(64)), '-', '') + N'!9Aa');
+CREATE TABLE #rsagent_install (login sysname, cert_password nvarchar(128), dashboard_managed bit);
+INSERT #rsagent_install(login, cert_password, dashboard_managed)
+VALUES (@login, N'Rs' + REPLACE(CAST(NEWID() AS nvarchar(64)), '-', '') + N'!9Aa', @allow_dashboard_management);
 GO
 
 -- ---------------------------------------------------------------------------
@@ -117,6 +131,18 @@ CREATE TABLE dbo.rsagent_write_allowlist (
     added_by  sysname       NOT NULL DEFAULT SUSER_SNAME(),
     added_at  datetime2(0)  NOT NULL DEFAULT SYSUTCDATETIME(),
     note      nvarchar(400) NULL
+);
+GO
+
+-- One row, holding how this instance was installed. A table rather than a
+-- literal baked into the procedures so that reading the posture does not mean
+-- reading procedure source.
+IF OBJECT_ID('dbo.rsagent_write_settings') IS NULL
+CREATE TABLE dbo.rsagent_write_settings (
+    only_row          bit NOT NULL PRIMARY KEY DEFAULT 1 CHECK (only_row = 1),
+    dashboard_managed bit NOT NULL,
+    installed_at      datetime2(0) NOT NULL DEFAULT SYSUTCDATETIME(),
+    installed_by      sysname NOT NULL DEFAULT SUSER_SNAME()
 );
 GO
 
@@ -352,18 +378,66 @@ BEGIN
 END
 GO
 
--- Lets the worker discover at startup whether the wrapper is installed, and the
+-- Put a job under central management, or take it out again.
+--
+-- Refuses when the wrapper was installed with dashboard management off, so a
+-- site that wants a DBA to hold that key keeps it: the control plane cannot
+-- extend its own reach on an instance configured to refuse.
+CREATE OR ALTER PROCEDURE dbo.rsagent_set_job_write_allowed
+    @job_name sysname,
+    @allowed  bit
+WITH EXECUTE AS OWNER
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF NOT EXISTS (SELECT 1 FROM dbo.rsagent_write_settings WHERE dashboard_managed = 1)
+    BEGIN
+        INSERT dbo.rsagent_write_audit (original_login, procedure_name, job_name, allowed, detail)
+        VALUES (ORIGINAL_LOGIN(), 'rsagent_set_job_write_allowed', @job_name, 0,
+                N'refused: this instance is DBA-managed');
+        RAISERROR('The write allowlist on this instance is maintained by a DBA. Reinstall worker-write-wrapper.sql with @allow_dashboard_management = 1 to change that.', 16, 1);
+        RETURN;
+    END
+
+    -- The job has to exist. Otherwise a typo silently allowlists a name that
+    -- nothing matches, and the entry sits there looking like a granted
+    -- permission for a job nobody can find.
+    IF NOT EXISTS (SELECT 1 FROM msdb.dbo.sysjobs WHERE name = @job_name)
+    BEGIN
+        RAISERROR('No job named "%s" on this instance.', 16, 1, @job_name);
+        RETURN;
+    END
+
+    IF @allowed = 1
+        MERGE dbo.rsagent_write_allowlist AS t
+        USING (SELECT @job_name AS job_name) AS s ON t.job_name = s.job_name
+        WHEN NOT MATCHED THEN INSERT (job_name, added_by, note)
+             VALUES (s.job_name, ORIGINAL_LOGIN(), N'added from the dashboard');
+    ELSE
+        DELETE dbo.rsagent_write_allowlist WHERE job_name = @job_name;
+
+    INSERT dbo.rsagent_write_audit (original_login, procedure_name, job_name, allowed, detail)
+    VALUES (ORIGINAL_LOGIN(), 'rsagent_set_job_write_allowed', @job_name, 1,
+            CASE WHEN @allowed = 1 THEN N'allowed' ELSE N'disallowed' END);
+END
+GO
+
+-- Lets the worker discover at startup what it can actually edit here, and the
 -- dashboard say why a save is blocked before the operator writes an edit that
--- cannot land. Not signed: it reads nothing privileged.
+-- cannot land. Not signed: it reads nothing privileged, and it deliberately
+-- reports the *caller's* identity rather than the owner's.
 CREATE OR ALTER PROCEDURE dbo.rsagent_write_status
 AS
 BEGIN
     SET NOCOUNT ON;
     SELECT
         CAST(1 AS bit) AS wrapper_installed,
-        (SELECT COUNT(*) FROM dbo.rsagent_write_allowlist) AS allowlisted_jobs,
+        ISNULL((SELECT TOP 1 dashboard_managed FROM dbo.rsagent_write_settings), 0) AS dashboard_managed,
         ISNULL(IS_SRVROLEMEMBER(N'sysadmin'), 0) AS caller_is_sysadmin,
         SUSER_SNAME() AS caller_login;
+
+    SELECT job_name FROM dbo.rsagent_write_allowlist ORDER BY job_name;
 END
 GO
 
@@ -376,26 +450,44 @@ DECLARE @sign nvarchar(max) = N'';
 SELECT @sign = @sign + N'ADD SIGNATURE TO dbo.' + QUOTENAME(name)
                      + N' BY CERTIFICATE RsAgentWriteCert WITH PASSWORD = ''' + @pw + N''';'
 FROM (VALUES (N'rsagent_write_guard'), (N'rsagent_update_job'), (N'rsagent_update_jobstep'),
-             (N'rsagent_add_jobstep'), (N'rsagent_delete_jobstep')) AS t(name);
+             (N'rsagent_add_jobstep'), (N'rsagent_delete_jobstep'),
+             (N'rsagent_set_job_write_allowed')) AS t(name);
 EXEC sys.sp_executesql @sign;
 GO
 
 DECLARE @login sysname = (SELECT login FROM #rsagent_install);
+DECLARE @managed bit = (SELECT dashboard_managed FROM #rsagent_install);
+
+MERGE dbo.rsagent_write_settings AS t
+USING (SELECT 1 AS only_row) AS s ON t.only_row = s.only_row
+WHEN MATCHED THEN UPDATE SET dashboard_managed = @managed, installed_at = SYSUTCDATETIME(), installed_by = SUSER_SNAME()
+WHEN NOT MATCHED THEN INSERT (only_row, dashboard_managed) VALUES (1, @managed);
+
 DECLARE @grant nvarchar(max) = N'
 GRANT EXECUTE ON dbo.rsagent_update_job     TO ' + QUOTENAME(@login) + N';
 GRANT EXECUTE ON dbo.rsagent_update_jobstep TO ' + QUOTENAME(@login) + N';
 GRANT EXECUTE ON dbo.rsagent_add_jobstep    TO ' + QUOTENAME(@login) + N';
 GRANT EXECUTE ON dbo.rsagent_delete_jobstep TO ' + QUOTENAME(@login) + N';
 GRANT EXECUTE ON dbo.rsagent_write_status   TO ' + QUOTENAME(@login) + N';
-GRANT SELECT  ON dbo.rsagent_write_allowlist TO ' + QUOTENAME(@login) + N';';
+GRANT SELECT  ON dbo.rsagent_write_allowlist TO ' + QUOTENAME(@login) + N';
+GRANT EXECUTE ON dbo.rsagent_set_job_write_allowed TO ' + QUOTENAME(@login) + N';';
 EXEC sys.sp_executesql @grant;
 
 PRINT 'Installed the job write wrapper for ' + @login + '.';
 PRINT '';
-PRINT 'It can edit NOTHING yet. The allowlist is empty and default-deny:';
-PRINT '';
-PRINT '  INSERT msdb.dbo.rsagent_write_allowlist(job_name, added_by)';
-PRINT '  VALUES (N''Your job name'', SUSER_SNAME());';
+IF @managed = 1
+BEGIN
+    PRINT 'Allowlist: managed from the dashboard.';
+    PRINT 'It can edit nothing yet. Put a job under management from its page in';
+    PRINT 'the dashboard, or add one here directly.';
+END
+ELSE
+BEGIN
+    PRINT 'Allowlist: DBA-managed. The dashboard can see it but not change it.';
+    PRINT '';
+    PRINT '  INSERT msdb.dbo.rsagent_write_allowlist(job_name, added_by)';
+    PRINT '  VALUES (N''Your job name'', SUSER_SNAME());';
+END
 PRINT '';
 PRINT 'Every call is recorded in msdb.dbo.rsagent_write_audit, including refusals.';
 DROP TABLE #rsagent_install;
