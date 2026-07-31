@@ -172,7 +172,7 @@ gh attestation verify rsagent-worker-linux-x64 --repo semics-tech/remote-sql-age
 
 ### SQL Server permissions
 
-Read-only mirroring needs one role:
+Read-only mirroring needs one role and a set of table grants:
 
 ```sql
 USE [msdb];
@@ -180,8 +180,17 @@ CREATE USER [CORP\SQLAGENT-SVC] FOR LOGIN [CORP\SQLAGENT-SVC];
 ALTER ROLE [SQLAgentReaderRole] ADD MEMBER [CORP\SQLAGENT-SVC];
 ```
 
-Add `SQLAgentOperatorRole` only when you want the worker to make changes. **Never
-grant `sysadmin`.**
+```bash
+sqlcmd -S localhost -E -i deploy/sql/worker-permissions.sql
+```
+
+The role grants EXECUTE on the `sp_help_*` procedures, not SELECT on the tables
+under them — and the worker reads those directly. Skip the second step and the
+login browses jobs happily in SSMS, then fails in the worker with a permission
+error on `sysjobhistory`.
+
+Add `SQLAgentOperatorRole` only when you want the worker to make changes; that
+one really is just the role. **Never grant `sysadmin`.**
 
 ---
 

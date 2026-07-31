@@ -142,7 +142,7 @@ A lightweight **worker** is deployed next to each SQL Server instance. The worke
 ### 5.2 SQL access model
 
 - Connects to each local instance via a dedicated login (Windows or SQL auth, configured at install; one login per instance).
-- **Read-only mode requires only:** `SQLAgentReaderRole` in `msdb` (plus `VIEW SERVER STATE` if streaming `sysjobactivity` extended detail).
+- **Read-only mode requires:** `SQLAgentReaderRole` in `msdb`, **plus explicit SELECT on the msdb tables** the worker reads directly (`deploy/sql/worker-permissions.sql`). The role grants EXECUTE on the `sp_help_*` procedures, not SELECT on the tables under them, and history is read incrementally off a `sysjobhistory.instance_id` high-water mark that no procedure exposes. This was originally written as "requires only the role", which is wrong — a role-only login browses jobs fine in SSMS and then fails in the worker with a permission error on `sysjobhistory`. Also `VIEW SERVER STATE` if streaming `sysjobactivity` extended detail.
 - **Write mode requires:** `SQLAgentOperatorRole` (start/stop/enable/disable) and, for full job CRUD, ownership semantics — document clearly that jobs created via the worker are owned by the worker login, and provide a configurable "run-as owner" mapping. Never require `sysadmin`; explicitly warn if the configured login has it.
 - All SQL access via parameterised `mssql` requests; no SQL string concatenation anywhere in the codebase (enforced by an eslint rule banning template-literal query construction + code review checklist).
 

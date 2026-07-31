@@ -100,7 +100,8 @@ it.
 
 ## 2. Prepare the SQL Server login
 
-The worker needs far less than people expect. On each SQL Server instance:
+The worker needs far less than people expect, but it does need two things: role
+membership, and SELECT on the `msdb` tables underneath.
 
 ```sql
 USE [master];
@@ -111,8 +112,28 @@ CREATE USER [CORP\SQLAGENT-SVC] FOR LOGIN [CORP\SQLAGENT-SVC];
 ALTER ROLE [SQLAgentReaderRole] ADD MEMBER [CORP\SQLAGENT-SVC];
 ```
 
-That covers everything the worker reads: jobs, steps, schedules, operators,
-alerts, run history and activity.
+Then run [`deploy/sql/worker-permissions.sql`](../deploy/sql/worker-permissions.sql)
+against the same instance, with the login name edited at the top:
+
+```bash
+sqlcmd -S localhost -E -i worker-permissions.sql
+```
+
+> **The role on its own is not enough, and the way it fails is confusing.**
+> `SQLAgentReaderRole` and `SQLAgentOperatorRole` grant EXECUTE on the
+> `sp_help_*` procedures, not SELECT on the tables beneath them. The worker
+> reads those tables directly, because it tracks a high-water mark over
+> `sysjobhistory.instance_id` to read history incrementally and no stored
+> procedure exposes that.
+>
+> So the login browses jobs perfectly in SSMS — which goes through
+> `sp_help_job` — and the worker then reports
+> `The SELECT permission was denied on the object 'sysjobhistory'`.
+> On SQL Server 2022, ten of the twelve tables it needs are denied to a member
+> of `SQLAgentOperatorRole`.
+
+Together those cover everything the worker reads: jobs, steps, schedules,
+operators, alerts, run history and activity.
 
 Add write capability **only when you actually want it**:
 
@@ -120,7 +141,8 @@ Add write capability **only when you actually want it**:
 ALTER ROLE [SQLAgentOperatorRole] ADD MEMBER [CORP\SQLAGENT-SVC];
 ```
 
-Never grant `sysadmin`.
+That one is genuinely just the role — writes go through the stored procedures,
+which the role does cover. Never grant `sysadmin`.
 
 If you install the worker service as LocalSystem (the default), the SQL
 principal is the machine account and there is no stored credential at all.
@@ -181,8 +203,8 @@ monitor** within a few seconds. Add each SQL Server instance on the host:
 | Authentication | **Windows — the worker's service account** |
 
 **Prefer Windows authentication.** The service account is the credential, and
-there is no password stored anywhere. Grant it `SQLAgentReaderRole` in `msdb`
-as in step 2.
+there is no password stored anywhere. Give it `SQLAgentReaderRole` **and** the
+table grants from step 2 — both, not just the role.
 
 If you must use a SQL login, the password you type is **encrypted in your
 browser** to a public key that worker generated on its own host. The control
@@ -208,7 +230,8 @@ The common causes all name themselves clearly:
 |---|---|
 | `No worker key found` | Enrolment did not complete. Generate a new token and re-run the installer. |
 | `The control plane rejected this worker credential` | The key was revoked, or the worker was deleted in the dashboard. |
-| `Failed to connect to instance` | The SQL login is missing or lacks `SQLAgentReaderRole`. |
+| `Failed to connect to instance` | The SQL login is missing, or lacks `SQLAgentReaderRole`. |
+| `The SELECT permission was denied on the object 'sysjob...'` | Role membership was granted but the table grants were not. Run `deploy/sql/worker-permissions.sql` — see step 2. |
 | Instance shows **Login refused** | Wrong password, or the login is disabled. Edit the instance and enter it again. |
 | Instance shows **Credential unreadable** | The worker was reinstalled and generated a new key. Enter the password again. |
 | `Agent error log is not readable` | Expected and harmless. See the FAQ. |

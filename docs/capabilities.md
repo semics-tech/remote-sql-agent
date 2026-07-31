@@ -32,12 +32,23 @@ worker pinned at `readOnly` does nothing except make the dashboard show
 
 | Capability | Permits | Requires in msdb |
 |---|---|---|
-| `observe` | Read jobs, steps, schedules, operators, alerts, run history, activity. Always on; cannot be revoked. | `SQLAgentReaderRole` |
+| `observe` | Read jobs, steps, schedules, operators, alerts, run history, activity. Always on; cannot be revoked. | `SQLAgentReaderRole` **and** SELECT on the msdb tables — see below |
 | `job.toggle` | Enable and disable jobs | `SQLAgentOperatorRole` |
 | `job.run` | Start and stop jobs on demand | `SQLAgentOperatorRole` |
 | `schedule.write` | Create, edit and delete schedules | `SQLAgentOperatorRole` + ownership |
 | `job.write` | Create, edit and delete jobs and their steps | job ownership |
 | `operator.write` | Manage operators and alerts | `SQLAgentOperatorRole` |
+
+> **`observe` needs table grants as well as the role.** The SQL Agent roles
+> grant EXECUTE on the `sp_help_*` procedures, not SELECT on the tables under
+> them, and the worker reads those tables directly — it keeps a high-water mark
+> over `sysjobhistory.instance_id` so history can be read incrementally, which
+> no stored procedure exposes. Measured on SQL Server 2022, ten of the twelve
+> tables it needs are denied to a member of `SQLAgentOperatorRole`.
+>
+> Run [`deploy/sql/worker-permissions.sql`](../deploy/sql/worker-permissions.sql)
+> once per instance. The write capabilities above really are just the role,
+> because writes go through the stored procedures.
 
 ## The ceilings
 
