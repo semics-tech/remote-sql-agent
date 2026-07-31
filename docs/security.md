@@ -34,6 +34,9 @@ The build in this repository implements milestones M0–M3 of the architecture s
 
 - [ ] `RSAGENT_PUBLIC_URL` set to the real https origin (this also makes session cookies `Secure`)
 - [ ] `RSAGENT_GRPC_TLS_CERT` / `RSAGENT_GRPC_TLS_KEY` set — never run the hub without TLS
+- [ ] `RSAGENT_TRUSTED_PROXY_HOPS` set to the number of reverse proxies actually in front of
+      the HTTP port — 0 if none. Too high and the client picks its own address, which forges
+      `remoteAddress` on every audit row and sidesteps rate limiting
 - [ ] Bootstrap admin password changed, or Entra configured
 - [ ] Each worker's `maxCapability` set to the minimum that site needs (default `readOnly`)
 - [ ] Postgres on an encrypted volume, and backups encrypted

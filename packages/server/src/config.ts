@@ -53,6 +53,26 @@ const configSchema = z.object({
    * decide whether cookies may be marked Secure. */
   publicUrl: z.string().url(),
 
+  /**
+   * How many reverse proxies sit in front of the HTTP server.
+   *
+   * This decides where `request.ip` comes from, and `request.ip` is what
+   * @fastify/rate-limit counts against and what lands in `remoteAddress` on
+   * every audit row and every session. Anything the client can choose is
+   * therefore both a rate-limit bypass and a forged audit trail.
+   *
+   * 0 (the default) ignores X-Forwarded-For entirely and uses the socket
+   * address, which is correct when the control plane is exposed directly and is
+   * the only setting a client cannot influence. Set it to the number of proxies
+   * you actually run — 1 for the Caddy profile, for Container Apps, or for a
+   * Kubernetes ingress — and the address is taken that many hops back from the
+   * socket, i.e. from the proxy nearest us rather than from the request.
+   *
+   * Overshooting is the dangerous direction: each hop beyond the real count is
+   * one entry of attacker-controlled header that gets believed.
+   */
+  trustedProxyHops: z.coerce.number().int().min(0).max(8),
+
   // --- Dashboard identity ---------------------------------------------------
   auth: z.object({
     /** 'local' | 'entra' | 'both'. 'both' keeps local sign-in available as a
@@ -204,6 +224,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     dashboardDir: env.RSAGENT_DASHBOARD_DIR,
     workerPackageDir: env.RSAGENT_WORKER_PACKAGE_DIR,
     publicUrl: env.RSAGENT_PUBLIC_URL ?? 'http://localhost:8080',
+    trustedProxyHops: env.RSAGENT_TRUSTED_PROXY_HOPS ?? 0,
 
     auth: {
       mode: authMode,
