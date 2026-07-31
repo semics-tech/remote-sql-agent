@@ -70,6 +70,20 @@ export const instances = pgTable(
     sqlVersion: text('sql_version'),
     sqlEdition: text('sql_edition'),
     agentStatus: text('agent_status').notNull().default('unknown'),
+    /**
+     * What the worker reported it can actually edit here: its effective SQL
+     * login, whether it is sysadmin, whether the write wrapper is installed,
+     * and which jobs that wrapper currently permits.
+     *
+     * Reported by the worker rather than configured, because SQL Server decides
+     * it — sp_update_job refuses a job owned by another login unless the caller
+     * is sysadmin. Stored so the dashboard can grey out a save that would fail
+     * instead of accepting an edit and reporting a raw SQL error afterwards.
+     *
+     * jsonb rather than columns: it is a snapshot of remote state read straight
+     * back out, never filtered or joined on, and the allowlist is a list.
+     */
+    jobWriteMode: jsonb('job_write_mode'),
     environmentTag: text('environment_tag'),
     lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
     /**

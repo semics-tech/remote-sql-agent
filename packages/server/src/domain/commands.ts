@@ -616,6 +616,20 @@ export function buildProtoCommand(
           },
         },
       };
+    case 'setJobWriteAllowed':
+      return {
+        ...base,
+        payload: {
+          $case: 'setJobWriteAllowed',
+          setJobWriteAllowed: {
+            jobUuid: str('jobUuid'),
+            // The allowlist is keyed on name, because that is what
+            // sp_update_job takes and what a DBA reads when auditing it.
+            jobName: str('jobName'),
+            allowed: payload.allowed === true,
+          },
+        },
+      };
   }
 }
 

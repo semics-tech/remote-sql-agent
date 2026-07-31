@@ -29,6 +29,7 @@ import {
   upsertJob,
   upsertOperator,
   upsertSchedule,
+  setJobWriteAllowed,
 } from './sql/agent-writer.js';
 
 /**
@@ -249,6 +250,28 @@ async function apply(
         'Unsupported',
         'Deleting an operator by id is not supported; delete it by name from SSMS.',
       );
+
+    case 'setJobWriteAllowed': {
+      // Put a job under central management, or take it out again. Applied by
+      // the wrapper's own procedure rather than a direct write, so the refusal
+      // when an instance is DBA-managed comes from msdb — the control plane
+      // cannot talk its way past a posture chosen on the SQL host.
+      const { jobName, allowed } = payload.setJobWriteAllowed;
+      try {
+        await setJobWriteAllowed(context.pool, jobName, allowed);
+        return ok(undefined);
+      } catch (err) {
+        if (err instanceof SqlApplyError) {
+          return {
+            success: false,
+            errorCode: 'SqlError',
+            errorDetail: err.message,
+            sqlErrorNumber: err.sqlErrorNumber,
+          };
+        }
+        throw err;
+      }
+    }
 
     default:
       return refuse('UnknownCommand', 'This worker version does not implement that command.');

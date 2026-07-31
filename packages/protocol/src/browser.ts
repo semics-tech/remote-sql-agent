@@ -12,6 +12,7 @@
 export * from './job-definition.js';
 export * from './job-edit.js';
 export * from './job-flow.js';
+export * from './job-write.js';
 export * from './schedule.js';
 export * from './capabilities.js';
 export * from './roles.js';

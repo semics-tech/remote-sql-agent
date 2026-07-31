@@ -4,6 +4,7 @@ import type { Logger } from 'pino';
 import {
   canonicaliseJobWithHash,
   toTimestamp,
+  type JobWriteMode,
   toTimestampOrUndefined,
   type HistoryRow,
   type ActivityRow,
@@ -19,6 +20,7 @@ import {
   readAgentErrorLog,
   readHistorySince,
   readIdentity,
+  readJobWriteMode,
   readJobs,
   readJobsFingerprint,
   readMaxHistoryId,
@@ -82,6 +84,11 @@ const START_BURST_MS = 15_000;
 export class InstanceMonitor {
   #pool: sql.ConnectionPool | null = null;
   #identity: InstanceIdentity | null = null;
+  // What this worker may edit here. Refreshed alongside identity rather than on
+  // its own timer: a DBA installing the wrapper or allowlisting a job should
+  // show up in the dashboard without restarting the worker, and identity is
+  // already re-read on reconnect and on the definition poll.
+  #writeMode: JobWriteMode | null = null;
   #timers: NodeJS.Timeout[] = [];
   #definitionHashes = new Map<string, string>();
   #lastFingerprint: JobsFingerprint | null = null;
@@ -122,6 +129,10 @@ export class InstanceMonitor {
     return this.#identity;
   }
 
+  get writeMode(): JobWriteMode | null {
+    return this.#writeMode;
+  }
+
   /** The live connection, for the command handler. Null while disconnected. */
   get connectionPool(): sql.ConnectionPool | null {
     return this.#pool;
@@ -130,6 +141,7 @@ export class InstanceMonitor {
   async connect(): Promise<void> {
     this.#pool = await connectInstance(this.deps.config);
     this.#identity = await readIdentity(this.#pool);
+    this.#writeMode = await readJobWriteMode(this.#pool);
     this.#definitionHashes = this.deps.outbox.getDefinitionHashes(this.instanceName);
 
     // Seed the history bookmark to the current maximum on very first contact so
@@ -178,6 +190,7 @@ export class InstanceMonitor {
     if (!this.#pool) return null;
     try {
       this.#identity = await readIdentity(this.#pool);
+    this.#writeMode = await readJobWriteMode(this.#pool);
     } catch (err) {
       this.deps.logger.warn({ err, instance: this.instanceName }, 'Failed to refresh identity');
     }

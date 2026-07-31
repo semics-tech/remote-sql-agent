@@ -1,6 +1,6 @@
 import sql from 'mssql';
 import type { JobDefinition, JobStep, ScheduleDefinition } from '@remote-sql-agent/protocol';
-import { SCHEMA_VERSION } from '@remote-sql-agent/protocol';
+import { SCHEMA_VERSION, type JobWriteMode } from '@remote-sql-agent/protocol';
 
 /**
  * Read access to msdb — the SQL Server Agent object graph.
@@ -114,6 +114,47 @@ export async function readIdentity(pool: sql.ConnectionPool): Promise<InstanceId
     sqlEdition: row?.sql_edition ?? '',
     agentStatus,
   };
+}
+
+/**
+ * Read what this worker may edit here.
+ *
+ * The wrapper is optional and usually absent, so its absence is the expected
+ * path rather than an error: SUSER_SNAME() and IS_SRVROLEMEMBER are always
+ * available, and everything else degrades to "not installed".
+ */
+export async function readJobWriteMode(pool: sql.ConnectionPool): Promise<JobWriteMode> {
+  const base = await pool.request().query<{ login_name: string; is_sysadmin: number }>(
+    `SELECT SUSER_SNAME() AS login_name,
+            ISNULL(IS_SRVROLEMEMBER('sysadmin'), 0) AS is_sysadmin`,
+  );
+  const row = base.recordset[0];
+  const mode: JobWriteMode = {
+    sqlLoginName: row?.login_name ?? '',
+    isSysadmin: row?.is_sysadmin === 1,
+    wrapperInstalled: false,
+    wrapperAllowsDashboardManagement: false,
+    allowlistedJobs: [],
+  };
+
+  try {
+    // Two result sets: one status row, then the allowlist.
+    const status = await pool.request().query<{
+      wrapper_installed: number;
+      dashboard_managed: number;
+    }>('EXEC msdb.dbo.rsagent_write_status');
+
+    mode.wrapperInstalled = status.recordset[0]?.wrapper_installed === 1;
+    mode.wrapperAllowsDashboardManagement = status.recordset[0]?.dashboard_managed === 1;
+
+    const allowlist = (status as unknown as { recordsets?: { job_name: string }[][] }).recordsets;
+    mode.allowlistedJobs = (allowlist?.[1] ?? []).map((r) => r.job_name);
+  } catch {
+    // Not installed, or the login cannot see it. Either way there is no wrapper
+    // to use, which is the default state and not worth logging on every poll.
+  }
+
+  return mode;
 }
 
 // ---------------------------------------------------------------------------

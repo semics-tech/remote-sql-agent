@@ -12,6 +12,8 @@ import {
   reorderStep,
   toHumaneSchedule,
   updateStep,
+  canEditJob,
+  explainJobWriteBlock,
 } from '@remote-sql-agent/protocol/browser';
 import {
   awaitCommandOutcome,
@@ -74,7 +76,22 @@ export function JobEditor({
   const { can } = useAuth();
 
   const workerCanWrite = capabilities.data?.workerCapabilities.includes('job.write') ?? false;
-  const editable = workerCanWrite && can('job.write');
+
+  // Three separate questions, and conflating them is why a save could be
+  // offered and then fail: does this product grant it, does the operator's role
+  // allow it, and will SQL Server accept it. The third is the one nothing used
+  // to ask.
+  const writeMode = capabilities.data?.jobWriteMode;
+  const jobIdentity = { name: original?.name ?? '', ownerLoginName: job.ownerLoginName ?? null };
+  const sqlWillAllow = writeMode ? canEditJob(writeMode, jobIdentity) : true;
+  const sqlBlockReason = writeMode ? explainJobWriteBlock(writeMode, jobIdentity) : null;
+  const canManageAllowlist =
+    (writeMode?.wrapperInstalled ?? false) &&
+    (writeMode?.wrapperAllowsDashboardManagement ?? false) &&
+    workerCanWrite &&
+    can('job.write');
+
+  const editable = workerCanWrite && can('job.write') && sqlWillAllow;
   const needsApproval = capabilities.data?.approvalRequiredForJobWrite ?? false;
 
   // Structural comparison rather than a dirty flag per field: a step moved and
@@ -149,6 +166,31 @@ export function JobEditor({
     }
   }
 
+  async function allowWrites(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await actions.setWriteAllowed(true);
+      // Same reasoning as save: issuing the command is not the same as msdb
+      // accepting it. An instance installed as DBA-managed refuses this, and
+      // saying "done" before hearing back would be the bug we just fixed.
+      const outcome = await awaitCommandOutcome(result.id);
+      if (outcome && outcome.state !== 'succeeded') {
+        setError(explainCommandFailure(outcome));
+        return;
+      }
+      onSaved(
+        outcome
+          ? 'This job is now editable from here.'
+          : 'Requested. The worker has not confirmed it yet — track it in Commands.',
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not change this.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function discard(): void {
     setDraft(structuredClone(original!));
     setWarnings([]);
@@ -199,10 +241,37 @@ export function JobEditor({
 
       {!editable ? (
         <div className="notice">
-          {workerCanWrite
-            ? 'Your role does not allow editing jobs, so this is read-only.'
-            : `Worker ${capabilities.data?.hostName ?? ''} is not permitted to write, so this is read-only. ` +
-              'Grant it job.write in Administration and raise its local maxCapability.'}
+          {!workerCanWrite ? (
+            `Worker ${capabilities.data?.hostName ?? ''} is not permitted to write, so this is read-only. ` +
+            'Grant it job.write in Administration and raise its local maxCapability.'
+          ) : !can('job.write') ? (
+            'Your role does not allow editing jobs, so this is read-only.'
+          ) : (
+            // SQL Server, not us. Worth saying plainly, because every other
+            // read-only reason here is something an administrator of this
+            // product can change and this one is not.
+            <div>
+              <div>{sqlBlockReason}</div>
+              {canManageAllowlist ? (
+                <button
+                  className="action"
+                  style={{ marginTop: 8 }}
+                  disabled={busy}
+                  onClick={() => void allowWrites()}
+                >
+                  Put this job under central management
+                </button>
+              ) : !writeMode?.wrapperInstalled ? (
+                <a
+                  className="action"
+                  style={{ marginTop: 8, display: 'inline-block' }}
+                  href="/sql/worker-write-wrapper.sql"
+                >
+                  Get the setup script
+                </a>
+              ) : null}
+            </div>
+          )}
         </div>
       ) : null}
 

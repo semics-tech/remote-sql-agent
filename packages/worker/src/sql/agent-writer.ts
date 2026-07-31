@@ -444,3 +444,31 @@ export async function deleteOperator(pool: sql.ConnectionPool, name: string): Pr
     wrapSqlError(err);
   }
 }
+
+/**
+ * Put a job under central management, or take it out again.
+ *
+ * Goes through the wrapper's own procedure rather than writing to the table,
+ * so an instance installed as DBA-managed refuses this from msdb itself. The
+ * control plane cannot argue with that: the posture lives on the SQL host,
+ * which is the same reason `maxCapability` lives in worker.yaml.
+ *
+ * Fails plainly when the wrapper is not installed at all — "could not find
+ * stored procedure" is accurate, and the dashboard only offers this where the
+ * worker has reported the wrapper present.
+ */
+export async function setJobWriteAllowed(
+  pool: sql.ConnectionPool,
+  jobName: string,
+  allowed: boolean,
+): Promise<void> {
+  try {
+    await pool
+      .request()
+      .input('job_name', sql.NVarChar(128), jobName)
+      .input('allowed', sql.Bit, allowed ? 1 : 0)
+      .execute('msdb.dbo.rsagent_set_job_write_allowed');
+  } catch (err) {
+    wrapSqlError(err);
+  }
+}

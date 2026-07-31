@@ -76,6 +76,12 @@ export const COMMAND_CAPABILITY = {
   deleteSchedule: 'schedule.write',
   upsertOperator: 'operator.write',
   deleteOperator: 'operator.write',
+  // Deliberately job.write and not a capability of its own. Adding a job to the
+  // write allowlist is exactly as consequential as editing it — it is the act
+  // that makes editing possible — so anyone who could do one could already do
+  // the other, and a separate capability would only be a second switch to
+  // forget to turn off.
+  setJobWriteAllowed: 'job.write',
 } as const satisfies Record<string, Capability>;
 
 export type CommandKind = keyof typeof COMMAND_CAPABILITY;

@@ -71,6 +71,35 @@ message InstanceInfo {
   string sql_edition = 3;
   string agent_status = 4; // running | stopped | unknown
   string server_name = 5;  // @@SERVERNAME as reported by the instance
+  // What this worker can actually edit here. Reported rather than configured:
+  // under Windows authentication the effective login is the service account,
+  // which no config file knows.
+  JobWriteStatus write_mode = 6;
+}
+
+// Whether a job can be edited is decided by SQL Server, not by us: sp_update_job
+// refuses to touch a job owned by another login unless the caller is sysadmin.
+// Without this the dashboard offers an edit that always fails, and the operator
+// finds out from a raw SQL error after writing it.
+//
+// Enable, disable, start and stop are unaffected and always work — SQL Server
+// carves those out for SQLAgentOperatorRole regardless of ownership.
+message JobWriteStatus {
+  // SUSER_SNAME() as the worker sees it. A job whose owner matches this is
+  // editable whatever else is true.
+  string sql_login_name = 1;
+  // IS_SRVROLEMEMBER('sysadmin'). Everything is editable if this is set, and
+  // the dashboard says so plainly rather than implying least privilege.
+  bool is_sysadmin = 2;
+  // deploy/sql/worker-write-wrapper.sql is installed and callable.
+  bool wrapper_installed = 3;
+  // The wrapper was installed allowing the allowlist to be managed from here.
+  // When false a DBA maintains it directly and the dashboard shows the SQL
+  // rather than offering a button that would fail.
+  bool wrapper_allows_dashboard_management = 4;
+  // Job names the wrapper will currently permit. Empty is the default and means
+  // nothing is editable through it yet.
+  repeated string allowlisted_jobs = 5;
 }
 
 // A full object graph for one instance. Sent on (re)connect. Chunked: a snapshot
@@ -274,7 +303,23 @@ message Command {
     DeleteSchedule delete_schedule = 16;
     UpsertOperator upsert_operator = 17;
     DeleteOperator delete_operator = 18;
+    SetJobWriteAllowed set_job_write_allowed = 19;
   }
+}
+
+// Add or remove a job from the write wrapper's allowlist in msdb.
+//
+// Carries job_name rather than job_uuid: the allowlist is keyed on name because
+// that is what sp_update_job takes and what a DBA reads when auditing it.
+//
+// Refused by the worker when the wrapper was installed without dashboard
+// management, so a site that wants a DBA to hold that key keeps it — the
+// control plane cannot grant itself edit rights on an instance configured to
+// refuse them.
+message SetJobWriteAllowed {
+  string job_uuid = 1;
+  string job_name = 2;
+  bool allowed = 3;
 }
 
 message ToggleJob {

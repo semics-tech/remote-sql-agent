@@ -81,6 +81,47 @@ export interface InstanceInfo {
   agentStatus: string;
   /** @@SERVERNAME as reported by the instance */
   serverName: string;
+  /**
+   * What this worker can actually edit here. Reported rather than configured:
+   * under Windows authentication the effective login is the service account,
+   * which no config file knows.
+   */
+  writeMode?: JobWriteStatus | undefined;
+}
+
+/**
+ * Whether a job can be edited is decided by SQL Server, not by us: sp_update_job
+ * refuses to touch a job owned by another login unless the caller is sysadmin.
+ * Without this the dashboard offers an edit that always fails, and the operator
+ * finds out from a raw SQL error after writing it.
+ *
+ * Enable, disable, start and stop are unaffected and always work — SQL Server
+ * carves those out for SQLAgentOperatorRole regardless of ownership.
+ */
+export interface JobWriteStatus {
+  /**
+   * SUSER_SNAME() as the worker sees it. A job whose owner matches this is
+   * editable whatever else is true.
+   */
+  sqlLoginName: string;
+  /**
+   * IS_SRVROLEMEMBER('sysadmin'). Everything is editable if this is set, and
+   * the dashboard says so plainly rather than implying least privilege.
+   */
+  isSysadmin: boolean;
+  /** deploy/sql/worker-write-wrapper.sql is installed and callable. */
+  wrapperInstalled: boolean;
+  /**
+   * The wrapper was installed allowing the allowlist to be managed from here.
+   * When false a DBA maintains it directly and the dashboard shows the SQL
+   * rather than offering a button that would fail.
+   */
+  wrapperAllowsDashboardManagement: boolean;
+  /**
+   * Job names the wrapper will currently permit. Empty is the default and means
+   * nothing is editable through it yet.
+   */
+  allowlistedJobs: string[];
 }
 
 /**
@@ -303,7 +344,25 @@ export interface Command {
     | { $case: "deleteSchedule"; deleteSchedule: DeleteSchedule }
     | { $case: "upsertOperator"; upsertOperator: UpsertOperator }
     | { $case: "deleteOperator"; deleteOperator: DeleteOperator }
+    | { $case: "setJobWriteAllowed"; setJobWriteAllowed: SetJobWriteAllowed }
     | undefined;
+}
+
+/**
+ * Add or remove a job from the write wrapper's allowlist in msdb.
+ *
+ * Carries job_name rather than job_uuid: the allowlist is keyed on name because
+ * that is what sp_update_job takes and what a DBA reads when auditing it.
+ *
+ * Refused by the worker when the wrapper was installed without dashboard
+ * management, so a site that wants a DBA to hold that key keeps it — the
+ * control plane cannot grant itself edit rights on an instance configured to
+ * refuse them.
+ */
+export interface SetJobWriteAllowed {
+  jobUuid: string;
+  jobName: string;
+  allowed: boolean;
 }
 
 export interface ToggleJob {
@@ -943,7 +1002,7 @@ export const InstanceConfigResult: MessageFns<InstanceConfigResult> = {
 };
 
 function createBaseInstanceInfo(): InstanceInfo {
-  return { instanceName: "", sqlVersion: "", sqlEdition: "", agentStatus: "", serverName: "" };
+  return { instanceName: "", sqlVersion: "", sqlEdition: "", agentStatus: "", serverName: "", writeMode: undefined };
 }
 
 export const InstanceInfo: MessageFns<InstanceInfo> = {
@@ -962,6 +1021,9 @@ export const InstanceInfo: MessageFns<InstanceInfo> = {
     }
     if (message.serverName !== "") {
       writer.uint32(42).string(message.serverName);
+    }
+    if (message.writeMode !== undefined) {
+      JobWriteStatus.encode(message.writeMode, writer.uint32(50).fork()).join();
     }
     return writer;
   },
@@ -1013,6 +1075,14 @@ export const InstanceInfo: MessageFns<InstanceInfo> = {
           message.serverName = reader.string();
           continue;
         }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.writeMode = JobWriteStatus.decode(reader, reader.uint32());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -1049,6 +1119,11 @@ export const InstanceInfo: MessageFns<InstanceInfo> = {
         : isSet(object.server_name)
         ? globalThis.String(object.server_name)
         : "",
+      writeMode: isSet(object.writeMode)
+        ? JobWriteStatus.fromJSON(object.writeMode)
+        : isSet(object.write_mode)
+        ? JobWriteStatus.fromJSON(object.write_mode)
+        : undefined,
     };
   },
 
@@ -1069,6 +1144,9 @@ export const InstanceInfo: MessageFns<InstanceInfo> = {
     if (message.serverName !== "") {
       obj.serverName = message.serverName;
     }
+    if (message.writeMode !== undefined) {
+      obj.writeMode = JobWriteStatus.toJSON(message.writeMode);
+    }
     return obj;
   },
 
@@ -1082,6 +1160,159 @@ export const InstanceInfo: MessageFns<InstanceInfo> = {
     message.sqlEdition = object.sqlEdition ?? "";
     message.agentStatus = object.agentStatus ?? "";
     message.serverName = object.serverName ?? "";
+    message.writeMode = (object.writeMode !== undefined && object.writeMode !== null)
+      ? JobWriteStatus.fromPartial(object.writeMode)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseJobWriteStatus(): JobWriteStatus {
+  return {
+    sqlLoginName: "",
+    isSysadmin: false,
+    wrapperInstalled: false,
+    wrapperAllowsDashboardManagement: false,
+    allowlistedJobs: [],
+  };
+}
+
+export const JobWriteStatus: MessageFns<JobWriteStatus> = {
+  encode(message: JobWriteStatus, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.sqlLoginName !== "") {
+      writer.uint32(10).string(message.sqlLoginName);
+    }
+    if (message.isSysadmin !== false) {
+      writer.uint32(16).bool(message.isSysadmin);
+    }
+    if (message.wrapperInstalled !== false) {
+      writer.uint32(24).bool(message.wrapperInstalled);
+    }
+    if (message.wrapperAllowsDashboardManagement !== false) {
+      writer.uint32(32).bool(message.wrapperAllowsDashboardManagement);
+    }
+    for (const v of message.allowlistedJobs) {
+      writer.uint32(42).string(v!);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): JobWriteStatus {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseJobWriteStatus();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.sqlLoginName = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.isSysadmin = reader.bool();
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.wrapperInstalled = reader.bool();
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.wrapperAllowsDashboardManagement = reader.bool();
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.allowlistedJobs.push(reader.string());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): JobWriteStatus {
+    return {
+      sqlLoginName: isSet(object.sqlLoginName)
+        ? globalThis.String(object.sqlLoginName)
+        : isSet(object.sql_login_name)
+        ? globalThis.String(object.sql_login_name)
+        : "",
+      isSysadmin: isSet(object.isSysadmin)
+        ? globalThis.Boolean(object.isSysadmin)
+        : isSet(object.is_sysadmin)
+        ? globalThis.Boolean(object.is_sysadmin)
+        : false,
+      wrapperInstalled: isSet(object.wrapperInstalled)
+        ? globalThis.Boolean(object.wrapperInstalled)
+        : isSet(object.wrapper_installed)
+        ? globalThis.Boolean(object.wrapper_installed)
+        : false,
+      wrapperAllowsDashboardManagement: isSet(object.wrapperAllowsDashboardManagement)
+        ? globalThis.Boolean(object.wrapperAllowsDashboardManagement)
+        : isSet(object.wrapper_allows_dashboard_management)
+        ? globalThis.Boolean(object.wrapper_allows_dashboard_management)
+        : false,
+      allowlistedJobs: globalThis.Array.isArray(object?.allowlistedJobs)
+        ? object.allowlistedJobs.map((e: any) => globalThis.String(e))
+        : globalThis.Array.isArray(object?.allowlisted_jobs)
+        ? object.allowlisted_jobs.map((e: any) => globalThis.String(e))
+        : [],
+    };
+  },
+
+  toJSON(message: JobWriteStatus): unknown {
+    const obj: any = {};
+    if (message.sqlLoginName !== "") {
+      obj.sqlLoginName = message.sqlLoginName;
+    }
+    if (message.isSysadmin !== false) {
+      obj.isSysadmin = message.isSysadmin;
+    }
+    if (message.wrapperInstalled !== false) {
+      obj.wrapperInstalled = message.wrapperInstalled;
+    }
+    if (message.wrapperAllowsDashboardManagement !== false) {
+      obj.wrapperAllowsDashboardManagement = message.wrapperAllowsDashboardManagement;
+    }
+    if (message.allowlistedJobs?.length) {
+      obj.allowlistedJobs = message.allowlistedJobs;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<JobWriteStatus>, I>>(base?: I): JobWriteStatus {
+    return JobWriteStatus.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<JobWriteStatus>, I>>(object: I): JobWriteStatus {
+    const message = createBaseJobWriteStatus();
+    message.sqlLoginName = object.sqlLoginName ?? "";
+    message.isSysadmin = object.isSysadmin ?? false;
+    message.wrapperInstalled = object.wrapperInstalled ?? false;
+    message.wrapperAllowsDashboardManagement = object.wrapperAllowsDashboardManagement ?? false;
+    message.allowlistedJobs = object.allowlistedJobs?.map((e) => e) || [];
     return message;
   },
 };
@@ -3793,6 +4024,9 @@ export const Command: MessageFns<Command> = {
       case "deleteOperator":
         DeleteOperator.encode(message.payload.deleteOperator, writer.uint32(146).fork()).join();
         break;
+      case "setJobWriteAllowed":
+        SetJobWriteAllowed.encode(message.payload.setJobWriteAllowed, writer.uint32(154).fork()).join();
+        break;
     }
     return writer;
   },
@@ -3908,6 +4142,17 @@ export const Command: MessageFns<Command> = {
           message.payload = { $case: "deleteOperator", deleteOperator: DeleteOperator.decode(reader, reader.uint32()) };
           continue;
         }
+        case 19: {
+          if (tag !== 154) {
+            break;
+          }
+
+          message.payload = {
+            $case: "setJobWriteAllowed",
+            setJobWriteAllowed: SetJobWriteAllowed.decode(reader, reader.uint32()),
+          };
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -3967,6 +4212,10 @@ export const Command: MessageFns<Command> = {
         ? { $case: "deleteOperator", deleteOperator: DeleteOperator.fromJSON(object.deleteOperator) }
         : isSet(object.delete_operator)
         ? { $case: "deleteOperator", deleteOperator: DeleteOperator.fromJSON(object.delete_operator) }
+        : isSet(object.setJobWriteAllowed)
+        ? { $case: "setJobWriteAllowed", setJobWriteAllowed: SetJobWriteAllowed.fromJSON(object.setJobWriteAllowed) }
+        : isSet(object.set_job_write_allowed)
+        ? { $case: "setJobWriteAllowed", setJobWriteAllowed: SetJobWriteAllowed.fromJSON(object.set_job_write_allowed) }
         : undefined,
     };
   },
@@ -4003,6 +4252,8 @@ export const Command: MessageFns<Command> = {
       obj.upsertOperator = UpsertOperator.toJSON(message.payload.upsertOperator);
     } else if (message.payload?.$case === "deleteOperator") {
       obj.deleteOperator = DeleteOperator.toJSON(message.payload.deleteOperator);
+    } else if (message.payload?.$case === "setJobWriteAllowed") {
+      obj.setJobWriteAllowed = SetJobWriteAllowed.toJSON(message.payload.setJobWriteAllowed);
     }
     return obj;
   },
@@ -4085,7 +4336,116 @@ export const Command: MessageFns<Command> = {
         }
         break;
       }
+      case "setJobWriteAllowed": {
+        if (object.payload?.setJobWriteAllowed !== undefined && object.payload?.setJobWriteAllowed !== null) {
+          message.payload = {
+            $case: "setJobWriteAllowed",
+            setJobWriteAllowed: SetJobWriteAllowed.fromPartial(object.payload.setJobWriteAllowed),
+          };
+        }
+        break;
+      }
     }
+    return message;
+  },
+};
+
+function createBaseSetJobWriteAllowed(): SetJobWriteAllowed {
+  return { jobUuid: "", jobName: "", allowed: false };
+}
+
+export const SetJobWriteAllowed: MessageFns<SetJobWriteAllowed> = {
+  encode(message: SetJobWriteAllowed, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.jobUuid !== "") {
+      writer.uint32(10).string(message.jobUuid);
+    }
+    if (message.jobName !== "") {
+      writer.uint32(18).string(message.jobName);
+    }
+    if (message.allowed !== false) {
+      writer.uint32(24).bool(message.allowed);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SetJobWriteAllowed {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSetJobWriteAllowed();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.jobUuid = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.jobName = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.allowed = reader.bool();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SetJobWriteAllowed {
+    return {
+      jobUuid: isSet(object.jobUuid)
+        ? globalThis.String(object.jobUuid)
+        : isSet(object.job_uuid)
+        ? globalThis.String(object.job_uuid)
+        : "",
+      jobName: isSet(object.jobName)
+        ? globalThis.String(object.jobName)
+        : isSet(object.job_name)
+        ? globalThis.String(object.job_name)
+        : "",
+      allowed: isSet(object.allowed) ? globalThis.Boolean(object.allowed) : false,
+    };
+  },
+
+  toJSON(message: SetJobWriteAllowed): unknown {
+    const obj: any = {};
+    if (message.jobUuid !== "") {
+      obj.jobUuid = message.jobUuid;
+    }
+    if (message.jobName !== "") {
+      obj.jobName = message.jobName;
+    }
+    if (message.allowed !== false) {
+      obj.allowed = message.allowed;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<SetJobWriteAllowed>, I>>(base?: I): SetJobWriteAllowed {
+    return SetJobWriteAllowed.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<SetJobWriteAllowed>, I>>(object: I): SetJobWriteAllowed {
+    const message = createBaseSetJobWriteAllowed();
+    message.jobUuid = object.jobUuid ?? "";
+    message.jobName = object.jobName ?? "";
+    message.allowed = object.allowed ?? false;
     return message;
   },
 };
