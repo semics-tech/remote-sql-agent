@@ -242,6 +242,26 @@ export function estateJobs(
   };
 }
 
+/** The `/api/environment-grants` envelope. */
+export function environmentGrants(overrides: Record<string, unknown> = {}) {
+  return {
+    grants: [
+      {
+        id: '55555555-5555-4555-8555-555555555555',
+        subjectKind: 'entra_group',
+        subjectKey: '11111111-2222-3333-4444-555555555555',
+        subjectLabel: 'production DBAs',
+        environmentTag: 'production',
+        role: 'Editor',
+        createdAt: '2026-07-01T09:00:00.000Z',
+      },
+    ],
+    environments: ['production', 'uat'],
+    untaggedInstances: [],
+    ...overrides,
+  };
+}
+
 /** Default responses, by pathname. Each test overrides what it cares about. */
 export function defaultRoutes(): Record<string, unknown> {
   return {
@@ -250,6 +270,7 @@ export function defaultRoutes(): Record<string, unknown> {
     '/api/overview': overview(),
     '/api/jobs': estateJobs(),
     '/api/estate': { instances: [] },
+    '/api/environment-grants': environmentGrants(),
     '/api/commands': { commands: [], pendingApproval: 0 },
     [`/api/instances/${INSTANCE_ID}/jobs/${JOB_UUID}`]: jobDetail(),
     [`/api/instances/${INSTANCE_ID}/jobs/${JOB_UUID}/history`]: { runs: [] },

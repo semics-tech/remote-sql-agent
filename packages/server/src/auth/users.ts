@@ -4,6 +4,7 @@ import { users } from '../db/schema.js';
 import { hashPassword, verifyPassword, generateSecret } from './passwords.js';
 import type { EntraProfile } from './entra.js';
 import type { AuthenticatedUser } from './sessions.js';
+import { membershipKey } from './environments.js';
 import type { Role } from '@remote-sql-agent/protocol';
 import type { Logger } from 'pino';
 
@@ -42,6 +43,8 @@ export async function authenticateLocal(
     role: row.role as Role,
     identityProvider: row.identityProvider,
     roleFromIdp: row.roleFromIdp,
+    identityGroups: row.identityGroups,
+    identityGroupsTruncated: row.identityGroupsTruncated,
   };
 }
 
@@ -67,6 +70,13 @@ export async function upsertEntraUser(
   }
 
   const now = new Date();
+  // Both kinds of membership in one namespaced list, so a group object id and
+  // an app role of the same name cannot collide in a grant lookup.
+  const identityGroups = [
+    ...profile.groupIds.map((id) => membershipKey('entra_group', id)),
+    ...profile.appRoles.map((name) => membershipKey('app_role', name)),
+  ];
+
   const [row] = await db
     .insert(users)
     .values({
@@ -78,6 +88,8 @@ export async function upsertEntraUser(
       identityProvider: 'entra',
       externalId: profile.objectId,
       roleFromIdp: true,
+      identityGroups,
+      identityGroupsTruncated: profile.groupsTruncated,
       lastLoginAt: now,
     })
     .onConflictDoUpdate({
@@ -88,6 +100,11 @@ export async function upsertEntraUser(
         email: profile.email,
         role: profile.role,
         roleFromIdp: true,
+        // Replaced wholesale rather than merged: removing somebody from a group
+        // in Entra has to remove their access here too, and a merge would make
+        // membership permanent once granted.
+        identityGroups,
+        identityGroupsTruncated: profile.groupsTruncated,
         lastLoginAt: now,
       },
     })
@@ -108,6 +125,8 @@ export async function upsertEntraUser(
     role: row.role as Role,
     identityProvider: row.identityProvider,
     roleFromIdp: row.roleFromIdp,
+    identityGroups: row.identityGroups,
+    identityGroupsTruncated: row.identityGroupsTruncated,
   };
 }
 

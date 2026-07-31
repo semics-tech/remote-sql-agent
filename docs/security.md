@@ -22,6 +22,7 @@ The build in this repository implements milestones M0–M3 of the architecture s
 | TLS on the worker hub | §6.2 | **Implemented**; the control plane refuses to start without it unless explicitly overridden. |
 | Dashboard authentication | §6.5 | **Implemented**: local argon2id accounts and/or Entra OIDC with app-role mapping. |
 | Server-side RBAC on every route | §6.5 | **Implemented.** Every route declares a permission; there is no unguarded data route. |
+| Environment-scoped write permissions | §6.5 | **Implemented.** Grants add a role within one environment tag. Additive only — see below. |
 | CSRF protection | §6.5 | **Implemented** (double-submit token bound to the session). |
 | Automatic certificate rotation at 2/3 lifetime | §6.2 | **Not implemented.** Rotation is manual. |
 | Approval workflow | §6.4 | **Not implemented.** M4, along with the write path. |
@@ -41,6 +42,86 @@ The build in this repository implements milestones M0–M3 of the architecture s
 - [ ] Each worker's `maxCapability` set to the minimum that site needs (default `readOnly`)
 - [ ] Postgres on an encrypted volume, and backups encrypted
 - [ ] Audit export configured to a system outside this host
+
+## Environment grants: what they do, and what they deliberately do not
+
+Every user has a **base role** that applies to the whole estate. An
+**environment grant** adds a role on top of it for instances carrying one
+environment tag. The shape most estates want is a base role of `Viewer` plus a
+grant of `Editor` on `production` to whoever runs production: reads every
+server, writes one environment.
+
+Grants are stored in `environment_grants` and administered under
+**Administration → Access**.
+
+### Grants add. They never subtract.
+
+There is no expressible grant that removes access, so no combination of rows in
+that table can leave anybody with less than their base role. Two consequences
+follow, and both are load-bearing:
+
+- **Nothing here hides anything.** Read routes are not environment-scoped at
+  all. If a user can list instances, they can list every instance; if they can
+  read a job, they can read every job, including its step bodies and its run
+  history. An administrator who believes these rows keep production *invisible*
+  to the rest of the organisation has drawn the wrong conclusion. Use separate
+  control planes if you need that.
+- **The worst case of a mistake in this table is over-permission in one
+  environment, never an outage.** That is a deliberate trade: over-permission is
+  visible in the audit trail, and an estate that has locked itself out of its
+  own SQL Servers at 02:00 is not.
+
+Adding a subtractive dimension later is not a small change. It would mean
+auditing every read path in the product for leaks — cross-estate search, the
+job list, notification payloads, `/metrics`, and the audit log itself — which is
+a different piece of work with a different risk profile.
+
+### An untagged instance is reachable by base role only
+
+A grant for `production` does **not** apply to an instance with no environment
+tag. An instance enrolled before anybody set up tagging, or one where the tag
+was mistyped, must not silently inherit production's write permissions.
+
+The cost is that tagging is load-bearing: an untagged instance is writable only
+by whoever already holds the role estate-wide. The Access screen lists untagged
+instances for exactly this reason — from the operator's side, "my grant does
+nothing here" is indistinguishable from a permissions bug. Use the environment
+tag `*` for a grant that should reach everything, including untagged instances.
+
+Tags are matched **ignoring case** and surrounding whitespace, so `Production`
+on the instance satisfies a grant written for `production`.
+
+### Estate-wide permissions are never conferred by a grant
+
+`user.admin`, `worker.admin` and `audit.read` sit behind routes that consult the
+base role only. An `Admin` grant on `production` does not become the ability to
+create users, enrol workers or write more grants — a grant that could grant
+would be self-extending. The separation is which guard each route uses
+(`requirePermission` versus `requireInstancePermission` in
+`packages/server/src/auth/rbac.ts`), and there is a test that fails if an
+`Admin` grant on `*` ever reaches an estate-wide route.
+
+### Group membership is a snapshot taken at sign-in
+
+For Entra users, the `groups` and `roles` claims are captured on each sign-in and
+stored on the user row. Removing somebody from a group in Entra therefore takes
+effect at their next sign-in, or when their session expires — whichever comes
+first. That bound is the session TTL, and it is the same bound the base role
+already has. To revoke immediately, disable the user or delete the grant; both
+take effect on the next request.
+
+**The groups overage claim.** Past roughly 200 group memberships, Entra stops
+listing `groups` in the token and emits a `_claim_names` / `_claim_sources` pair
+pointing at Microsoft Graph instead. This product does not follow that link:
+doing so needs a Graph permission, a second network call on the sign-in path,
+and a failure mode where signing in depends on Graph being reachable. Such a
+user gets *fewer* grants than intended — the safe direction — and the condition
+is recorded on the user row so it can be reported rather than guessed at.
+
+For Entra to emit `groups` at all, the app registration needs
+`groupMembershipClaims` configured. Grants are keyed on the group **object id**,
+not its display name: a display name can be changed in Entra and then reused by
+a different group, and a grant keyed on one would follow the name.
 
 ## What a worker can and cannot do
 

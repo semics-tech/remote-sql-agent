@@ -33,6 +33,20 @@ export interface EntraProfile {
   email: string | null;
   role: Role | null;
   appRoles: string[];
+  /** Entra security group object ids from the `groups` claim. */
+  groupIds: string[];
+  /**
+   * True when Entra declined to enumerate `groups`.
+   *
+   * Past roughly 200 group memberships the token carries `_claim_names` and
+   * `_claim_sources` pointing at a Graph endpoint instead of the list. Nothing
+   * here follows that link — doing so needs a Graph permission, a second
+   * network call on the sign-in path, and a failure mode where sign-in depends
+   * on Graph being up. The consequence is that such a user gets *fewer*
+   * environment grants than intended, which is the safe direction; the flag
+   * exists so the administrator can be told rather than left guessing.
+   */
+  groupsTruncated: boolean;
 }
 
 export interface PendingAuth {
@@ -175,6 +189,9 @@ export class EntraClient {
       email?: string;
       upn?: string;
       roles?: string[];
+      groups?: string[];
+      _claim_names?: Record<string, string>;
+      _claim_sources?: Record<string, unknown>;
     };
 
     const objectId = claims.oid;
@@ -182,6 +199,14 @@ export class EntraClient {
 
     const appRoles = claims.roles ?? [];
     const role = this.#resolveRole(appRoles);
+
+    // The overage indicator is `_claim_names.groups`, not the absence of
+    // `groups`: a tenant that simply does not emit the claim, and a user in
+    // 300 groups, are different situations and only the second is a truncation.
+    const groupsTruncated = claims._claim_names?.groups !== undefined;
+    const groupIds = Array.isArray(claims.groups)
+      ? claims.groups.filter((g): g is string => typeof g === 'string')
+      : [];
 
     return {
       objectId,
@@ -191,6 +216,8 @@ export class EntraClient {
       email: claims.email ?? claims.preferred_username ?? null,
       role,
       appRoles,
+      groupIds,
+      groupsTruncated,
     };
   }
 

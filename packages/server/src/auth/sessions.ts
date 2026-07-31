@@ -24,6 +24,15 @@ export interface AuthenticatedUser {
   role: Role;
   identityProvider: string;
   roleFromIdp: boolean;
+  /**
+   * `entra_group:<oid>` / `app_role:<name>`, as captured at the user's last
+   * sign-in. Read from the users row on every request rather than baked into
+   * the session, so an administrator who corrects a membership does not have to
+   * wait for the session to expire.
+   */
+  identityGroups: string[];
+  /** Entra would not enumerate the groups claim; see the schema comment. */
+  identityGroupsTruncated: boolean;
 }
 
 export interface CreatedSession {
@@ -75,6 +84,8 @@ export async function resolveSession(
       role: users.role,
       identityProvider: users.identityProvider,
       roleFromIdp: users.roleFromIdp,
+      identityGroups: users.identityGroups,
+      identityGroupsTruncated: users.identityGroupsTruncated,
       disabledAt: users.disabledAt,
     })
     .from(sessions)
@@ -102,6 +113,8 @@ export async function resolveSession(
       role: row.role as Role,
       identityProvider: row.identityProvider,
       roleFromIdp: row.roleFromIdp,
+      identityGroups: row.identityGroups,
+      identityGroupsTruncated: row.identityGroupsTruncated,
     },
   };
 }

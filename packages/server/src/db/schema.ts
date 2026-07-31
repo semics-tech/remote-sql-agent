@@ -12,6 +12,7 @@ import {
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
+import type { Role } from '@remote-sql-agent/protocol';
 
 /**
  * Control plane schema (§8).
@@ -358,6 +359,28 @@ export const users = pgTable(
      * assignment; such roles are re-synced on every sign-in and must not be
      * edited in the dashboard, or the next sign-in would silently revert it. */
     roleFromIdp: boolean('role_from_idp').notNull().default(false),
+    /**
+     * What this user is a member of, as `entra_group:<oid>` and
+     * `app_role:<name>`, captured at each sign-in. Environment grants are
+     * matched against these (see `environmentGrants`).
+     *
+     * A snapshot, not a live lookup: it is refreshed on sign-in, so removing
+     * somebody from a group in Entra takes effect at their next sign-in or when
+     * their session expires, whichever comes first. That bound is the session
+     * TTL, and it is the same bound the base role already has.
+     */
+    identityGroups: jsonb('identity_groups').$type<string[]>().notNull().default([]),
+    /**
+     * Set when Entra refused to enumerate the groups claim.
+     *
+     * Past roughly 200 groups Entra replaces `groups` with a `_claim_names` /
+     * `_claim_sources` pair pointing at the Graph API rather than listing them.
+     * We do not follow it, so `identityGroups` is incomplete and the user gets
+     * *less* access than intended — which is the safe direction, but silently
+     * having fewer permissions than the administrator granted is impossible to
+     * diagnose from the dashboard. This flag is what lets it be reported.
+     */
+    identityGroupsTruncated: boolean('identity_groups_truncated').notNull().default(false),
     disabledAt: timestamp('disabled_at', { withTimezone: true }),
     lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -365,6 +388,72 @@ export const users = pgTable(
   (t) => [
     uniqueIndex('users_username_key').on(t.username),
     uniqueIndex('users_external_id_key').on(t.externalId),
+  ],
+);
+
+/**
+ * Environment-scoped permission grants (§6.5, extended).
+ *
+ * The base role on `users` applies estate-wide. A grant *adds* a role within
+ * one environment on top of it, and can never take anything away — so the shape
+ * an estate actually wants is a base role of Viewer plus a grant of Editor on
+ * `production` to whoever runs production. That reads all servers and writes
+ * only one environment, which is what "production_admin" means to a DBA.
+ *
+ * Additive-only is a deliberate design constraint, not a simplification:
+ *
+ *  - There is no way to write a grant that removes access, so no combination of
+ *    grants can produce less access than the base role. That makes the
+ *    worst case of a mistake in this table "somebody has more access in one
+ *    environment than intended", never "the estate is unreadable" — and the
+ *    first is visible in the audit trail while the second is an outage.
+ *  - Read routes are therefore not scoped at all. Nothing here hides an
+ *    instance, a job or a run from anybody. Adding a subtractive dimension
+ *    later would mean auditing every read path in the product for leaks
+ *    (search results, notification payloads, metrics, the audit log itself),
+ *    which is a different piece of work with a different risk profile.
+ *
+ * The subject is deliberately *not* a foreign key to `users`. A grant is
+ * usually written against an Entra group that nobody has signed in from yet;
+ * requiring the user to exist first would mean the grant could only be created
+ * after the first person it applies to had already been let in without it.
+ */
+export const grantSubjectKind = ['entra_group', 'app_role', 'user'] as const;
+export type GrantSubjectKind = (typeof grantSubjectKind)[number];
+
+/** `environmentTag` value meaning every environment, including untagged ones. */
+export const ALL_ENVIRONMENTS = '*';
+
+export const environmentGrants = pgTable(
+  'environment_grants',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    subjectKind: text('subject_kind').$type<GrantSubjectKind>().notNull(),
+    /**
+     * The Entra group's object id, the Entra app role name, or a `users.id`.
+     *
+     * Group *object ids* rather than display names: a display name in Entra can
+     * be changed, and can be reused by a different group afterwards, so a grant
+     * keyed on one silently follows the name to whoever holds it next.
+     */
+    subjectKey: text('subject_key').notNull(),
+    /** Display name for the admin screen, so it is not a wall of GUIDs. Advisory. */
+    subjectLabel: text('subject_label'),
+    /** An `instances.environment_tag`, matched case-insensitively, or `*`. */
+    environmentTag: text('environment_tag').notNull(),
+    role: text('role').$type<Role>().notNull(),
+    createdBy: uuid('created_by'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // One grant per subject per environment: two rows would mean two answers to
+    // "what can they do here", and the resolver would have to pick.
+    uniqueIndex('environment_grants_subject_env_key').on(
+      t.subjectKind,
+      t.subjectKey,
+      t.environmentTag,
+    ),
+    index('environment_grants_subject_idx').on(t.subjectKind, t.subjectKey),
   ],
 );
 
