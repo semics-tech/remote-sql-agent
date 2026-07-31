@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { mockApi, overview, panel, runningJob } from './fixtures.js';
+import { estateJob, estateJobs, mockApi, overview, panel, runningJob } from './fixtures.js';
 
 /**
  * The overview's running table is the most upgrade-fragile thing in the
@@ -102,5 +102,84 @@ test.describe('overview: running now', () => {
     await page.goto('/');
 
     await expect(page.getByText('Nothing running')).toBeVisible();
+  });
+});
+
+/**
+ * The all-jobs panel.
+ *
+ * Two things here can only be proven in a browser. The panel must not fetch
+ * until it is opened — an estate's whole job list arriving on every overview
+ * poll is a real cost, and "enabled: false" on the query is easy to lose in a
+ * refactor without anything failing. And the chips have to reach the server as
+ * a status filter rather than being applied client-side, because the counts
+ * come from the server and the two would drift apart the moment the list is
+ * truncated.
+ */
+test.describe('overview: all jobs', () => {
+  test('does not fetch the job list until the panel is opened', async ({ page }) => {
+    const requested: string[] = [];
+    page.on('request', (r) => {
+      const url = new URL(r.url());
+      if (url.pathname === '/api/jobs') requested.push(url.search);
+    });
+
+    await mockApi(page);
+    await page.goto('/');
+    await expect(panel(page, 'Running now')).toBeVisible();
+    expect(requested).toEqual([]);
+
+    await panel(page, /^All jobs/).getByRole('button', { name: 'Show' }).click();
+    await expect(panel(page, /^All jobs/).getByRole('row', { name: /Nightly Maintenance/ })).toBeVisible();
+    expect(requested.length).toBeGreaterThan(0);
+  });
+
+  test('sends the ticked chips to the server as a status filter', async ({ page }) => {
+    await mockApi(page, {
+      routes: {
+        '/api/jobs': estateJobs([
+          estateJob({ facets: ['succeeded'] }),
+          estateJob({ jobUuid: '44444444-4444-4444-8444-444444444444', jobName: 'Log Shipping', lastRunStatus: 0, facets: ['failed'] }),
+        ]),
+      },
+    });
+    await page.goto('/');
+
+    const jobs = panel(page, /^All jobs/);
+    await jobs.getByRole('button', { name: 'Show' }).click();
+
+    const request = page.waitForRequest(
+      (r) => new URL(r.url()).pathname === '/api/jobs' && new URL(r.url()).searchParams.get('status') === 'failed',
+    );
+    await jobs.getByRole('button', { name: /^Failed/ }).click();
+    await request;
+  });
+
+  test('keeps a chip with nothing behind it, showing zero', async ({ page }) => {
+    await mockApi(page);
+    await page.goto('/');
+
+    const jobs = panel(page, /^All jobs/);
+    await jobs.getByRole('button', { name: 'Show' }).click();
+
+    // "0 failed" is frequently the answer someone came for. A chip that
+    // vanished would read as the filter being unavailable rather than as
+    // good news.
+    const failed = jobs.getByRole('button', { name: /^Failed/ });
+    await expect(failed).toBeVisible();
+    await expect(failed).toContainText('0');
+    await expect(failed).toBeDisabled();
+  });
+
+  test('says how many it is showing when the list is capped', async ({ page }) => {
+    await mockApi(page, {
+      routes: { '/api/jobs': estateJobs([estateJob()], { matched: 1200, total: 1200, returned: 1 }) },
+    });
+    await page.goto('/');
+
+    const jobs = panel(page, /^All jobs/);
+    await jobs.getByRole('button', { name: 'Show' }).click();
+
+    await expect(jobs.getByText(/Showing the first 1 of 1200/)).toBeVisible();
   });
 });

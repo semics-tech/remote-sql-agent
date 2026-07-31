@@ -3,6 +3,7 @@ import { useOverview, type FailedRun, type RunningJob, type WorkerHealth } from 
 import { Panel, QueryState, Empty } from '../components.jsx';
 import { formatDateTime, formatDuration, formatRelative } from '../format.js';
 import { liveElapsedSeconds, useTicker } from '../ticker.js';
+import { AllJobs } from './AllJobs.jsx';
 
 /**
  * The operations overview.
@@ -100,6 +101,10 @@ export function Overview() {
             <WorkerTable rows={data!.workers} />
           )}
         </Panel>
+
+        {/* Last, and closed: the four panels above are the urgent reading, and
+            an estate's full job list would push them off the screen. */}
+        <AllJobs />
       </QueryState>
     </div>
   );

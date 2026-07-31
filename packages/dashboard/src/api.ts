@@ -592,6 +592,69 @@ export function useOverview() {
 }
 
 // ---------------------------------------------------------------------------
+// Every job in the estate, filtered
+// ---------------------------------------------------------------------------
+
+/** Kept in the same order the server declares, so the chips read consistently. */
+export const JOB_FACETS = [
+  'running',
+  'longRunning',
+  'failed',
+  'succeeded',
+  'retry',
+  'cancelled',
+  'neverRun',
+  'disabled',
+  'drifted',
+] as const;
+export type JobFacet = (typeof JOB_FACETS)[number];
+
+export interface EstateJob {
+  instanceId: string;
+  instanceName: string;
+  hostName: string;
+  environmentTag: string | null;
+  jobUuid: string;
+  jobName: string;
+  enabled: boolean;
+  categoryName: string | null;
+  ownerLoginName: string | null;
+  lastRunStatus: number | null;
+  lastRunAt: string | null;
+  lastRunDurationSeconds: number | null;
+  nextRunAt: string | null;
+  elapsedSeconds: number | null;
+  averageSeconds: number | null;
+  facets: JobFacet[];
+}
+
+export interface EstateJobs {
+  jobs: EstateJob[];
+  counts: Record<JobFacet, number>;
+  total: number;
+  matched: number;
+  returned: number;
+  truncated: boolean;
+}
+
+export function useEstateJobs(facets: readonly JobFacet[], filter: string, enabled = true) {
+  // Sorted so ticking the same two chips in either order is one cache entry
+  // rather than two, and one request rather than two.
+  const status = [...facets].sort().join(',');
+  const params = new URLSearchParams();
+  if (status) params.set('status', status);
+  if (filter.trim()) params.set('filter', filter.trim());
+  const query = params.toString();
+
+  return useQuery({
+    queryKey: ['estate-jobs', status, filter.trim()],
+    queryFn: () => get<EstateJobs>(`/api/jobs${query ? `?${query}` : ''}`),
+    refetchInterval: LIVE_REFRESH_MS,
+    enabled,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Job statistics
 // ---------------------------------------------------------------------------
 
