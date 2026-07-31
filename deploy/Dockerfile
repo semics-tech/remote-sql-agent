@@ -23,7 +23,8 @@ COPY tests/integration/package.json  tests/integration/
 # No build toolchain. This stage used to install python3 and build-essential
 # purely so better-sqlite3 could compile on arm64, where no prebuilt binary
 # matched. The worker's outbox now uses the runtime's own node:sqlite, so
-# nothing in the image imports a native module.
+# nothing left in the image needs *compiling* — argon2 is still native, but it
+# ships prebuilds for both architectures we publish and never hits a compiler.
 #
 # better-sqlite3 is still *downloaded* — drizzle-orm lists it as an optional
 # peer and auto-install-peers pulls it in — but it is off the

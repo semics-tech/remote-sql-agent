@@ -1,13 +1,28 @@
 # Remote SQL Agent control plane — production deployment.
 #
-#   cp .env.example .env      # then edit it
+# No checkout required. On a bare host with Docker:
+#
+#   curl -fsSLO https://raw.githubusercontent.com/semics-tech/remote-sql-agent/main/deploy/docker-compose.yml
+#   curl -fsSLO https://raw.githubusercontent.com/semics-tech/remote-sql-agent/main/deploy/Caddyfile
+#   curl -fsSL  https://raw.githubusercontent.com/semics-tech/remote-sql-agent/main/deploy/.env.example -o .env
+#   # edit .env, then:
 #   docker compose up -d
 #
-# One container plus Postgres. The dashboard is served by the API process.
+# One container plus Postgres, both pulled. The dashboard is served by the API
+# process, so there is nothing else to run.
 #
 # Ports: 8080 is the dashboard and REST API, 8443 is the worker hub. Workers
 # dial *out* to 8443, so that is the only port that needs to be reachable from
 # the SQL Server network segments — and nothing needs to reach the workers.
+#
+# To terminate HTTPS here as well, with a certificate obtained and renewed
+# automatically:
+#
+#   docker compose --profile tls up -d
+#
+# That needs RSAGENT_DOMAIN set, ports 80 and 443 reachable, and — so the
+# dashboard is not also served insecurely on a second origin —
+# RSAGENT_HTTP_BIND=127.0.0.1. See .env.example and docs/deployment.md.
 
 name: rsagent
 
@@ -33,10 +48,14 @@ services:
       - '5432'
 
   server:
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile
-    image: ghcr.io/${GITHUB_REPOSITORY:-semics-tech/remote-sql-agent}/control-plane:${RSAGENT_VERSION:-latest}
+    # Pulled, never built. This file used to carry a `build:` stanza pointing at
+    # `..`, which quietly made a git checkout a prerequisite for deploying — so
+    # standing up a control plane meant cloning the whole repository onto a
+    # production host and compiling there. The published image is the artefact.
+    #
+    # ghcr.io/semics-tech/remote-sql-agent/control-plane is the same image at
+    # the same digest if you prefer GitHub's registry.
+    image: ${RSAGENT_IMAGE:-techsemics/remote-sql-agent}:${RSAGENT_VERSION:-latest}
     restart: unless-stopped
     depends_on:
       postgres:
@@ -47,6 +66,10 @@ services:
       RSAGENT_LOG_LEVEL: ${RSAGENT_LOG_LEVEL:-info}
       # 0 unless something terminates TLS in front of this. See .env.example.
       RSAGENT_TRUSTED_PROXY_HOPS: ${RSAGENT_TRUSTED_PROXY_HOPS:-0}
+      # Only needed when the hub is not reachable at RSAGENT_PUBLIC_URL's host
+      # on 8443 — including when RSAGENT_GRPC_PORT below remaps the published
+      # port, which the container never sees.
+      RSAGENT_HUB_ADVERTISED_ADDRESS: ${RSAGENT_HUB_ADVERTISED_ADDRESS:-}
 
       # --- Dashboard identity (docs/authentication.md §1) ---
       RSAGENT_AUTH_MODE: ${RSAGENT_AUTH_MODE:-local}
@@ -73,9 +96,46 @@ services:
       # refuses to start, because in token mode TLS is the only thing keeping
       # worker API keys off the wire.
       - ${RSAGENT_TLS_DIR:-./tls}:/etc/rsagent/tls:ro
+    # Host side only — the container binds 8080 and 8443 regardless. Remapping
+    # the hub here does not change the address the dashboard hands out, so set
+    # RSAGENT_HUB_ADVERTISED_ADDRESS to match if you do.
+    #
+    # RSAGENT_HTTP_BIND exists for the `tls` profile: set it to 127.0.0.1 so the
+    # dashboard is reachable only through Caddy. Leaving it open would serve the
+    # same dashboard over plain HTTP on a second origin, where the browser
+    # refuses to encrypt SQL credentials and the field just disables itself.
     ports:
-      - '${RSAGENT_HTTP_PORT:-8080}:8080'
+      - '${RSAGENT_HTTP_BIND:-0.0.0.0}:${RSAGENT_HTTP_PORT:-8080}:8080'
       - '${RSAGENT_GRPC_PORT:-8443}:8443'
+
+  # Only started by `docker compose --profile tls up -d`.
+  caddy:
+    image: caddy:2-alpine
+    profiles: ['tls']
+    restart: unless-stopped
+    depends_on:
+      - server
+    environment:
+      # Not `:?` — Compose interpolates every service whether its profile is
+      # active or not, so a required-variable marker here would break plain
+      # `docker compose up -d` for everyone not using this profile.
+      #
+      # Left unset, Caddy refuses to start, but says `unrecognized global
+      # option: encode` rather than anything about a domain: an empty site
+      # address turns the block into a global options block, and the first
+      # directive inside it is what it complains about. Set RSAGENT_DOMAIN.
+      RSAGENT_DOMAIN: ${RSAGENT_DOMAIN:-}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates and ACME account keys. Losing this volume is not fatal but
+      # means re-issuing on next start, which counts against rate limits.
+      - caddy-data:/data
+      - caddy-config:/config
+    ports:
+      - '80:80'
+      - '443:443'
 
 volumes:
   pgdata:
+  caddy-data:
+  caddy-config:

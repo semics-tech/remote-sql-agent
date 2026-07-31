@@ -1099,8 +1099,14 @@ function escapeLabel(value: string): string {
  * Derived from the dashboard's public URL rather than the bind address:
  * `0.0.0.0` is what the process listens on, and pasting it into an install
  * command on a SQL host produces a worker that connects to itself.
+ *
+ * The derivation assumes the hub is reachable on the public URL's host at the
+ * port the process bound, which holds for the Compose deployment and stops
+ * holding the moment something maps ports or gives the hub its own name —
+ * hence RSAGENT_HUB_ADVERTISED_ADDRESS.
  */
-function hubAddress(config: ServerConfig): string {
+export function hubAddress(config: ServerConfig): string {
+  if (config.hubAdvertisedAddress) return config.hubAdvertisedAddress;
   const host = (() => {
     try {
       return new URL(config.publicUrl).hostname;
@@ -1112,6 +1118,29 @@ function hubAddress(config: ServerConfig): string {
 }
 
 /**
+ * Whether the installer can work out the package URL on its own.
+ *
+ * Both bootstrap scripts strip the port off `--control-plane` and fetch the
+ * worker package from `https://<that host>/downloads/...`. That guess is only
+ * right when the hub and the dashboard share a host and the dashboard is on
+ * 443. Everywhere else the install has to be told, or it downloads from a host
+ * that is not serving packages and the operator sees a 404 halfway through
+ * installing on a production SQL host.
+ */
+function installerCanFindPackages(hubAddress: string, publicUrl: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(publicUrl);
+  } catch {
+    return false;
+  }
+  // Everything up to the last colon: the host half, with IPv6 brackets intact.
+  const hubHost = hubAddress.slice(0, hubAddress.lastIndexOf(':'));
+  const onDefaultHttpsPort = url.protocol === 'https:' && (url.port === '' || url.port === '443');
+  return onDefaultHttpsPort && url.hostname === hubHost;
+}
+
+/**
  * The one-liner an admin pastes onto a SQL host.
  *
  * The token is a bearer credential with a short life, so these are shown once
@@ -1120,20 +1149,33 @@ function hubAddress(config: ServerConfig): string {
  * instances to monitor from the dashboard, so nobody has to hand-edit YAML on
  * fifty boxes.
  */
-function installCommands(params: {
+export function installCommands(params: {
   token: string;
   hostName: string;
   hubAddress: string;
   publicUrl: string;
 }): { windows: string; linux: string; manual: string } {
   const base = params.publicUrl.replace(/\/+$/u, '');
+
+  // Spelled out only when the scripts cannot derive it, so the common one-liner
+  // stays short enough to read before pasting it into an elevated prompt.
+  const implicit = installerCanFindPackages(params.hubAddress, params.publicUrl);
+  const windowsPackage = implicit
+    ? ''
+    : ` -PackageUrl '${base}/downloads/rsagent-worker-windows.zip'`;
+  const linuxPackage = implicit
+    ? ''
+    : ` --package-url '${base}/downloads/rsagent-worker-linux.tar.gz'`;
+
   return {
     windows:
       `iwr ${base}/install.ps1 -UseBasicParsing | iex; ` +
-      `Install-RsAgentWorker -ControlPlane '${params.hubAddress}' -Token '${params.token}'`,
+      `Install-RsAgentWorker -ControlPlane '${params.hubAddress}' -Token '${params.token}'` +
+      windowsPackage,
     linux:
       `curl -fsSL ${base}/install.sh | sudo bash -s -- ` +
-      `--control-plane '${params.hubAddress}' --token '${params.token}'`,
+      `--control-plane '${params.hubAddress}' --token '${params.token}'` +
+      linuxPackage,
     manual:
       `rsagent enrol --control-plane ${params.hubAddress} ` +
       `--token ${params.token} /etc/rsagent/worker.yaml`,

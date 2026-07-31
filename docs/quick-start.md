@@ -6,14 +6,22 @@ minutes, most of which is waiting for containers.
 You need a Linux host with Docker for the control plane, and one Windows SQL
 Server host to put a worker on.
 
+For where that Linux host should live and what it costs, see
+[deployment.md](deployment.md). This page assumes you have one.
+
 ---
 
 ## 1. Control plane
 
+The control plane ships as a published image, so there is nothing to clone or
+build — just the two files that describe how to run it:
+
 ```bash
-git clone https://github.com/semics-tech/remote-sql-agent
-cd remote-sql-agent/deploy
-cp .env.example .env
+mkdir -p /opt/rsagent && cd /opt/rsagent
+BASE=https://raw.githubusercontent.com/semics-tech/remote-sql-agent/main/deploy
+curl -fsSLO $BASE/docker-compose.yml
+curl -fsSLO $BASE/Caddyfile
+curl -fsSL  $BASE/.env.example -o .env
 ```
 
 Edit `.env`. Two values must be right before anything works:
@@ -23,28 +31,52 @@ RSAGENT_PUBLIC_URL=https://rsagent.corp.example.com   # how browsers and workers
 POSTGRES_PASSWORD=<something long and random>
 ```
 
+Workers are told to dial that host on port 8443. If the hub is reachable
+somewhere else — behind a load balancer of its own, or on a platform that
+remaps ports — set `RSAGENT_HUB_ADVERTISED_ADDRESS` to the real `host:port` as
+well, or every install command the dashboard prints will point at the wrong
+place.
+
 ### TLS for the worker hub
 
 Workers authenticate with a bearer API key by default, so the hub **requires**
 TLS — the control plane refuses to start without it. Put a certificate and key
-for `RSAGENT_PUBLIC_URL`'s host name in `deploy/tls/`:
+for `RSAGENT_PUBLIC_URL`'s host name in `./tls`:
 
 ```
-deploy/tls/server.crt
-deploy/tls/server.key
+tls/server.crt
+tls/server.key
 ```
 
 Use your internal CA, or a public one. If you use a private CA, keep a copy of
-its certificate: workers need it (`-CaCertPath` at install).
+its certificate: workers need it (`-CaCertPath` at install). To generate a
+self-signed pair for a lab:
+
+```bash
+mkdir -p tls && openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+  -keyout tls/server.key -out tls/server.crt \
+  -subj "/CN=rsagent.corp.example.com" \
+  -addext "subjectAltName=DNS:rsagent.corp.example.com"
+```
 
 For a lab on a trusted network you can skip TLS by adding
 `RSAGENT_GRPC_REQUIRE_TLS=false` — worker keys then travel in clear text, so do
 not do this anywhere real.
 
+### HTTPS for the dashboard
+
+Set `RSAGENT_DOMAIN` and `RSAGENT_HTTP_BIND=127.0.0.1` in `.env`, and start with
+the `tls` profile below. Caddy then gets and renews a certificate on its own.
+
+This matters beyond good practice: the dashboard encrypts SQL credentials in the
+browser to the target worker's public key, and browsers do not expose the
+necessary API over plain HTTP. Without HTTPS the credential field is disabled
+and you cannot complete step 4.
+
 ### Start it
 
 ```bash
-docker compose up -d
+docker compose --profile tls up -d     # or `docker compose up -d` without HTTPS
 docker compose logs -f server
 ```
 
