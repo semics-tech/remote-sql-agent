@@ -1,5 +1,5 @@
 import { Fragment, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { CAPABILITIES, MAX_CAPABILITY_TIERS, effectiveCapabilities } from '@remote-sql-agent/protocol/browser';
 import type { MaxCapabilityTier } from '@remote-sql-agent/protocol/browser';
 import { useAudit, useWorkerAdmin, useWorkers, type WorkerRow } from '../api.js';

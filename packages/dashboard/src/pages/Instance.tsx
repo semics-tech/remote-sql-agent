@@ -1,4 +1,4 @@
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router';
 import { useMemo, useState } from 'react';
 import { useAgentLog, useInstance, useJobs } from '../api.js';
 import { Panel, QueryState, Empty, LastRunCell } from '../components.jsx';
