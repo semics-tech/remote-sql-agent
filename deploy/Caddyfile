@@ -1,0 +1,36 @@
+# HTTPS for the dashboard and REST API.
+#
+# Enabled with the `tls` Compose profile:
+#
+#   docker compose --profile tls up -d
+#
+# Caddy obtains and renews a certificate from Let's Encrypt automatically, which
+# needs ports 80 and 443 reachable from the internet and RSAGENT_DOMAIN pointing
+# at this host. On a private network, replace the site block with `tls internal`
+# or point it at your own certificate files.
+#
+# HTTPS is not decoration here. The dashboard encrypts SQL credentials in the
+# browser to the target worker's public key, and `crypto.subtle` does not exist
+# in an insecure context — so over plain HTTP that field disables itself and
+# credential onboarding silently cannot be used.
+#
+# This does NOT front the worker hub on 8443, deliberately. The hub terminates
+# its own TLS so that mTLS and the workers' pinned CA keep working end to end;
+# putting a proxy there would break both. Give the hub a certificate of its own
+# in deploy/tls — see docs/deployment.md.
+
+{$RSAGENT_DOMAIN} {
+	encode zstd gzip
+
+	# The server sets its own security headers; Caddy adds HSTS because it is the
+	# only part of the stack that knows TLS is definitely in play.
+	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+
+	reverse_proxy server:8080 {
+		# Long-lived: /api/events is a Server-Sent Events stream held open for as
+		# long as a dashboard tab is. The default would be fine, but flush_interval
+		# -1 disables response buffering, without which events arrive in batches
+		# and the dashboard looks frozen between them.
+		flush_interval -1
+	}
+}
