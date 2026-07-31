@@ -38,6 +38,7 @@ RUN pnpm install --frozen-lockfile
 
 COPY packages/ packages/
 COPY deploy/worker/ deploy/worker/
+COPY deploy/sql/ deploy/sql/
 
 RUN pnpm --filter @remote-sql-agent/dashboard build
 
@@ -48,7 +49,7 @@ RUN pnpm --filter @remote-sql-agent/dashboard build
 RUN pnpm --filter @remote-sql-agent/worker bundle \
  && mkdir -p /packages \
  && cp deploy/worker/bootstrap.ps1 deploy/worker/bootstrap.sh /packages/ \
- && cp deploy/sql/worker-permissions.sql deploy/sql/worker-write-wrapper.sql /packages/ \
+ && cp deploy/sql/*.sql /packages/ \
  && mkdir -p /staging/linux \
  && cp packages/worker/dist/rsagent-worker.mjs /staging/linux/ \
  && cp deploy/worker/rsagent-worker.service /staging/linux/ \
