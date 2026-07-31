@@ -104,7 +104,12 @@ export async function createApp(deps: AppDeps) {
   // any helper that accepts a plain FastifyInstance.
   const app = Fastify({
     loggerInstance: logger.child({ component: 'api' }) as FastifyBaseLogger,
-    trustProxy: true,
+    // Counted hops, never `true`. `true` trusts the whole X-Forwarded-For chain
+    // and takes the *leftmost* entry — the one the client wrote — so any caller
+    // could choose their own `request.ip`. That is both a rate-limit bypass and
+    // a forged `remoteAddress` on every audit row and every session. 0 ignores
+    // the header entirely. See RSAGENT_TRUSTED_PROXY_HOPS in config.ts.
+    trustProxy: config.trustedProxyHops === 0 ? false : config.trustedProxyHops,
     bodyLimit: 4 * 1024 * 1024,
   });
 

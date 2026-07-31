@@ -45,6 +45,8 @@ services:
       RSAGENT_DATABASE_URL: postgres://${POSTGRES_USER:-rsagent}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-rsagent}
       RSAGENT_PUBLIC_URL: ${RSAGENT_PUBLIC_URL:?set RSAGENT_PUBLIC_URL in .env}
       RSAGENT_LOG_LEVEL: ${RSAGENT_LOG_LEVEL:-info}
+      # 0 unless something terminates TLS in front of this. See .env.example.
+      RSAGENT_TRUSTED_PROXY_HOPS: ${RSAGENT_TRUSTED_PROXY_HOPS:-0}
 
       # --- Dashboard identity (docs/authentication.md §1) ---
       RSAGENT_AUTH_MODE: ${RSAGENT_AUTH_MODE:-local}
