@@ -553,6 +553,19 @@ export async function createApp(deps: AppDeps) {
     };
   });
 
+  /**
+   * A single command, so the job editor can find out whether the save it just
+   * issued actually landed. Queuing a command is not the same as applying one:
+   * the worker can refuse it seconds later, and the editor used to report
+   * success on the enqueue and never revisit it.
+   */
+  app.get('/api/commands/:commandId', { preHandler: guard('job.read') }, async (request, reply) => {
+    const { commandId } = z.object({ commandId: z.string().uuid() }).parse(request.params);
+    const command = await deps.commands.byId(commandId);
+    if (!command) return reply.status(404).send({ error: 'NotFound' });
+    return command;
+  });
+
   app.post('/api/commands/:commandId/approve', { preHandler: guard('command.approve') }, async (request) => {
     const { commandId } = z.object({ commandId: z.string().uuid() }).parse(request.params);
     await deps.commands.approve(commandId, request.user!.id, request.user!.username, request.ip);
