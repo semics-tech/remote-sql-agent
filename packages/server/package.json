@@ -49,7 +49,7 @@
     "@types/nodemailer": "^8.0.1",
     "drizzle-kit": "^0.31.10",
     "typescript": "^6.0.3",
-    "vitest": "^3.2.7"
+    "vitest": "^4.1.10"
   },
   "description": "Distributed as a container image, not on npm."
 }

@@ -103,8 +103,8 @@ export async function readIdentity(pool: sql.ConnectionPool): Promise<InstanceId
     agentStatus = agent.recordset[0]?.agent_running === 1 ? 'running' : 'stopped';
   } catch {
     // Reading sysprocesses can be blocked in hardened environments; an unknown
-    // Agent status is not a reason to give up on the whole instance.
-    agentStatus = 'unknown';
+    // Agent status is not a reason to give up on the whole instance. Nothing to
+    // do here — the declaration above already says 'unknown'.
   }
 
   const row = identity.recordset[0];

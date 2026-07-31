@@ -92,7 +92,10 @@ async function handleSession(
   let workerId: string | null = null;
   let hostName = '(unknown)';
   const instanceIds = new Map<string, string>();
-  let identity: AuthenticatedWorker | null = null;
+  // Not initialised: the catch below always returns, so this is definitely
+  // assigned by the time anything reads it, and TypeScript can see that. A
+  // `= null` here would only be a value no path ever observes.
+  let authenticated: AuthenticatedWorker;
   // Snapshots arrive chunked; only commit once more_chunks is false, so a
   // half-received snapshot can never soft-delete jobs it simply hasn't seen yet.
   const pendingSnapshots = new Map<string, PendingSnapshot>();
@@ -107,11 +110,11 @@ async function handleSession(
   // Authenticate before a single message is processed. A stream that cannot
   // prove who it is never reaches the ingestion path at all.
   try {
-    identity = await deps.authenticator.authenticate(call);
-    hostName = identity.hostName;
-    workerId = identity.workerId;
+    authenticated = await deps.authenticator.authenticate(call);
+    hostName = authenticated.hostName;
+    workerId = authenticated.workerId;
     log.info(
-      { hostName, workerId, mode: identity.mode },
+      { hostName, workerId, mode: authenticated.mode },
       'Worker authenticated',
     );
   } catch (err) {
@@ -134,8 +137,6 @@ async function handleSession(
     call.end();
     return;
   }
-
-  const authenticated = identity;
 
   // Message handling is serialised through a promise chain: gRPC delivers
   // messages as fast as they arrive, and concurrent ingestion of two snapshot
