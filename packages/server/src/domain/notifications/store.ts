@@ -18,7 +18,7 @@ export const channelInputSchema = z.object({
   id: z.string().uuid().optional(),
   name: z.string().min(1).max(128),
   kind: z.enum(notificationChannelKind),
-  config: z.record(z.unknown()).default({}),
+  config: z.record(z.string(), z.unknown()).default({}),
   /** Omitted on edit to keep the stored secret rather than blank it. */
   secret: z.string().max(4096).optional(),
   enabled: z.boolean().default(true),

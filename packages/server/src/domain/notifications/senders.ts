@@ -45,7 +45,7 @@ export const emailConfigSchema = z.object({
 
 export const webhookConfigSchema = z.object({
   /** Extra headers, e.g. an Authorization value for a private endpoint. */
-  headers: z.record(z.string()).default({}),
+  headers: z.record(z.string(), z.string()).default({}),
 });
 
 export type EmailConfig = z.infer<typeof emailConfigSchema>;

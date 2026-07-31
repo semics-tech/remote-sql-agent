@@ -54,7 +54,7 @@ export const workerConfigSchema = z.object({
         /** entra mode: pin a specific user-assigned managed identity. */
         clientId: z.string().optional(),
       })
-      .default({ mode: 'token' }),
+      .prefault({}),
     tls: z
       .object({
         enabled: z.boolean().default(true),
@@ -62,14 +62,14 @@ export const workerConfigSchema = z.object({
         clientCertPath: z.string().optional(),
         clientKeyPath: z.string().optional(),
       })
-      .default({ enabled: true }),
+      .prefault({}),
     reconnect: z
       .object({
         initialDelayMs: z.number().int().positive().default(1_000),
         maxDelayMs: z.number().int().positive().default(60_000),
         jitterRatio: z.number().min(0).max(1).default(0.3),
       })
-      .default({}),
+      .prefault({}),
   }),
   /**
    * The local ceiling. Never overridable from the control plane — this is the
@@ -97,7 +97,7 @@ export const workerConfigSchema = z.object({
       /** Bounded; oldest-first eviction is logged and reported (§5.4). */
       maxRows: z.number().int().positive().default(100_000),
     })
-    .default({}),
+    .prefault({}),
   polling: z
     .object({
       definitionSeconds: z.number().int().positive().default(30),
@@ -107,7 +107,7 @@ export const workerConfigSchema = z.object({
       heartbeatSeconds: z.number().int().positive().default(30),
       historyBatchSize: z.number().int().positive().default(500),
     })
-    .default({}),
+    .prefault({}),
   logLevel: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   /** Path to a file touched each loop so a service wrapper can spot a wedged event loop. */
   healthFilePath: z.string().default('./run/health'),
