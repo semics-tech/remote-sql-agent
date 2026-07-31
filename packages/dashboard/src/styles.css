@@ -1470,3 +1470,102 @@ button.action:disabled {
 .live-dot.off {
   background: var(--status-unknown);
 }
+
+/* --- Step body diagnostics ------------------------------------------------
+ *
+ * Sits directly under the editor rather than in a panel of its own: the
+ * findings are about the box above them, and a step body is routinely taller
+ * than its viewport, so a warning six screens down needs somewhere to surface.
+ * Colour comes from the run-status palette, so a lint error reads as the same
+ * kind of "wrong" as a failed run rather than introducing a second vocabulary.
+ */
+
+.lint-bar {
+  border: 1px solid var(--border);
+  border-top: none;
+  border-radius: 0 0 var(--radius) var(--radius);
+  background: var(--bg-raised);
+  font-size: 11px;
+}
+
+.lint-toggle {
+  display: block;
+  width: 100%;
+  padding: 4px 8px;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--fg-muted);
+  text-align: left;
+  cursor: pointer;
+}
+
+.lint-toggle:hover {
+  background: var(--bg-hover);
+}
+
+.lint-bar.lint-error .lint-toggle {
+  color: var(--status-failed);
+}
+
+.lint-bar.lint-warning .lint-toggle {
+  color: var(--status-retry);
+}
+
+.lint-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--border);
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.lint-item {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  width: 100%;
+  padding: 3px 8px;
+  border: 0;
+  border-left: 2px solid transparent;
+  background: none;
+  font: inherit;
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+}
+
+.lint-item:hover {
+  background: var(--bg-hover);
+}
+
+.lint-item.lint-error {
+  border-left-color: var(--status-failed);
+}
+
+.lint-item.lint-warning {
+  border-left-color: var(--status-retry);
+}
+
+.lint-item.lint-info {
+  border-left-color: var(--status-running);
+}
+
+.lint-line {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  color: var(--fg-faint);
+  white-space: nowrap;
+}
+
+.lint-message {
+  flex: 1 1 auto;
+}
+
+.lint-code {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  color: var(--fg-faint);
+  white-space: nowrap;
+}
