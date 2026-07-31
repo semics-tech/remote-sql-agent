@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { INSTANCE_ID, JOB_UUID, mockApi } from './fixtures.js';
+import { INSTANCE_ID, JOB_UUID, environmentGrants, mockApi } from './fixtures.js';
 
 /**
  * The shell: signing in, getting around, and not falling over.
@@ -46,6 +46,7 @@ test.describe('navigation', () => {
     ['Jobs', '/jobs', /Jobs|No jobs/i],
     ['Search', '/search', /Search/i],
     ['Commands', '/commands', /Commands|No commands/i],
+    ['Admin', '/admin', /Workers|Administration/i],
   ];
 
   for (const [name, path, expected] of pages) {
@@ -89,5 +90,53 @@ test.describe('navigation', () => {
     // a blank window with the nav gone.
     await expect(page.getByRole('link', { name: 'Overview' })).toBeVisible();
     expect(errors).toEqual([]);
+  });
+});
+
+/**
+ * The Access tab.
+ *
+ * Environment grants decide who may write to production, so the screen that
+ * describes them has to be right about what they do. The assertion below is on
+ * the wording rather than the table: "grant" reads to most people as though it
+ * might also *restrict*, and an administrator who believes these rows hide
+ * production from everybody else has drawn exactly the wrong conclusion.
+ */
+test.describe('administration: access', () => {
+  test('says grants add and never remove, and lists them', async ({ page }) => {
+    const errors = watchForCrashes(page);
+    await mockApi(page);
+    await page.goto('/admin');
+
+    await page.getByRole('button', { name: 'Access', exact: true }).click();
+
+    await expect(page.getByText(/adds/).first()).toBeVisible();
+    await expect(page.getByText(/never removes anything/)).toBeVisible();
+    await expect(page.getByText(/Nothing here hides an instance/)).toBeVisible();
+
+    const row = page.getByRole('row', { name: /production DBAs/ });
+    await expect(row).toContainText('production');
+    await expect(row).toContainText('Editor');
+
+    expect(errors).toEqual([]);
+  });
+
+  test('warns about instances no named grant can reach', async ({ page }) => {
+    await mockApi(page, {
+      routes: {
+        '/api/environment-grants': environmentGrants({
+          untaggedInstances: [
+            { instanceId: 'i1', instanceName: 'MSSQLSERVER', hostName: 'SQLOLD01' },
+          ],
+        }),
+      },
+    });
+    await page.goto('/admin');
+    await page.getByRole('button', { name: 'Access', exact: true }).click();
+
+    // The quiet failure mode: from the operator's side an untagged instance
+    // looks identical to a permissions bug.
+    await expect(page.getByText(/does not reach these/)).toBeVisible();
+    await expect(page.getByRole('row', { name: /SQLOLD01/ })).toBeVisible();
   });
 });

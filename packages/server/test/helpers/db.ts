@@ -56,7 +56,7 @@ export async function truncateAll(db: Database): Promise<void> {
        jobs, sync_state, instances, commands, workers,
        audit_log, sessions, users, enrolment_tokens, server_keys,
        notification_channels, notification_rules, notification_events,
-       notification_deliveries, worker_instance_configs
+       notification_deliveries, worker_instance_configs, environment_grants
      RESTART IDENTITY CASCADE` as never,
   );
 }

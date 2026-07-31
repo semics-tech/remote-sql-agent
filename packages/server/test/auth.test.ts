@@ -255,6 +255,8 @@ describe('Entra user provisioning', () => {
     email: 'dba@example.com',
     role: 'Editor' as const,
     appRoles: ['rsagent.editor'],
+    groupIds: ['11111111-2222-3333-4444-555555555555'],
+    groupsTruncated: false,
   };
 
   it('creates a user on first sign-in', async () => {

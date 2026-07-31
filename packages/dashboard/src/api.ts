@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import type { JobDefinition, JobWriteMode } from '@remote-sql-agent/protocol/browser';
+import type { JobDefinition, JobWriteMode, Role } from '@remote-sql-agent/protocol/browser';
 import { apiFetch } from './auth.jsx';
 
 /** Typed client for the control plane read API. */
@@ -895,6 +895,64 @@ export function useWorkerAdmin() {
     removeInstanceConfig: async (workerId: string, configId: string) => {
       await send(`/api/workers/${workerId}/instance-configs/${configId}`, 'DELETE');
       await refresh();
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Environment grants
+// ---------------------------------------------------------------------------
+
+export const GRANT_SUBJECT_KINDS = ['entra_group', 'app_role', 'user'] as const;
+export type GrantSubjectKind = (typeof GRANT_SUBJECT_KINDS)[number];
+
+/** `environmentTag` value meaning every environment, including untagged ones. */
+export const ALL_ENVIRONMENTS = '*';
+
+export interface EnvironmentGrant {
+  id: string;
+  subjectKind: GrantSubjectKind;
+  subjectKey: string;
+  subjectLabel: string | null;
+  environmentTag: string;
+  role: Role;
+  createdAt: string;
+}
+
+export interface EnvironmentGrants {
+  grants: EnvironmentGrant[];
+  /** Tags actually in use, for the picker. */
+  environments: string[];
+  /** Reachable by base role only — a grant for a named environment misses them. */
+  untaggedInstances: Array<{ instanceId: string; instanceName: string; hostName: string }>;
+}
+
+export function useEnvironmentGrants() {
+  return useQuery({
+    queryKey: ['environment-grants'],
+    queryFn: () => get<EnvironmentGrants>('/api/environment-grants'),
+  });
+}
+
+export function useEnvironmentGrantAdmin() {
+  const queryClient = useQueryClient();
+
+  return {
+    save: async (input: {
+      subjectKind: GrantSubjectKind;
+      subjectKey: string;
+      subjectLabel?: string | null;
+      environmentTag: string;
+      role: Role;
+    }) => {
+      const result = await send<{ id: string }>('/api/environment-grants', 'POST', input);
+      await queryClient.invalidateQueries({ queryKey: ['environment-grants'] });
+      return result;
+    },
+
+    remove: async (grantId: string) => {
+      await send(`/api/environment-grants/${grantId}`, 'DELETE');
+      await queryClient.invalidateQueries({ queryKey: ['environment-grants'] });
     },
   };
 }

@@ -15,7 +15,6 @@ import type { Logger } from 'pino';
 import {
   NO_JOB_WRITE,
   ROLES,
-  ROLE_PERMISSIONS,
   isCapability,
   type JobWriteMode,
   type Role,
@@ -36,10 +35,22 @@ import {
 import { acknowledgeDrift, getJobVersion, getJobVersions } from '../domain/versioning.js';
 import { queryAudit, writeAudit } from '../domain/audit.js';
 import { diffJobDefinitions } from '../domain/diff.js';
-import { requirePermission, actorOf } from '../auth/rbac.js';
+import { requirePermission, requireInstancePermission, actorOf } from '../auth/rbac.js';
 import { registerAuthRoutes } from '../auth/routes.js';
 import type { EntraClient } from '../auth/entra.js';
 import { createLocalUser, listUsers, setUserDisabled, setUserRole } from '../auth/users.js';
+import {
+  GrantError,
+  deleteGrant,
+  grantInputSchema,
+  listEnvironmentTags,
+  listGrants,
+  loadGrants,
+  principalOf,
+  saveGrant,
+  untaggedInstances,
+} from '../auth/grants-store.js';
+import { permissionsInEnvironment } from '../auth/environments.js';
 import {
   createEnrolmentToken,
   listCredentials,
@@ -113,6 +124,30 @@ export async function createApp(deps: AppDeps) {
   const guard = (permission: Parameters<typeof requirePermission>[1]) =>
     requirePermission({ db }, permission);
 
+  /**
+   * For routes that change or execute something on one SQL Server.
+   *
+   * Strictly more permissive than `guard`: the base role is checked first and,
+   * only if it is insufficient, an environment grant reaching this instance.
+   * Every route using it takes `:instanceId` on the path.
+   */
+  const instanceGuard = (permission: Parameters<typeof requirePermission>[1]) =>
+    requireInstancePermission({ db }, permission);
+
+  /**
+   * Approving a command is an act against that command's instance.
+   *
+   * Guarding it estate-wide would let somebody holding command.approve in one
+   * environment approve a change queued against another — which is precisely
+   * the separation this feature exists to create, undone at the last step.
+   */
+  const approvalGuard = requireInstancePermission({ db }, 'command.approve', async (_db, request) => {
+    const params = request.params as { commandId?: unknown };
+    if (typeof params.commandId !== 'string') return null;
+    const command = await deps.commands.byId(params.commandId);
+    return command?.instanceId ?? null;
+  });
+
   // Widened to FastifyBaseLogger on purpose: passing a concrete pino Logger
   // specialises the whole FastifyInstance type and makes it incompatible with
   // any helper that accepts a plain FastifyInstance.
@@ -144,7 +179,7 @@ export async function createApp(deps: AppDeps) {
     if (error instanceof z.ZodError) {
       return reply.status(400).send({ error: 'ValidationError', detail: error.issues });
     }
-    if (error instanceof NotificationConfigError) {
+    if (error instanceof NotificationConfigError || error instanceof GrantError) {
       return reply.status(error.statusCode).send({ error: error.code, detail: error.message });
     }
     if (error instanceof WorkerConfigError || error instanceof CommandError) {
@@ -422,7 +457,7 @@ export async function createApp(deps: AppDeps) {
 
   app.post(
     '/api/instances/:instanceId/jobs/:jobUuid/acknowledge-drift',
-    { preHandler: guard('job.toggle') },
+    { preHandler: instanceGuard('job.toggle') },
     async (request) => {
       const { instanceId, jobUuid } = jobParams.parse(request.params);
       await acknowledgeDrift(db, instanceId, jobUuid);
@@ -452,7 +487,8 @@ export async function createApp(deps: AppDeps) {
     async (request) => {
       const { instanceId } = instanceParam.parse(request.params);
       const { capabilities, hostName } = await deps.commands.effectiveCapabilitiesFor(instanceId);
-      const instance = await getInstance(db, instanceId);
+      const [instance, grants] = await Promise.all([getInstance(db, instanceId), loadGrants(db)]);
+      const environmentTag = instance?.environmentTag ?? null;
       return {
         hostName,
         workerCapabilities: capabilities,
@@ -460,7 +496,14 @@ export async function createApp(deps: AppDeps) {
         // what this product grants. A worker can hold job.write and still be
         // unable to edit a job owned by another login.
         jobWriteMode: (instance?.jobWriteMode as JobWriteMode | null) ?? NO_JOB_WRITE,
-        yourPermissions: request.user ? ROLE_PERMISSIONS[request.user.role] : [],
+        // Scoped to this instance's environment, not the bare base role. The
+        // SPA greys out what a user cannot do, and an estate-wide answer here
+        // would either hide controls that would in fact work in production, or
+        // offer ones that the guard will refuse.
+        environmentTag,
+        yourPermissions: request.user
+          ? permissionsInEnvironment(principalOf(request.user), grants, environmentTag)
+          : [],
         // Whether *this* user's saves will queue, not whether the rule exists:
         // an exempt Admin should not be warned about an approval step that will
         // never apply to them.
@@ -495,7 +538,7 @@ export async function createApp(deps: AppDeps) {
 
   app.post(
     '/api/instances/:instanceId/jobs/:jobUuid/toggle',
-    { preHandler: guard('job.toggle') },
+    { preHandler: instanceGuard('job.toggle') },
     async (request) => {
       const { instanceId, jobUuid } = jobParams.parse(request.params);
       const { enabled, baseDefinitionHash } = z
@@ -526,7 +569,7 @@ export async function createApp(deps: AppDeps) {
    */
   app.post(
     '/api/instances/:instanceId/jobs/:jobUuid/write-allowed',
-    { preHandler: guard('job.write') },
+    { preHandler: instanceGuard('job.write') },
     async (request) => {
       const { instanceId, jobUuid } = jobParams.parse(request.params);
       const { allowed } = z.object({ allowed: z.boolean() }).parse(request.body);
@@ -548,7 +591,7 @@ export async function createApp(deps: AppDeps) {
 
   app.post(
     '/api/instances/:instanceId/jobs/:jobUuid/run',
-    { preHandler: guard('job.run') },
+    { preHandler: instanceGuard('job.run') },
     async (request) => {
       const { instanceId, jobUuid } = jobParams.parse(request.params);
       const { stepName } = z.object({ stepName: z.string().optional() }).parse(request.body ?? {});
@@ -563,7 +606,7 @@ export async function createApp(deps: AppDeps) {
 
   app.post(
     '/api/instances/:instanceId/jobs/:jobUuid/stop',
-    { preHandler: guard('job.run') },
+    { preHandler: instanceGuard('job.run') },
     async (request) => {
       const { instanceId, jobUuid } = jobParams.parse(request.params);
       return issue(request, {
@@ -578,7 +621,7 @@ export async function createApp(deps: AppDeps) {
   /** Create or update a job from a full JobDefinition.v1. */
   app.put(
     '/api/instances/:instanceId/jobs/:jobUuid',
-    { preHandler: guard('job.write') },
+    { preHandler: instanceGuard('job.write') },
     async (request) => {
       const { instanceId, jobUuid } = z
         .object({
@@ -616,7 +659,7 @@ export async function createApp(deps: AppDeps) {
 
   app.delete(
     '/api/instances/:instanceId/jobs/:jobUuid',
-    { preHandler: guard('job.write') },
+    { preHandler: instanceGuard('job.write') },
     async (request) => {
       const { instanceId, jobUuid } = jobParams.parse(request.params);
       const { baseDefinitionHash } = z
@@ -661,13 +704,13 @@ export async function createApp(deps: AppDeps) {
     return command;
   });
 
-  app.post('/api/commands/:commandId/approve', { preHandler: guard('command.approve') }, async (request) => {
+  app.post('/api/commands/:commandId/approve', { preHandler: approvalGuard }, async (request) => {
     const { commandId } = z.object({ commandId: z.string().uuid() }).parse(request.params);
     await deps.commands.approve(commandId, request.user!.id, request.user!.username, request.ip);
     return { approved: true };
   });
 
-  app.post('/api/commands/:commandId/reject', { preHandler: guard('command.approve') }, async (request) => {
+  app.post('/api/commands/:commandId/reject', { preHandler: approvalGuard }, async (request) => {
     const { commandId } = z.object({ commandId: z.string().uuid() }).parse(request.params);
     const { reason } = z.object({ reason: z.string().max(500) }).parse(request.body);
     await deps.commands.reject(commandId, request.user!.username, reason, request.ip);
@@ -1063,6 +1106,68 @@ export async function createApp(deps: AppDeps) {
       .parse(request.query);
     return { entries: await queryAudit(db, q) };
   });
+
+  // -------------------------------------------------------------------------
+  // Environment grants (§6.5, extended)
+  //
+  // Administered estate-wide on purpose: deciding who may write to production
+  // is not itself a production-scoped act, and letting a production grant
+  // confer the ability to write grants would make every grant self-extending.
+  // -------------------------------------------------------------------------
+
+  app.get('/api/environment-grants', { preHandler: guard('user.admin') }, async () => {
+    const [grants, environments, untagged] = await Promise.all([
+      listGrants(db),
+      listEnvironmentTags(db),
+      untaggedInstances(db),
+    ]);
+    return {
+      grants,
+      // The tags actually in use, so the admin screen offers a list rather than
+      // a free-text box that silently accepts a typo.
+      environments,
+      // The quiet failure mode of the whole design, reported rather than left
+      // to be discovered: an untagged instance is reachable by base role only,
+      // so a `production` grant does not cover it and nobody is told.
+      untaggedInstances: untagged,
+    };
+  });
+
+  app.post('/api/environment-grants', { preHandler: guard('user.admin') }, async (request) => {
+    const input = grantInputSchema.parse(request.body);
+    const saved = await saveGrant(db, input, request.user?.id ?? null);
+
+    await writeAudit(db, {
+      actorType: 'user',
+      actor: actorOf(request),
+      action: 'environment-grant.saved',
+      target: `${input.subjectKind}:${input.subjectKey}@${input.environmentTag}`,
+      detail: { role: input.role, subjectLabel: input.subjectLabel ?? null },
+      remoteAddress: request.ip,
+    });
+
+    return { id: saved.id };
+  });
+
+  app.delete(
+    '/api/environment-grants/:grantId',
+    { preHandler: guard('user.admin') },
+    async (request, reply) => {
+      const { grantId } = z.object({ grantId: z.string().uuid() }).parse(request.params);
+      const removed = await deleteGrant(db, grantId);
+      if (!removed) return reply.status(404).send({ error: 'NotFound' });
+
+      await writeAudit(db, {
+        actorType: 'user',
+        actor: actorOf(request),
+        action: 'environment-grant.removed',
+        target: grantId,
+        remoteAddress: request.ip,
+      });
+
+      return { removed: true };
+    },
+  );
 
   app.get('/api/users', { preHandler: guard('user.admin') }, async () => ({
     users: await listUsers(db),

@@ -7,8 +7,9 @@ import { Panel, QueryState, Empty } from '../components.jsx';
 import { formatDateTime, formatRelative } from '../format.js';
 import { InstanceConfigPanel } from './InstanceConfig.jsx';
 import { Notifications } from './Notifications.jsx';
+import { EnvironmentGrants } from './EnvironmentGrants.jsx';
 
-type Tab = 'workers' | 'notifications' | 'audit';
+type Tab = 'workers' | 'access' | 'notifications' | 'audit';
 
 /** §9.7 Admin — workers and capabilities, notifications, audit log. */
 export function Admin() {
@@ -24,6 +25,9 @@ export function Admin() {
         <button className={tab === 'workers' ? 'active' : ''} onClick={() => setTab('workers')}>
           Workers
         </button>
+        <button className={tab === 'access' ? 'active' : ''} onClick={() => setTab('access')}>
+          Access
+        </button>
         <button
           className={tab === 'notifications' ? 'active' : ''}
           onClick={() => setTab('notifications')}
@@ -35,7 +39,15 @@ export function Admin() {
         </button>
       </div>
 
-      {tab === 'workers' ? <Workers /> : tab === 'notifications' ? <Notifications /> : <Audit />}
+      {tab === 'workers' ? (
+        <Workers />
+      ) : tab === 'access' ? (
+        <EnvironmentGrants />
+      ) : tab === 'notifications' ? (
+        <Notifications />
+      ) : (
+        <Audit />
+      )}
     </div>
   );
 }
