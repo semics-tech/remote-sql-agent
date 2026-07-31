@@ -109,8 +109,11 @@ const configSchema = z.object({
         tenantId: z.string(),
         clientId: z.string(),
         clientSecret: z.string().optional(),
-        /** Map Entra app roles -> dashboard roles. */
-        appRoleMap: z.record(z.enum(ROLES)),
+        /** Map Entra app roles -> dashboard roles. The key is the app role
+         * name as Entra emits it, so it is an open string; only the value is
+         * constrained. Both halves are stated because zod 4 reads a lone
+         * argument as the *key* schema, which would silently invert this. */
+        appRoleMap: z.record(z.string(), z.enum(ROLES)),
         /** Role for an authenticated user with no recognised app role. Null
          * denies sign-in, which is the safe default: an unmapped user should
          * not silently become a Viewer with estate-wide read access. */
@@ -150,7 +153,7 @@ const configSchema = z.object({
     /** OTLP/HTTP logs endpoint, e.g. http://otel-collector:4318/v1/logs */
     otlpEndpoint: z.string().optional(),
     /** "key=value,key2=value2" — for backends that authenticate with a header. */
-    otlpHeaders: z.record(z.string()),
+    otlpHeaders: z.record(z.string(), z.string()),
     serviceName: z.string(),
     exportIntervalMs: z.coerce.number().int().positive(),
     exportBatchSize: z.coerce.number().int().positive(),
