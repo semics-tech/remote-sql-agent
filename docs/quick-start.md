@@ -23,6 +23,12 @@ RSAGENT_PUBLIC_URL=https://rsagent.corp.example.com   # how browsers and workers
 POSTGRES_PASSWORD=<something long and random>
 ```
 
+Workers are told to dial that host on port 8443. If the hub is reachable
+somewhere else — behind a load balancer of its own, or on a platform that
+remaps ports — set `RSAGENT_HUB_ADVERTISED_ADDRESS` to the real `host:port` as
+well, or every install command the dashboard prints will point at the wrong
+place.
+
 ### TLS for the worker hub
 
 Workers authenticate with a bearer API key by default, so the hub **requires**
