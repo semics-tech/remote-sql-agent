@@ -1,0 +1,281 @@
+# Remote SQL Agent control plane, for a cluster you already run.
+#
+#   1. Edit the Secret and the two hostnames marked CHANGE ME.
+#   2. kubectl apply -f control-plane.yaml
+#
+# Postgres is deliberately out of scope. Use a managed database — Azure Database
+# for PostgreSQL Flexible Server, RDS, Cloud SQL — or whichever operator your
+# cluster already runs. This file assumes you have a connection string.
+#
+# Two things about this workload are unusual and neither is negotiable:
+#
+#   * It is a single replica, and it cannot be more. See the Deployment below.
+#   * It needs TWO ports reachable from outside — 443 for the dashboard and API
+#     through an Ingress, and 8443 raw for the worker hub through a
+#     LoadBalancer. The hub speaks HTTP/2 and terminates its own TLS; putting an
+#     L7 proxy in front of it breaks mTLS, breaks the workers' pinned CA, and on
+#     most ingress controllers imposes a request timeout that severs a stream
+#     meant to stay open for months.
+#
+# See docs/deployment.md.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rsagent
+
+---
+# Replace every value here before applying. `kubectl create secret generic` with
+# --from-literal is the better habit; this is in the file so the manifest is
+# readable as one piece.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rsagent-secrets
+  namespace: rsagent
+type: Opaque
+stringData:
+  # CHANGE ME. sslmode=verify-full, not require: `require` encrypts but does not
+  # verify the certificate, which leaves an in-cluster MITM entirely undetected.
+  # verify-full checks against Node's bundled roots, which already contain the
+  # chain Azure and AWS present, so there is no CA file to mount.
+  database-url: postgres://rsagent:CHANGEME@postgres.example.com:5432/rsagent?sslmode=verify-full
+
+---
+# The hub's own certificate and key. It must be valid for the hostname workers
+# dial — the LoadBalancer address below — because they verify it themselves.
+#
+#   kubectl create secret tls rsagent-hub-tls \
+#     --cert=server.crt --key=server.key -n rsagent
+#
+# Not cert-manager: the hub reads these files once at startup and grpc-js cannot
+# swap credentials on a bound server, so a 90-day certificate is served past
+# expiry until something restarts the pod. If you do use cert-manager here, pair
+# it with something that restarts the Deployment on renewal, and know that every
+# worker in the estate reconnects and resends a full snapshot when it does.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rsagent-hub-tls
+  namespace: rsagent
+type: kubernetes.io/tls
+stringData:
+  tls.crt: |
+    -----BEGIN CERTIFICATE-----
+    CHANGEME
+    -----END CERTIFICATE-----
+  tls.key: |
+    -----BEGIN PRIVATE KEY-----
+    CHANGEME
+    -----END PRIVATE KEY-----
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rsagent-control-plane
+  namespace: rsagent
+spec:
+  # ┌───────────────────────────────────────────────────────────────────────┐
+  # │ DO NOT RAISE THIS. It is not a capacity setting.                      │
+  # │                                                                       │
+  # │ The registry of connected workers is an in-memory map in this process │
+  # │ (packages/server/src/hub/registry.ts). A worker holds its gRPC stream │
+  # │ to exactly one replica, and a command issued on any other replica     │
+  # │ finds it absent and never delivers. Live dashboard updates break the  │
+  # │ same way: the SSE fan-out is process-local too.                       │
+  # │                                                                       │
+  # │ Nothing errors. Roughly half of all commands would simply never       │
+  # │ arrive, and the estate would look healthy while doing so.             │
+  # │                                                                       │
+  # │ Scale up, not out. See docs/deployment.md for the ceiling.            │
+  # └───────────────────────────────────────────────────────────────────────┘
+  replicas: 1
+  strategy:
+    # Recreate, not RollingUpdate. Two replicas overlapping during a rollout has
+    # the problem above, briefly — and it also races the database migration that
+    # runs at startup, which takes no advisory lock.
+    type: Recreate
+  selector:
+    matchLabels:
+      app: rsagent-control-plane
+  template:
+    metadata:
+      labels:
+        app: rsagent-control-plane
+    spec:
+      # Required, not hygiene. Kubernetes injects an environment variable per
+      # Service in the namespace, named <SERVICE_NAME>_PORT — so the Service
+      # `rsagent-http` below sets RSAGENT_HTTP_PORT=tcp://10.43.x.x:80, which
+      # collides exactly with the config variable of the same name and the
+      # process dies at startup on:
+      #   Expected number, received nan   (path: httpPort)
+      # which names neither Kubernetes nor the Service that caused it.
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      # SIGTERM starts a graceful shutdown backed by a 10s hard-kill timer, and
+      # the gRPC server waits for open streams first. 30s leaves room for both.
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: control-plane
+          image: ghcr.io/semics-tech/remote-sql-agent/control-plane:0.1.1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: hub
+              containerPort: 8443
+          env:
+            - name: RSAGENT_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: rsagent-secrets
+                  key: database-url
+            # CHANGE ME. Exact origin, no trailing slash. This string is
+            # compared character for character against the browser's Origin
+            # header for CORS, and http-vs-https here decides whether session
+            # cookies are marked Secure. A mismatch gives a dashboard that
+            # loads and then fails every API call with nothing useful in it.
+            - name: RSAGENT_PUBLIC_URL
+              value: https://rsagent.example.com
+            # CHANGE ME to the hub Service's external address. Without this the
+            # address is derived as the public URL's host plus 8443, which is
+            # wrong here: the Ingress and the hub LoadBalancer are different
+            # addresses. This string is what every install one-liner hands out.
+            - name: RSAGENT_HUB_ADVERTISED_ADDRESS
+              value: rsagent-hub.example.com:8443
+            # The Ingress controller is one hop. Higher than the number of
+            # proxies actually in front lets a caller choose their own client
+            # IP, which forges the audit trail and sidesteps rate limiting.
+            - name: RSAGENT_TRUSTED_PROXY_HOPS
+              value: '1'
+            - name: RSAGENT_GRPC_TLS_CERT
+              value: /etc/rsagent/tls/tls.crt
+            - name: RSAGENT_GRPC_TLS_KEY
+              value: /etc/rsagent/tls/tls.key
+          volumeMounts:
+            - name: hub-tls
+              mountPath: /etc/rsagent/tls
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            # 1 vCPU / 2Gi is the comfortable default. 0.5 / 1Gi runs, and below
+            # that a cold start plus a reconnect storm will OOM. The request is
+            # set to the floor and the limit to the default so a burst of
+            # reconnecting workers is absorbed rather than throttled.
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              memory: 2Gi
+          startupProbe:
+            # Migrations run before anything listens, against a database that
+            # may be empty on the very first boot. 30 x 5s tolerates that
+            # without making the liveness probe slow forever afterwards.
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ['ALL']
+      volumes:
+        - name: hub-tls
+          secret:
+            secretName: rsagent-hub-tls
+        # Required. The server itself writes nothing to disk, but it runs its
+        # TypeScript through tsx, which caches transforms under /tmp. With a
+        # read-only root and no writable /tmp the container dies at startup on
+        #   Error: ENOENT: no such file or directory, mkdir '/tmp/tsx-1000'
+        # which reads like a packaging fault rather than a missing volume.
+        - name: tmp
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rsagent-http
+  namespace: rsagent
+spec:
+  type: ClusterIP
+  selector:
+    app: rsagent-control-plane
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+
+---
+# The worker hub, as raw TCP. Type LoadBalancer rather than another Ingress
+# rule on purpose: this must stay layer 4. The pod terminates its own TLS, so
+# the certificate workers verify is the one in rsagent-hub-tls, and mTLS keeps
+# working because the handshake reaches the process intact.
+apiVersion: v1
+kind: Service
+metadata:
+  name: rsagent-hub
+  namespace: rsagent
+  annotations:
+    # Long-lived streams. Cloud load balancers idle out at 4-5 minutes by
+    # default, and while workers do reconnect with backoff, each reconnect
+    # resends a full snapshot per instance. Raise it where you can.
+    service.beta.kubernetes.io/azure-load-balancer-tcp-idle-timeout: '30'
+spec:
+  type: LoadBalancer
+  selector:
+    app: rsagent-control-plane
+  ports:
+    - name: hub
+      port: 8443
+      targetPort: hub
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: rsagent
+  namespace: rsagent
+  annotations:
+    # /api/events is a Server-Sent Events stream held open for as long as a
+    # dashboard tab is. Buffering it makes the dashboard look frozen between
+    # flushes; a short read timeout makes it reconnect continuously.
+    nginx.ingress.kubernetes.io/proxy-buffering: 'off'
+    nginx.ingress.kubernetes.io/proxy-read-timeout: '3600'
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        # CHANGE ME, and match RSAGENT_PUBLIC_URL exactly.
+        - rsagent.example.com
+      secretName: rsagent-dashboard-tls
+  rules:
+    - host: rsagent.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: rsagent-http
+                port:
+                  number: 80
