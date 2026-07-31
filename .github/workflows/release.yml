@@ -184,8 +184,14 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # v6's one behavioural change is that a `#` inside a list-input *value*
+      # is preserved rather than treated as the start of a comment. Confirmed
+      # by running v5 and v6 side by side: identical tags, and v5 truncating a
+      # label value at the `#` where v6 keeps it. Nothing below contains a `#`,
+      # so it cannot bite here — but it would silently change an image label
+      # the day someone adds one, which is why it is written down.
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: |
             ${{ env.GHCR_IMAGE }}
@@ -377,18 +383,26 @@ jobs:
       # published as a release asset and listed in SHA256SUMS beside the
       # binaries, as though it were something to install.
       #
-      # Held at v7 deliberately while v8 exists. v8 stops unconditionally
-      # unzipping and starts erroring on a hash mismatch — both are
-      # improvements, but they change how this step behaves on the one path
-      # that cannot be rehearsed before it runs against a real tag. Take v8 on
-      # its own, not folded into a runtime bump.
-      - uses: actions/download-artifact@v7
+      # v8 stops unconditionally unzipping — it checks Content-Type first —
+      # and errors on a hash mismatch rather than warning. Both are
+      # improvements, but this job only ever runs on a real tag, so there is no
+      # way to find out here.
+      #
+      # It was rehearsed instead, on a throwaway branch that reproduced this
+      # job's shape: four named artifacts uploaded by v7 and downloaded by v8,
+      # including `worker-distribution`, which carries a .zip *inside* the
+      # artifact and is the case a Content-Type check could plausibly get
+      # wrong. Everything extracted as before, the nested zip stayed a zip and
+      # was not recursively unpacked, and the checksum step saw the same seven
+      # files. If this is changed again, rehearse it the same way rather than
+      # finding out during a release.
+      - uses: actions/download-artifact@v8
         with: { name: executable-linux-x64, path: artifacts/linux }
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with: { name: executable-win-x64, path: artifacts/win }
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with: { name: executable-darwin-arm64, path: artifacts/mac }
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with: { name: worker-distribution, path: artifacts/dist }
 
       - name: Collect and checksum
