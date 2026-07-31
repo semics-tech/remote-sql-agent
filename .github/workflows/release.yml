@@ -165,7 +165,7 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@v7
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - uses: docker/login-action@v4
         with:
@@ -199,7 +199,7 @@ jobs:
             type=raw,value=latest,enable=${{ github.ref_type == 'tag' && needs.verify.outputs.prerelease == 'false' }}
 
       - id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: deploy/Dockerfile
@@ -233,7 +233,7 @@ jobs:
       - name: Update the Docker Hub description
         if: ${{ github.ref_type == 'tag' && needs.verify.outputs.prerelease == 'false' }}
         continue-on-error: true
-        uses: peter-evans/dockerhub-description@v4
+        uses: peter-evans/dockerhub-description@v5
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -273,7 +273,7 @@ jobs:
       - name: Build and self-test
         run: pnpm --filter @remote-sql-agent/worker run build:sea
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: executable-${{ matrix.target }}
           path: packages/worker/dist/rsagent-worker-${{ matrix.target }}*
@@ -340,7 +340,7 @@ jobs:
       - name: Ship the bare bundle too
         run: cp packages/worker/dist/rsagent-worker.mjs "rsagent-worker-${VERSION}.mjs"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: worker-distribution
           path: |
@@ -376,13 +376,19 @@ jobs:
       # unfiltered version swept it in, so a build-log blob would have been
       # published as a release asset and listed in SHA256SUMS beside the
       # binaries, as though it were something to install.
-      - uses: actions/download-artifact@v4
+      #
+      # Held at v7 deliberately while v8 exists. v8 stops unconditionally
+      # unzipping and starts erroring on a hash mismatch — both are
+      # improvements, but they change how this step behaves on the one path
+      # that cannot be rehearsed before it runs against a real tag. Take v8 on
+      # its own, not folded into a runtime bump.
+      - uses: actions/download-artifact@v7
         with: { name: executable-linux-x64, path: artifacts/linux }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with: { name: executable-win-x64, path: artifacts/win }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with: { name: executable-darwin-arm64, path: artifacts/mac }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with: { name: worker-distribution, path: artifacts/dist }
 
       - name: Collect and checksum
