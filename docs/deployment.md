@@ -174,6 +174,81 @@ docker compose logs server | grep -i password
 
 ---
 
+## Behind Cloudflare, or any CDN proxy
+
+Cloudflare solves the dashboard side and **must not** be put in front of the
+worker hub. The two ports need opposite treatment, and the failure mode if you
+get it wrong is slow rather than obvious.
+
+| Record | Proxy | Port | |
+|---|---|---|---|
+| `rsagent.corp.example.com` | 🟠 Proxied | 443 → 8080 | Dashboard and API |
+| `rsagent-hub.corp.example.com` | ⬜ **DNS only** | 8443 | Workers dial this directly |
+
+```bash
+RSAGENT_PUBLIC_URL=https://rsagent.corp.example.com
+RSAGENT_HUB_ADVERTISED_ADDRESS=rsagent-hub.corp.example.com:8443
+```
+
+Without that second line, every install command the dashboard prints sends
+workers at the proxied name.
+
+### Why the hub cannot be proxied
+
+Port 8443 is on Cloudflare's proxied HTTPS list, so this looks like it should
+work. It does not, for three independent reasons:
+
+- **Bidirectional streams do not survive an L7 proxy.** Cloudflare's read
+  timeout is 100–120 seconds and idle streams are reset sooner. The worker
+  heartbeat is 30 s so a healthy stream stays under it, but any pause resets the
+  connection — and every reconnect resends a full snapshot per instance.
+- **mTLS becomes impossible.** Client certificates do not survive termination.
+- **CA pinning stops meaning anything.** Workers would verify Cloudflare's edge
+  certificate rather than yours, so `--ca-cert` no longer pins anything.
+
+Cloudflare's product for raw TCP is Spectrum, which is Enterprise-only. Every
+other CDN and WAF has the same shape: if it terminates HTTP, it cannot carry the
+hub.
+
+### The hub still needs its own certificate
+
+`RSAGENT_GRPC_REQUIRE_TLS` is about the hub, not the dashboard, so putting
+Cloudflare in front of 443 does not remove the requirement — the control plane
+still refuses to start without `RSAGENT_GRPC_TLS_CERT` and
+`RSAGENT_GRPC_TLS_KEY`.
+
+Self-signed is the simplest answer and workers pin it with `--ca-cert`. If you
+want a publicly-issued certificate for a name that is not internet-reachable on
+80, use **Let's Encrypt with a DNS-01 challenge** and a Cloudflare API token —
+it needs no inbound HTTP, so it works on a grey-clouded record.
+
+Do not use a Cloudflare Origin Certificate here. Only Cloudflare's edge trusts
+it, and the workers are not Cloudflare's edge.
+
+### Settings that change
+
+**Use SSL/TLS mode Full (strict).** Flexible means Cloudflare reaches your
+origin over plain HTTP, across the public internet. Keeping the `tls` profile
+behind Cloudflare gives you a valid origin certificate and end-to-end
+encryption.
+
+**`RSAGENT_TRUSTED_PROXY_HOPS` counts Cloudflare too:**
+
+| Chain | Value |
+|---|---|
+| Cloudflare → Caddy → server | `2` |
+| Cloudflare → server directly | `1` |
+
+Cloudflare sets `X-Forwarded-For` to the real client; Caddy then appends
+Cloudflare's edge address. Count both or every audit row records an edge IP
+instead of the person.
+
+**Restrict 8080 to [Cloudflare's IP ranges](https://www.cloudflare.com/ips/).**
+Otherwise anyone who finds the origin address reaches the dashboard over plain
+HTTP, where credential onboarding silently does not work.
+
+---
+
 ## Route B — Azure Container Apps
 
 Managed, at roughly double the cost of a VM and with more to get right.
@@ -284,7 +359,13 @@ does not work.
 **Set `RSAGENT_TRUSTED_PROXY_HOPS` to the true number of proxies.** Too high and
 a caller can choose their own client IP, which forges `remoteAddress` on every
 audit row and sidesteps rate limiting. 0 — the default — ignores the header
-entirely and is correct when nothing is in front.
+entirely and is correct when nothing is in front. A CDN counts as a hop; see
+[Behind Cloudflare](#behind-cloudflare-or-any-cdn-proxy).
+
+**Never put an HTTP proxy in front of the hub.** Anything that terminates HTTP
+— a CDN, a WAF, an ingress controller, an application gateway — breaks mTLS,
+makes the workers' pinned CA meaningless, and imposes a request timeout on a
+stream meant to stay open for months. The hub needs to be reached as raw TCP.
 
 **Set `RSAGENT_HUB_ADVERTISED_ADDRESS` if the hub is not at
 `RSAGENT_PUBLIC_URL`'s host on 8443.** That string is copied into `worker.yaml`
