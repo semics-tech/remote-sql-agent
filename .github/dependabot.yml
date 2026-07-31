@@ -47,4 +47,16 @@ updates:
       interval: monthly
     commit-message:
       prefix: build(docker)
+    ignore:
+      # The image base tracks the Node LTS line, the same rule the npm
+      # ecosystem applies to @types/node above. Odd-numbered Node majors never
+      # become LTS — 25 went end-of-life in June 2026, and dependabot offered
+      # it anyway because it is the newest `*-bookworm-slim` tag. Newest is the
+      # wrong test here; supported is.
+      #
+      # Raise this when moving to the next *even* major, and move NODE_VERSION
+      # in ci.yml and release.yml in the same change so the image, CI and the
+      # runtime inside the single-file executables cannot drift apart.
+      - dependency-name: node
+        update-types: ['version-update:semver-major']
     labels: ['dependencies']
