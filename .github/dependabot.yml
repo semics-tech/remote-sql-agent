@@ -22,6 +22,15 @@ updates:
       # credential. A major bump gets read by a person, not merged by a bot.
       - dependency-name: argon2
         update-types: ['version-update:semver-major']
+      # @types/node tracks the runtime, not the newest release. Everything here
+      # is Node 24 — engines, both Dockerfile stages, CI, and the runtime baked
+      # into the single-file executables — because 26 is the Current line and
+      # the worker ships its runtime onto customer database servers. Types from
+      # a newer major describe APIs that are not there, and the failure lands at
+      # runtime on someone else's SQL host rather than in CI. Raise this when
+      # NODE_VERSION moves, in the same change.
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
     labels: ['dependencies']
 
   - package-ecosystem: github-actions

@@ -378,10 +378,11 @@ function rebuild(
     return step;
   });
 
-  let startStepId = definition.startStepId;
   const startNode = nodes.find((n) => n.step.stepId === definition.startStepId);
   const removedStart = removed.some((n) => n.step.stepId === definition.startStepId);
 
+  // Every branch below assigns it, so there is no initialiser to go stale.
+  let startStepId: number;
   if (removedStart || !startNode) {
     startStepId = 1;
     if (removedStart) {
