@@ -1,9 +1,15 @@
 # Remote SQL Agent control plane — production deployment.
 #
-#   cp .env.example .env      # then edit it
+# No checkout required. On a bare host with Docker:
+#
+#   curl -fsSLO https://raw.githubusercontent.com/semics-tech/remote-sql-agent/main/deploy/docker-compose.yml
+#   curl -fsSLO https://raw.githubusercontent.com/semics-tech/remote-sql-agent/main/deploy/Caddyfile
+#   curl -fsSL  https://raw.githubusercontent.com/semics-tech/remote-sql-agent/main/deploy/.env.example -o .env
+#   # edit .env, then:
 #   docker compose up -d
 #
-# One container plus Postgres. The dashboard is served by the API process.
+# One container plus Postgres, both pulled. The dashboard is served by the API
+# process, so there is nothing else to run.
 #
 # Ports: 8080 is the dashboard and REST API, 8443 is the worker hub. Workers
 # dial *out* to 8443, so that is the only port that needs to be reachable from
@@ -42,10 +48,14 @@ services:
       - '5432'
 
   server:
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile
-    image: ghcr.io/${GITHUB_REPOSITORY:-semics-tech/remote-sql-agent}/control-plane:${RSAGENT_VERSION:-latest}
+    # Pulled, never built. This file used to carry a `build:` stanza pointing at
+    # `..`, which quietly made a git checkout a prerequisite for deploying — so
+    # standing up a control plane meant cloning the whole repository onto a
+    # production host and compiling there. The published image is the artefact.
+    #
+    # ghcr.io/semics-tech/remote-sql-agent/control-plane is the same image at
+    # the same digest if you prefer GitHub's registry.
+    image: ${RSAGENT_IMAGE:-techsemics/remote-sql-agent}:${RSAGENT_VERSION:-latest}
     restart: unless-stopped
     depends_on:
       postgres:
