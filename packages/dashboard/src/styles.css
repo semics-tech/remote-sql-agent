@@ -1568,4 +1568,106 @@ button.action:disabled {
   font-family: var(--font-mono);
   color: var(--fg-faint);
   white-space: nowrap;
+/* --- Status filter chips --------------------------------------------------
+ *
+ * Used by the all-jobs panel on the overview. A chip is a toggle, not a tab:
+ * several can be on at once and the result is the union, because "show me
+ * everything failed or disabled" is one question rather than two.
+ *
+ * The count stays visible on a chip with nothing behind it. "0 failed" is
+ * frequently the answer someone came for, and a chip that disappeared would
+ * read as the filter being unavailable rather than as good news.
+ */
+
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 11px;
+  border-bottom: 1px solid var(--border);
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.chip {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-panel);
+  font: inherit;
+  font-size: 11px;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.chip:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.chip:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.chip.on {
+  border-color: var(--border-strong);
+  background: var(--bg-selected);
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.chip-count {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--fg-faint);
+}
+
+.chip.on .chip-count {
+  color: inherit;
+}
+
+/* The chip's own dot of colour, so the vocabulary matches the run-status
+ * palette used everywhere else rather than inventing a second one. */
+.chip-failed::before,
+.chip-running::before,
+.chip-retry::before,
+.chip-cancelled::before,
+.chip-succeeded::before,
+.chip-drift::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.chip-failed::before {
+  background: var(--status-failed);
+}
+
+.chip-running::before {
+  background: var(--status-running);
+}
+
+.chip-retry::before {
+  background: var(--status-retry);
+}
+
+.chip-cancelled::before {
+  background: var(--status-cancelled);
+}
+
+.chip-succeeded::before {
+  background: var(--status-succeeded);
+}
+
+.chip-drift::before {
+  background: var(--drift);
 }

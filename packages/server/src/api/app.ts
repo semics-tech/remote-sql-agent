@@ -53,7 +53,14 @@ import {
   prepareJobDefinition,
   type CommandService,
 } from '../domain/commands.js';
-import { GROUP_KEYS, getOverview, groupJobs } from '../domain/overview.js';
+import {
+  GROUP_KEYS,
+  JOB_FACETS,
+  getOverview,
+  groupJobs,
+  listEstateJobs,
+  type JobFacet,
+} from '../domain/overview.js';
 import { getJobStats } from '../domain/stats.js';
 import {
   WorkerConfigError,
@@ -240,6 +247,48 @@ export async function createApp(deps: AppDeps) {
   app.get('/api/overview', { preHandler: guard('instance.read') }, async () =>
     getOverview(db, (workerId) => registry.isOnline(workerId)),
   );
+
+  /**
+   * Every job in the estate, filterable — "show me everything failing right
+   * now, wherever it lives".
+   *
+   * Registered before `/api/jobs/groups` only incidentally; Fastify routes on
+   * the full path, so the two do not shadow one another.
+   */
+  app.get('/api/jobs', { preHandler: guard('job.read') }, async (request) => {
+    const { status, filter, limit } = z
+      .object({
+        // Repeatable (`?status=a&status=b`) and comma-separated both work; the
+        // dashboard sends one comma-separated value and a hand-written curl
+        // reasonably expects the other.
+        status: z
+          .union([z.string(), z.array(z.string())])
+          .optional()
+          .transform((v) =>
+            (Array.isArray(v) ? v : v === undefined ? [] : [v])
+              .flatMap((s) => s.split(','))
+              .map((s) => s.trim())
+              .filter(Boolean),
+          ),
+        filter: z.string().max(128).optional(),
+        limit: z.coerce.number().int().positive().optional(),
+      })
+      .parse(request.query);
+
+    const unknown = status.filter((s) => !(JOB_FACETS as readonly string[]).includes(s));
+    if (unknown.length > 0) {
+      // Silently dropping an unrecognised filter would show the whole estate
+      // and look like "nothing is wrong" rather than "you asked for something
+      // that does not exist".
+      throw new CommandError(
+        400,
+        'UnknownStatus',
+        `Not a job status: ${unknown.join(', ')}. Valid values are ${JOB_FACETS.join(', ')}.`,
+      );
+    }
+
+    return listEstateJobs(db, { facets: status as JobFacet[], filter, limit });
+  });
 
   /** Cross-estate job grouping — "is this job healthy on all thirty servers?" */
   app.get('/api/jobs/groups', { preHandler: guard('job.read') }, async (request) => {

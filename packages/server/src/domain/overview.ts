@@ -563,6 +563,244 @@ async function getTotals(
 }
 
 // ---------------------------------------------------------------------------
+// Every job in the estate, filterable
+// ---------------------------------------------------------------------------
+
+/**
+ * The facets a job can carry, and the ones the overview filters on.
+ *
+ * These are not mutually exclusive and deliberately do not form a single
+ * "status" column. A job can be running *and* disabled *and* drifted at once,
+ * and collapsing that into one value means picking a winner and hiding the rest
+ * — which is how a disabled job that is somehow still executing becomes
+ * invisible. Filtering is therefore "has any of the selected facets".
+ */
+export const JOB_FACETS = [
+  'running',
+  'longRunning',
+  'failed',
+  'succeeded',
+  'retry',
+  'cancelled',
+  'neverRun',
+  'disabled',
+  'drifted',
+] as const;
+export type JobFacet = (typeof JOB_FACETS)[number];
+
+const RUN_STATUS_RETRY = 2;
+const RUN_STATUS_CANCELLED = 3;
+
+export interface EstateJob {
+  instanceId: string;
+  instanceName: string;
+  hostName: string;
+  environmentTag: string | null;
+  jobUuid: string;
+  jobName: string;
+  enabled: boolean;
+  categoryName: string | null;
+  ownerLoginName: string | null;
+  lastRunStatus: number | null;
+  lastRunAt: Date | null;
+  lastRunDurationSeconds: number | null;
+  nextRunAt: Date | null;
+  /** Live now, and how far past its own average it has got. */
+  elapsedSeconds: number | null;
+  averageSeconds: number | null;
+  facets: JobFacet[];
+}
+
+export interface EstateJobsResult {
+  jobs: EstateJob[];
+  /**
+   * Counts per facet across everything the *text* filter matched, before the
+   * facet filter is applied — so ticking "failed" does not change the number
+   * next to "running" and leave the reader wondering what happened to them.
+   */
+  counts: Record<JobFacet, number>;
+  /** Jobs matching the text filter, and matching text plus facets. */
+  total: number;
+  matched: number;
+  /** Rows returned, which is `matched` capped at the page size. */
+  returned: number;
+  /** The estate is larger than one query: everything above is a partial view. */
+  truncated: boolean;
+}
+
+export interface ListEstateJobsOptions {
+  facets?: readonly JobFacet[];
+  filter?: string;
+  /** Rows sent to the browser. The counts are over everything regardless. */
+  limit?: number;
+  /** Cap on rows read. Shared with groupJobs so both truncate at the same size. */
+  scanLimit?: number;
+  now?: Date;
+}
+
+/**
+ * Every job in the estate, with the facets the overview filters on.
+ *
+ * The estate grid answers "what exists" per instance and the job groups answer
+ * "is this job healthy everywhere". Neither answers "show me everything that is
+ * failing right now, wherever it lives", which is what someone does first when
+ * a morning starts badly.
+ */
+export async function listEstateJobs(
+  db: Database,
+  options: ListEstateJobsOptions = {},
+): Promise<EstateJobsResult> {
+  const now = options.now ?? new Date();
+  const scanLimit = Math.min(options.scanLimit ?? 20_000, 50_000);
+  const limit = Math.min(options.limit ?? 500, 5_000);
+
+  const [rows, running] = await Promise.all([
+    db
+      .select({
+        instanceId: instances.id,
+        instanceName: instances.instanceName,
+        hostName: workers.hostName,
+        environmentTag: instances.environmentTag,
+        jobUuid: jobs.jobUuid,
+        jobName: jobs.name,
+        enabled: jobs.enabled,
+        categoryName: jobs.categoryName,
+        ownerLoginName: jobs.ownerLoginName,
+        isDrifted: jobs.isDrifted,
+        lastRunStatus: jobs.lastRunStatus,
+        lastRunAt: jobs.lastRunAt,
+        lastRunDurationSeconds: jobs.lastRunDurationSeconds,
+        nextRunAt: jobs.nextRunAt,
+        activityState: jobActivity.state,
+      })
+      .from(jobs)
+      .innerJoin(instances, eq(instances.id, jobs.instanceId))
+      .innerJoin(workers, eq(workers.id, instances.workerId))
+      .leftJoin(
+        jobActivity,
+        and(eq(jobActivity.instanceId, jobs.instanceId), eq(jobActivity.jobUuid, jobs.jobUuid)),
+      )
+      .where(and(isNull(jobs.deletedAt), isNull(instances.detachedAt)))
+      .orderBy(asc(jobs.name), asc(workers.hostName), asc(instances.instanceName))
+      .limit(scanLimit),
+    // Only the executing jobs, so this is a handful of rows even on a large
+    // estate. It is the one facet that cannot be answered from the jobs table:
+    // "long" is measured against each job's own history, not a fixed threshold.
+    getRunningJobs(db, now),
+  ]);
+
+  const live = new Map(running.map((r) => [`${r.instanceId}:${r.jobUuid}`, r]));
+  const needle = options.filter?.trim().toLowerCase() ?? '';
+  const wanted = new Set(options.facets ?? []);
+
+  const counts = Object.fromEntries(JOB_FACETS.map((f) => [f, 0])) as Record<JobFacet, number>;
+  const matched: EstateJob[] = [];
+  let total = 0;
+
+  for (const row of rows) {
+    if (
+      needle &&
+      !row.jobName.toLowerCase().includes(needle) &&
+      !row.hostName.toLowerCase().includes(needle) &&
+      !row.instanceName.toLowerCase().includes(needle) &&
+      !(row.categoryName ?? '').toLowerCase().includes(needle) &&
+      !(row.environmentTag ?? '').toLowerCase().includes(needle)
+    ) {
+      continue;
+    }
+    total += 1;
+
+    const current = live.get(`${row.instanceId}:${row.jobUuid}`);
+    const facets = facetsOf(row, current);
+    for (const facet of facets) counts[facet] += 1;
+
+    if (wanted.size > 0 && !facets.some((f) => wanted.has(f))) continue;
+
+    matched.push({
+      instanceId: row.instanceId,
+      instanceName: row.instanceName,
+      hostName: row.hostName,
+      environmentTag: row.environmentTag,
+      jobUuid: row.jobUuid,
+      jobName: row.jobName,
+      enabled: row.enabled,
+      categoryName: row.categoryName,
+      ownerLoginName: row.ownerLoginName,
+      lastRunStatus: row.lastRunStatus,
+      lastRunAt: row.lastRunAt,
+      lastRunDurationSeconds: row.lastRunDurationSeconds,
+      nextRunAt: row.nextRunAt,
+      elapsedSeconds: current?.elapsedSeconds ?? null,
+      averageSeconds: current?.averageSeconds ?? null,
+      facets,
+    });
+  }
+
+  matched.sort(byUrgencyThenName);
+
+  return {
+    jobs: matched.slice(0, limit),
+    counts,
+    total,
+    matched: matched.length,
+    returned: Math.min(matched.length, limit),
+    truncated: rows.length >= scanLimit,
+  };
+}
+
+function facetsOf(
+  row: {
+    enabled: boolean;
+    isDrifted: boolean;
+    lastRunStatus: number | null;
+    lastRunAt: Date | null;
+    activityState: string | null;
+  },
+  current: RunningJob | undefined,
+): JobFacet[] {
+  const facets: JobFacet[] = [];
+  if (row.activityState === 'executing') facets.push('running');
+  if (current?.isLongRunning) facets.push('longRunning');
+  if (row.lastRunStatus === RUN_STATUS_FAILED) facets.push('failed');
+  if (row.lastRunStatus === RUN_STATUS_SUCCEEDED) facets.push('succeeded');
+  if (row.lastRunStatus === RUN_STATUS_RETRY) facets.push('retry');
+  if (row.lastRunStatus === RUN_STATUS_CANCELLED) facets.push('cancelled');
+  if (row.lastRunAt === null) facets.push('neverRun');
+  if (!row.enabled) facets.push('disabled');
+  if (row.isDrifted) facets.push('drifted');
+  return facets;
+}
+
+/**
+ * Worst first.
+ *
+ * The same ordering the rest of this page uses: an all-jobs list sorted
+ * alphabetically buries the one row worth reading somewhere around "N".
+ */
+const FACET_WEIGHT: Record<JobFacet, number> = {
+  longRunning: 0,
+  failed: 1,
+  running: 2,
+  retry: 3,
+  cancelled: 4,
+  drifted: 5,
+  neverRun: 6,
+  disabled: 7,
+  succeeded: 8,
+};
+
+function byUrgencyThenName(a: EstateJob, b: EstateJob): number {
+  const rank = (job: EstateJob) =>
+    job.facets.length === 0 ? 9 : Math.min(...job.facets.map((f) => FACET_WEIGHT[f]));
+  return (
+    rank(a) - rank(b) ||
+    a.jobName.localeCompare(b.jobName) ||
+    a.hostName.localeCompare(b.hostName) ||
+    a.instanceName.localeCompare(b.instanceName)
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Cross-estate job grouping (§9.5 extended)
 // ---------------------------------------------------------------------------
 

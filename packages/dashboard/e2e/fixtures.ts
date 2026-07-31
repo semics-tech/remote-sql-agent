@@ -190,12 +190,65 @@ export function overview(overrides: Record<string, unknown> = {}) {
   };
 }
 
+export function estateJob(overrides: Record<string, unknown> = {}) {
+  return {
+    instanceId: INSTANCE_ID,
+    instanceName: 'MSSQLSERVER',
+    hostName: 'SQLPROD01',
+    environmentTag: 'production',
+    jobUuid: JOB_UUID,
+    jobName: 'Nightly Maintenance',
+    enabled: true,
+    categoryName: 'Database Maintenance',
+    ownerLoginName: 'sa',
+    lastRunStatus: 1,
+    lastRunAt: '2026-07-30T02:04:00.000Z',
+    lastRunDurationSeconds: 240,
+    nextRunAt: '2026-07-31T02:00:00.000Z',
+    elapsedSeconds: null,
+    averageSeconds: 200,
+    facets: ['succeeded'],
+    ...overrides,
+  };
+}
+
+/** The `/api/jobs` envelope. Counts default to what `jobs` actually contains. */
+export function estateJobs(
+  jobs: Array<Record<string, unknown>> = [estateJob()],
+  overrides: Record<string, unknown> = {},
+) {
+  const counts: Record<string, number> = {
+    running: 0,
+    longRunning: 0,
+    failed: 0,
+    succeeded: 0,
+    retry: 0,
+    cancelled: 0,
+    neverRun: 0,
+    disabled: 0,
+    drifted: 0,
+  };
+  for (const job of jobs) {
+    for (const facet of (job.facets as string[]) ?? []) counts[facet] = (counts[facet] ?? 0) + 1;
+  }
+  return {
+    jobs,
+    counts,
+    total: jobs.length,
+    matched: jobs.length,
+    returned: jobs.length,
+    truncated: false,
+    ...overrides,
+  };
+}
+
 /** Default responses, by pathname. Each test overrides what it cares about. */
 export function defaultRoutes(): Record<string, unknown> {
   return {
     '/api/auth/config': { localEnabled: true, entraEnabled: false, entraLoginUrl: '' },
     '/api/auth/me': ADMIN,
     '/api/overview': overview(),
+    '/api/jobs': estateJobs(),
     '/api/estate': { instances: [] },
     '/api/commands': { commands: [], pendingApproval: 0 },
     [`/api/instances/${INSTANCE_ID}/jobs/${JOB_UUID}`]: jobDetail(),
