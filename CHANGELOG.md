@@ -8,6 +8,101 @@ While at `0.x`, breaking changes may land in minor versions.
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-07-31
+
+Deployment and the write path. `0.1.1` could be installed but not really
+*deployed* — there was no guidance on where the control plane should run, and
+`job.write` worked only on jobs the worker itself created, which on a real
+estate is almost none of them.
+
+### Upgrading
+
+Two things need a decision rather than just a pull.
+
+- **`RSAGENT_TRUSTED_PROXY_HOPS` defaults to `0`**, which ignores
+  `X-Forwarded-For` entirely. If you run a reverse proxy in front of the
+  dashboard — the Caddy profile, an ingress controller, Container Apps — set it
+  to the number of proxies you actually run, or every audit row and rate-limit
+  bucket will record the proxy's address instead of the client's. Leaving it
+  unset is safe, just less precise. See [docs/security.md](docs/security.md)
+- **Database migration `0004`** runs automatically on first start. It adds one
+  nullable column, so it is not a rewrite and does not need a maintenance window
+
+### Added
+
+- **A deployment guide, and three routes to follow.**
+  [docs/deployment.md](docs/deployment.md) covers a VM with Compose (the lead,
+  and the cheapest), Kubernetes, and Azure Container Apps, with the two
+  constraints that decide all of them stated up front: the control plane is one
+  process on two ports, and it runs as exactly one replica. Ships a Caddy TLS
+  profile, a `cloud-init` file that takes a bare Ubuntu VM to a running control
+  plane, and a single-file Kubernetes manifest
+- **Deploying no longer needs a checkout.** `deploy/docker-compose.yml`
+  references the published image rather than building from a repository clone,
+  so the documented path is `curl` two files and `docker compose up`
+- **`RSAGENT_HUB_ADVERTISED_ADDRESS`** overrides the `host:port` workers are
+  told to dial. The derived default is right only when the hub is published on
+  its own port of the same name; it is wrong wherever a platform maps ports or
+  the hub has a hostname of its own. This string ends up in `worker.yaml` on
+  every SQL host, so getting it wrong is not a broken page — it is fifty
+  machines pointed somewhere that does not answer
+- **An optional signed wrapper for editing jobs owned by another login.**
+  `sp_update_job` refuses to touch a job owned by anyone else unless the caller
+  is `sysadmin`, and on a typical estate most jobs are owned by `sa`.
+  `deploy/sql/worker-write-wrapper.sql` installs procedures created
+  `WITH EXECUTE AS OWNER` **and** signed by a certificate mapped to a
+  `sysadmin` login — both halves are required, and the pair keeps working with
+  `TRUSTWORTHY OFF`, which hardening guides turn off. The allowlist starts
+  **empty**, so installing it grants nothing until a DBA names a job.
+  Parameters are enumerated rather than forwarded: no `@owner_login_name`, no
+  `@proxy_name`, and `@subsystem` pinned to `TSQL`, because a job step is a
+  place to run commands as the Agent service account. Every call is logged with
+  `ORIGINAL_LOGIN()`, which survives the context switch
+- **`deploy/sql/worker-permissions.sql`** grants the `msdb` SELECT permissions
+  the worker needs. `SQLAgentReaderRole` and `SQLAgentOperatorRole` grant
+  EXECUTE on the `sp_help_*` procedures, not SELECT on the base tables the
+  worker reads, so a correctly-roled login still failed on `sysjobhistory`
+- **The dashboard says what it cannot edit, before you try.** The job editor
+  reads the worker's reported SQL login and wrapper state and disables editing
+  with the reason, rather than offering a save that `msdb` will refuse
+
+### Fixed
+
+- **A client could choose its own `request.ip`.** `trustProxy: true` trusts the
+  whole `X-Forwarded-For` chain and resolves to its *leftmost* entry — the one
+  the client wrote. That address is what `@fastify/rate-limit` counts against
+  and what is recorded as `remoteAddress` on every session and 25+ audit sites,
+  so it was both a rate-limit bypass and a forged audit trail in the component
+  holding every job definition in the estate. Inert until now only because the
+  shipped Compose file put nothing in front of 8080; every deployment route
+  added in this release puts a proxy there. Replaced with a counted
+  `RSAGENT_TRUSTED_PROXY_HOPS`, defaulting to 0. A fixed `trustProxy: 1` was
+  the first instinct and is also wrong — with nothing in front, one declared
+  hop still believes the client's header
+- **A job save that SQL Server refused was reported as success.** The editor
+  announced "Saved and sent to the worker" on the control plane's 200, which
+  only means the command was written and dispatched; whether `msdb` accepted it
+  is decided on the SQL host and arrives seconds later. The error was never
+  lost — it reached Postgres, the audit log, a notification and the Commands
+  page — but not the screen the operator was looking at. For a product whose
+  premise is that the dashboard tells you the truth about the estate, a false
+  "Saved" is the worst failure available. The editor now waits for a terminal
+  state and distinguishes applied, still queued, and refused
+
+### Changed
+
+- **zod 4, vitest 4, react-router 8, ESLint 10 and `@fastify/rate-limit` 11.**
+  Two were more than version numbers. zod 4 reads a lone `z.record()` argument
+  as the *key* schema rather than the value schema, which silently inverted the
+  Entra app-role map — the thing that decides what an authenticated user may
+  do. And `react-router-dom` has no version 8: it was folded back into
+  `react-router`, and every 7.x release sits inside a high-severity advisory,
+  so the dashboard moved packages rather than sit on 6 indefinitely
+- **`@types/node` is pinned to the 24 line** and dependabot is told not to
+  offer 26. Everything here runs Node 24 — engines, both image stages, CI, and
+  the runtime baked into the single-file executables — so types from a newer
+  major describe APIs that are not there, and CI could not catch it
+
 ## [0.1.1] — 2026-07-30
 
 ### Fixed
@@ -191,6 +286,7 @@ reasoning outlives the change.
 See [docs/migration.md](docs/migration.md). The significant ones: no
 control-plane HA, manual certificate rotation in mTLS mode, no MSI.
 
-[Unreleased]: https://github.com/semics-tech/remote-sql-agent/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/semics-tech/remote-sql-agent/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/semics-tech/remote-sql-agent/releases/tag/v0.2.0
 [0.1.1]: https://github.com/semics-tech/remote-sql-agent/releases/tag/v0.1.1
 [0.1.0]: https://github.com/semics-tech/remote-sql-agent/releases/tag/v0.1.0
