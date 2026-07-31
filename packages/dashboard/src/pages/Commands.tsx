@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { useState } from 'react';
 import { useCommandApproval, useCommands, type CommandRow } from '../api.js';
 import { useAuth } from '../auth.jsx';

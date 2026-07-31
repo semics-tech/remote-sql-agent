@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { useOverview, type FailedRun, type RunningJob, type WorkerHealth } from '../api.js';
 import { Panel, QueryState, Empty } from '../components.jsx';
 import { formatDateTime, formatDuration, formatRelative } from '../format.js';
