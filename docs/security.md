@@ -66,6 +66,8 @@ The worker's login needs far less than DBAs often expect. Grant the minimum:
 USE [msdb];
 CREATE USER [rsagent_worker] FOR LOGIN [rsagent_worker];
 ALTER ROLE [SQLAgentReaderRole] ADD MEMBER [rsagent_worker];
+-- The role grants EXECUTE on sp_help_*, not SELECT on the tables the worker
+-- reads directly. Both are needed; see deploy/sql/worker-permissions.sql.
 ```
 
 That covers the whole read path: job definitions, steps, schedules, operators, alerts, run history
