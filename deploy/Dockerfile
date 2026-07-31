@@ -4,7 +4,7 @@
 # The dashboard is built in and served by the API process, so a deployment is
 # one container plus Postgres.
 
-FROM node:24-bookworm-slim AS build
+FROM node:25-bookworm-slim AS build
 
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
@@ -61,7 +61,7 @@ RUN pnpm --filter @remote-sql-agent/worker bundle \
 RUN pnpm --filter @remote-sql-agent/server --prod --legacy deploy /prod/server
 
 
-FROM node:24-bookworm-slim AS runtime
+FROM node:25-bookworm-slim AS runtime
 
 # tini reaps zombies and forwards signals, so SIGTERM reaches Node and the
 # graceful shutdown path actually runs.
