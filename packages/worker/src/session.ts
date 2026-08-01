@@ -34,6 +34,7 @@ export class ControlPlaneSession {
   #backoff: Backoff;
   #stopped = false;
   #connected = false;
+  #backpressured = false;
   #reconnectTimer: NodeJS.Timeout | null = null;
 
   /** Effective capabilities, re-derived locally rather than trusted from the server. */
@@ -82,17 +83,40 @@ export class ControlPlaneSession {
   }
 
   /**
-   * Send a message. Returns false when the stream is not writable, which is the
-   * caller's signal to keep the payload in the outbox rather than drop it.
+   * Send a message. Returns false only when it was **not** accepted.
+   *
+   * `stream.write()` returning false is backpressure, not rejection: the
+   * message *was* queued, and the boolean is asking the caller to pause until
+   * `drain`. Returning it verbatim meant every message written past the high
+   * water mark was both delivered and outboxed — duplicates on the control
+   * plane, an outbox that grew without bound whenever the pollers outran the
+   * link, and `drainOutbox` re-sending from the seventeenth message of every
+   * batch it had just delivered.
    */
   send(message: WorkerMessage): boolean {
     if (!this.#stream || !this.#connected) return false;
     try {
-      return this.#stream.write(message);
+      if (!this.#stream.write(message)) {
+        // Accepted and buffered. Note it so callers that can slow down do, and
+        // so a genuinely wedged stream is visible rather than silent.
+        if (!this.#backpressured) {
+          this.#backpressured = true;
+          this.logger.debug('Control plane stream is applying backpressure; buffering');
+          this.#stream.once('drain', () => {
+            this.#backpressured = false;
+          });
+        }
+      }
+      return true;
     } catch (err) {
       this.logger.warn({ err }, 'Failed to write to control plane stream');
       return false;
     }
+  }
+
+  /** True while the stream has asked us to wait. Still accepting writes. */
+  get backpressured(): boolean {
+    return this.#backpressured;
   }
 
   #connect(): void {
@@ -206,6 +230,10 @@ export class ControlPlaneSession {
   #handleDisconnect(reason: string): void {
     if (!this.#connected && this.#reconnectTimer) return; // already scheduled
     this.#connected = false;
+    // The drain listener is on a stream that is going away. Left set, the next
+    // session would start believing it was already backpressured and never see
+    // the event that clears it.
+    this.#backpressured = false;
     this.#stream = null;
     this.#client?.close();
     this.#client = null;
@@ -234,6 +262,7 @@ export class ControlPlaneSession {
     // them here keeps one leaked channel per retry from accumulating for the
     // life of a worker that cannot reach its control plane.
     this.#connected = false;
+    this.#backpressured = false;
     this.#stream = null;
     this.#client?.close();
     this.#client = null;

@@ -373,16 +373,12 @@ export class InstanceMonitor {
 
       if (this.#definitionHashes.get(job.jobUuid) === blob.definitionHash) continue;
 
-      this.#definitionHashes.set(job.jobUuid, blob.definitionHash);
-      changes += 1;
-
       // If this worker made the change itself, say so: an unattributed delta
       // would be recorded as on-prem drift and the operator would see their own
       // edit flagged as someone else meddling.
       const attributedTo = this.#pendingAttribution.get(job.jobUuid) ?? '';
-      this.#pendingAttribution.delete(job.jobUuid);
 
-      this.deps.emit({
+      const accepted = this.deps.emit({
         msg: {
           $case: 'definition',
           definition: {
@@ -393,6 +389,24 @@ export class InstanceMonitor {
           },
         },
       });
+
+      // The cache is advanced only once the delta is away, and this ordering is
+      // the whole point. It used to be updated first, so a delta the session
+      // refused left the worker believing it had shipped a change it had not:
+      // the hash matched on every later poll, the `continue` above fired, and
+      // an SSMS edit stayed invisible until the next full snapshot — which is
+      // to say, until a reconnect that might be days away.
+      if (!accepted) {
+        this.deps.logger.warn(
+          { instance: this.instanceName, jobUuid: job.jobUuid },
+          'Definition change could not be sent; leaving it unrecorded so the next poll retries',
+        );
+        continue;
+      }
+
+      this.#pendingAttribution.delete(job.jobUuid);
+      this.#definitionHashes.set(job.jobUuid, blob.definitionHash);
+      changes += 1;
     }
 
     // A job that has vanished needs a full snapshot to reconcile: the delta

@@ -231,6 +231,24 @@ export class Outbox {
     return row !== undefined;
   }
 
+  /**
+   * What happened the first time this command was applied, or null if it never
+   * was.
+   *
+   * The outcome has always been stored; nothing read it. The idempotency gate
+   * checked existence alone and synthesised `success: true`, so a redelivered
+   * command that had *failed* was reported as having succeeded — the operator
+   * saw a green result for a change msdb had refused.
+   */
+  appliedCommandOutcome(
+    commandId: string,
+  ): { success: boolean; result: string | null } | null {
+    const row = this.#db
+      .prepare('SELECT success, result FROM applied_commands WHERE command_id = ?')
+      .get(commandId) as { success: number; result: string | null } | undefined;
+    return row === undefined ? null : { success: row.success === 1, result: row.result };
+  }
+
   recordAppliedCommand(commandId: string, success: boolean, result: string | null): void {
     this.#db
       .prepare(

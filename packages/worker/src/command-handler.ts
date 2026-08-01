@@ -138,9 +138,25 @@ async function evaluateAndApply(
   }
 
   // --- 4. Idempotency -----------------------------------------------------
-  if (context.outbox.hasAppliedCommand(command.id)) {
-    log.info('Command already applied; treating the redelivery as a no-op');
-    return { success: true, errorCode: '', errorDetail: 'Already applied.', sqlErrorNumber: 0 };
+  const previous = context.outbox.appliedCommandOutcome(command.id);
+  if (previous) {
+    // Replay the outcome that was recorded, rather than asserting success.
+    // Checking only that the id existed meant a redelivered command which had
+    // *failed* came back green: the operator was told a change had applied that
+    // msdb had refused, and the only way to find out otherwise was to look at
+    // the job. The point of the record is what happened, not that it happened.
+    log.info(
+      { previousOutcome: previous.success ? 'succeeded' : 'failed' },
+      'Command already applied; replaying the recorded outcome',
+    );
+    return {
+      success: previous.success,
+      errorCode: previous.success ? '' : previous.result ?? 'Unknown',
+      errorDetail: previous.success
+        ? 'Already applied.'
+        : `Already attempted, and it failed: ${previous.result ?? 'no detail recorded'}.`,
+      sqlErrorNumber: 0,
+    };
   }
 
   // --- 5. Apply -----------------------------------------------------------
