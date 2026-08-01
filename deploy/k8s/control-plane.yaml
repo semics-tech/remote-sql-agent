@@ -184,11 +184,18 @@ spec:
             periodSeconds: 5
             failureThreshold: 30
           readinessProbe:
+            # Distinct from the other two probes: this one touches the
+            # database, so a Postgres outage takes the pod out of the
+            # Service's endpoints instead of the pod reporting healthy while
+            # unable to serve anything that reads or writes.
             httpGet:
-              path: /health
+              path: /readyz
               port: http
             periodSeconds: 10
           livenessProbe:
+            # Deliberately not /readyz: a Postgres outage should pull this pod
+            # out of rotation, not kill and restart it — restarting fixes
+            # nothing and adds a reconnect storm on top of the outage.
             httpGet:
               path: /health
               port: http

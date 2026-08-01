@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import Fastify, {
   type FastifyBaseLogger,
   type FastifyError,
@@ -51,13 +52,14 @@ import {
   untaggedInstances,
 } from '../auth/grants-store.js';
 import { permissionsInEnvironment } from '../auth/environments.js';
+import { hashToken, safeEqualHex } from '../auth/passwords.js';
 import {
   createEnrolmentToken,
   listCredentials,
   revokeCredential,
   rotateWorkerKey,
 } from '../worker-auth/enrolment.js';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { commandState, jobs, sqlAuthMode, workers } from '../db/schema.js';
 import {
   CommandError,
@@ -101,6 +103,22 @@ import {
   saveChannel,
   saveRule,
 } from '../domain/notifications/store.js';
+
+/**
+ * Read once at module load, from the package this file actually ships in —
+ * `/health` used to hardcode this and drifted from the real version at the
+ * first release after it was written.
+ */
+const SERVER_VERSION: string = (
+  JSON.parse(
+    readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'package.json'), 'utf8'),
+  ) as { version: string }
+).version;
+
+/** How long a `/metrics` scrape's estate query is reused across concurrent or
+ * rapid-fire requests, so a short scrape interval does not multiply the load
+ * `getEstateOverview` already puts on Postgres for every dashboard load. */
+const METRICS_CACHE_MS = 15_000;
 
 export interface AppDeps {
   db: Database;
@@ -197,20 +215,56 @@ export async function createApp(deps: AppDeps) {
   await registerAuthRoutes(app, { db, config, entra });
 
   // -------------------------------------------------------------------------
-  // Health and metrics
+  // Health, readiness and metrics
   //
-  // Unauthenticated on purpose: these are scraped by infrastructure that has no
-  // session. Neither exposes job content — only counts.
+  // Unauthenticated by default: these are scraped by infrastructure that has
+  // no session, and neither exposes job content — only counts. `/metrics` can
+  // be locked down with RSAGENT_METRICS_TOKEN where the scrape network is not
+  // otherwise trusted.
+  //
+  // `/health` answers "is the process alive", nothing more — no database
+  // call, so a Postgres outage cannot turn a liveness probe into a crash-loop
+  // across the whole fleet. `/readyz` answers "can this instance actually
+  // serve traffic" and is what a readiness probe should point at instead;
+  // unlike `/health`, it was previously reporting ready with Postgres gone.
   // -------------------------------------------------------------------------
 
   app.get('/health', async () => ({
     status: 'ok',
-    version: '0.1.0',
+    version: SERVER_VERSION,
     workersOnline: registry.size,
   }));
 
-  app.get('/metrics', async (_request, reply) => {
-    const estate = await getEstateOverview(db);
+  app.get('/readyz', async (_request, reply) => {
+    try {
+      await db.execute(sql`select 1`);
+    } catch (err) {
+      logger.warn({ err }, 'Readiness check failed: database unreachable');
+      return reply.status(503).send({ status: 'error', detail: 'database unreachable' });
+    }
+    return reply.send({ status: 'ok' });
+  });
+
+  let metricsCache: { at: number; estate: Awaited<ReturnType<typeof getEstateOverview>> } | null =
+    null;
+
+  app.get('/metrics', async (request, reply) => {
+    if (config.metricsToken) {
+      const header = request.headers.authorization;
+      const provided = header?.startsWith('Bearer ') ? header.slice(7) : null;
+      if (!provided || !safeEqualHex(hashToken(provided), hashToken(config.metricsToken))) {
+        return reply.status(401).send({ error: 'Unauthorized' });
+      }
+    }
+
+    // getEstateOverview is a real aggregate query, not a cache read — reused
+    // across scrapes so a short Prometheus interval does not multiply the
+    // load every dashboard page load already puts on Postgres.
+    if (!metricsCache || Date.now() - metricsCache.at > METRICS_CACHE_MS) {
+      metricsCache = { at: Date.now(), estate: await getEstateOverview(db) };
+    }
+    const estate = metricsCache.estate;
+
     const label = (i: { instanceName: string; hostName: string }) =>
       `{instance="${escapeLabel(i.instanceName)}",host="${escapeLabel(i.hostName)}"}`;
     const lines = [
@@ -1386,7 +1440,12 @@ export async function createApp(deps: AppDeps) {
     // until the process is restarted.
     await app.register(fastifyStatic, { root: config.dashboardDir });
     app.setNotFoundHandler((request, reply) => {
-      if (request.url.startsWith('/api') || request.url.startsWith('/health')) {
+      if (
+        request.url.startsWith('/api') ||
+        request.url.startsWith('/health') ||
+        request.url.startsWith('/readyz') ||
+        request.url.startsWith('/metrics')
+      ) {
         return reply.status(404).send({ error: 'NotFound' });
       }
       return reply.sendFile('index.html');
