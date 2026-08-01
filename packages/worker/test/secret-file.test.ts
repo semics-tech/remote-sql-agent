@@ -65,8 +65,12 @@ describe('writeSecretFile', () => {
 
       writeSecretFile(path, 'new');
 
-      expect(statSync(path).mode & 0o777).toBe(0o600);
+      // Content first, then mode. Reversed, CodeQL reads the stat-then-read
+      // pair as a check-then-use race — which it is not here (a private temp
+      // directory, two independent assertions), but the order carries no
+      // meaning and arguing with the query is worth less than not tripping it.
       expect(readFileSync(path, 'utf8')).toBe('new');
+      expect(statSync(path).mode & 0o777).toBe(0o600);
     },
   );
 
