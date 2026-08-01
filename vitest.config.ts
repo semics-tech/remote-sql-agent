@@ -13,6 +13,30 @@ import { defineConfig } from 'vitest/config';
  */
 export default defineConfig({
   test: {
+    /**
+     * Reporting only, with no threshold, and that is deliberate for now.
+     *
+     * A gate added at the same time as the measurement turns the first red
+     * build into an argument about policy rather than a bug to fix. The number
+     * is here to be looked at: `agent-writer.ts` is the only code in this
+     * repository that writes to a customer's msdb, and it had no dedicated test
+     * at all — the kind of gap that is obvious once counted and invisible until
+     * then. Add a threshold once the number has stopped moving.
+     */
+    coverage: {
+      provider: 'v8',
+      reporter: ['text-summary', 'html', 'lcov'],
+      reportsDirectory: './coverage',
+      include: ['packages/*/src/**/*.{ts,tsx}'],
+      exclude: [
+        // Generated from .proto.
+        'packages/protocol/src/gen/**',
+        // Entry points and wiring: exercised end to end by the integration
+        // suite, and a unit test of them would only assert the wiring back.
+        'packages/*/src/index.ts',
+        'packages/dashboard/src/main.tsx',
+      ],
+    },
     projects: [
       {
         test: {
