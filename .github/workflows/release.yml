@@ -323,10 +323,24 @@ jobs:
           cp "node-${NODE_FULL}-win-x64/node.exe" packages/worker/dist/package/node/
           cp "node-${NODE_FULL}-win-x64/LICENSE"  packages/worker/dist/package/node/
 
-      - name: Fetch WinSW
+      # Pinned by digest for the same reason as the Node runtime ten lines
+      # above: this is installed as a service on a database server, and "the
+      # download succeeded" is not the same claim as "the download is what was
+      # released". It was the sharpest inconsistency in this pipeline — the
+      # runtime verified, the service wrapper next to it not.
+      #
+      # Trust-on-first-use, stated plainly: WinSW publishes no checksum of its
+      # own, so this digest was taken from the asset itself (size 18,243,033,
+      # matching the GitHub API's record for the tag). It does not prove the
+      # original is honest. What it does do is freeze it — a re-tagged release,
+      # a substituted asset or a compromised CDN all fail the build instead of
+      # shipping quietly to every Windows SQL host.
+      - name: Fetch and verify WinSW
         run: |
+          WINSW_SHA256="05b82d46ad331cc16bdc00de5c6332c1ef818df8ceefcd49c726553209b3a0da"
           curl -fsSL https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe \
             -o packages/worker/dist/package/rsagent-worker.exe
+          echo "${WINSW_SHA256}  packages/worker/dist/package/rsagent-worker.exe" | sha256sum -c -
 
       - name: Package for Windows
         run: |

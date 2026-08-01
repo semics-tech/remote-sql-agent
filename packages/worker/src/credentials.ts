@@ -1,5 +1,5 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { writeSecretFile } from './secret-file.js';
 import * as grpc from '@grpc/grpc-js';
 import type { WorkerConfig } from './config.js';
 
@@ -30,15 +30,10 @@ export function readWorkerKey(path: string): string {
 }
 
 export function writeWorkerKey(path: string, key: string): void {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${key}\n`, { encoding: 'utf8', mode: 0o600 });
-  try {
-    // Re-apply explicitly: an existing file keeps its original mode, so the
-    // mode passed to writeFileSync alone is not sufficient on a rotation.
-    chmodSync(path, 0o600);
-  } catch {
-    // Windows has no POSIX modes; DPAPI protection is applied by the installer.
-  }
+  // See secret-file.ts: a plain writeFileSync follows symlinks and applies its
+  // mode only on create, so a rotation used to land the new key in whatever
+  // mode the old file had and narrow it afterwards.
+  writeSecretFile(path, `${key}\n`);
 }
 
 /**

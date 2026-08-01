@@ -24,6 +24,7 @@ CONTROL_PLANE=""
 TOKEN=""
 MAX_CAPABILITY="readOnly"
 PACKAGE_URL=""
+PACKAGE_SHA256=""
 INSTALL_DIR="/opt/rsagent"
 CONFIG_DIR="/etc/rsagent"
 STATE_DIR="/var/lib/rsagent"
@@ -40,6 +41,10 @@ Usage: install.sh --control-plane HOST:PORT --token TOKEN [options]
   --token TOKEN               Single-use enrolment token (required)
   --max-capability TIER       readOnly | operate | schedule | full (default: readOnly)
   --package-url URL           Override where the worker package is fetched from
+  --package-sha256 HEX        Verify the download against this SHA-256. Take the
+                              value from the GitHub release, not from the control
+                              plane — a checksum served by the same host as the
+                              package only detects corruption in transit
   --install-dir DIR           Default: /opt/rsagent
   --ca-cert PATH              Pin a private CA for the hub's TLS certificate
 USAGE
@@ -51,6 +56,7 @@ while [[ $# -gt 0 ]]; do
     --token)          TOKEN="${2:-}"; shift 2 ;;
     --max-capability) MAX_CAPABILITY="${2:-}"; shift 2 ;;
     --package-url)    PACKAGE_URL="${2:-}"; shift 2 ;;
+    --package-sha256) PACKAGE_SHA256="${2:-}"; shift 2 ;;
     --install-dir)    INSTALL_DIR="${2:-}"; shift 2 ;;
     --ca-cert)        CA_CERT_PATH="${2:-}"; shift 2 ;;
     -h|--help)        usage; exit 0 ;;
@@ -86,10 +92,39 @@ trap 'rm -rf "$STAGING"' EXIT
 
 echo "Downloading the worker package from $PACKAGE_URL"
 if ! curl -fsSL "$PACKAGE_URL" -o "$STAGING/worker.tar.gz"; then
+  # Deliberately no longer suggests retrying over plain http://. This runs as
+  # root on a database server and installs a service; talking an operator out
+  # of TLS to get past a download error is the wrong trade, and it was the
+  # example this message led with.
   die "Could not download $PACKAGE_URL
-If the control plane is served over plain HTTP or on a non-standard port, pass
-it explicitly, for example:
-  --package-url http://${HUB_HOST}:8080/downloads/rsagent-worker-linux.tar.gz"
+If the control plane serves downloads on a different port or host name, pass it
+explicitly:
+  --package-url https://${HUB_HOST}:8443/downloads/rsagent-worker-linux.tar.gz
+If TLS is the problem, fix the certificate or pin your CA with --ca-cert rather
+than falling back to http — this installs a service that runs as root."
+fi
+
+# Verified when the operator supplies a digest.
+#
+# Threat-model §1 bounds a compromised control plane by the worker's own
+# maxCapability ceiling. That bound does not hold if the same control plane also
+# ships the binary the ceiling is enforced by, so the value worth checking
+# against is the one published with the GitHub release — not one fetched from
+# the host serving the package, which proves only that the bytes arrived intact.
+if [[ -n "$PACKAGE_SHA256" ]]; then
+  echo "Verifying the package against the supplied SHA-256"
+  if command -v sha256sum >/dev/null; then
+    echo "${PACKAGE_SHA256}  ${STAGING}/worker.tar.gz" | sha256sum -c - >/dev/null \
+      || die "The worker package does not match --package-sha256. Not installing it."
+  elif command -v shasum >/dev/null; then
+    echo "${PACKAGE_SHA256}  ${STAGING}/worker.tar.gz" | shasum -a 256 -c - >/dev/null \
+      || die "The worker package does not match --package-sha256. Not installing it."
+  else
+    die "--package-sha256 was given but neither sha256sum nor shasum is available."
+  fi
+else
+  echo "Note: no --package-sha256 given, so the package is trusted because the"
+  echo "      control plane served it. See docs/security.md."
 fi
 
 tar -xzf "$STAGING/worker.tar.gz" -C "$STAGING"
