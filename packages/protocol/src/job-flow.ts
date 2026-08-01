@@ -10,10 +10,18 @@ import { StepAction, type JobDefinition, type JobStep } from './job-definition.j
  * the disagreement would show as one screen contradicting another.
  */
 
+/** msdb `sysjobhistory.run_status`. */
+export const RunStatus = {
+  Failed: 0,
+  Succeeded: 1,
+  Retry: 2,
+  Cancelled: 3,
+} as const;
+
 /** The minimum a completed step must report for the flow to be followed. */
 export interface CompletedStep {
   stepId: number;
-  /** msdb run_status: 1 succeeded, anything else did not. */
+  /** msdb run_status: 0 Failed, 1 Succeeded, 2 Retry, 3 Cancelled. */
   runStatus: number;
 }
 
@@ -41,7 +49,17 @@ export function inferRunningStep(
   const step = definition.steps.find((s) => s.stepId === last.stepId);
   if (!step) return null;
 
-  return nextStepAfter(definition, step, last.runStatus === 1);
+  // A retry has not finished — Agent is about to run this same step again, so
+  // the running step is this one. Branching on `runStatus === 1` and treating
+  // everything else as failure sent the caller down the *failure* branch of a
+  // step that had not failed: no in-flight bar on the timeline, "finishing" on
+  // the overview, and a "Running for" counter that kept climbing against it.
+  if (last.runStatus === RunStatus.Retry) return step.stepId;
+
+  // Cancelled ends the run outright; it does not take the failure branch.
+  if (last.runStatus === RunStatus.Cancelled) return null;
+
+  return nextStepAfter(definition, step, last.runStatus === RunStatus.Succeeded);
 }
 
 /**

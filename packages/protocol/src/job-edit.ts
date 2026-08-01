@@ -72,13 +72,25 @@ export function addStep(
     wasLast: false,
   };
 
-  const afterIndex =
-    options.afterStepId == null
-      ? nodes.length - 1
-      : nodes.findIndex((n) => n.step.stepId === options.afterStepId);
+  // `findIndex` returns -1 for a step id that is not there, and `splice(-1 + 1)`
+  // is `splice(0)` — so an unknown `afterStepId` silently inserted at the
+  // *front*, and `rebuild` then resolved `startStepId` from the old id, leaving
+  // the new step 1 unreachable. Every sibling function in this file guards
+  // `index === -1`; this one did not. Appending is the same thing the caller
+  // gets for `afterStepId == null`, and is the only reading of "after a step
+  // that does not exist" that is not surprising.
+  const requested = options.afterStepId;
+  const found = requested == null ? -1 : nodes.findIndex((n) => n.step.stepId === requested);
+  const afterIndex = requested == null || found === -1 ? nodes.length - 1 : found;
+
+  const warnings =
+    requested != null && found === -1
+      ? [`There is no step ${requested}, so the new step was added at the end.`]
+      : [];
 
   nodes.splice(afterIndex + 1, 0, created);
-  return rebuild(definition, nodes, []);
+  const result = rebuild(definition, nodes, []);
+  return { ...result, warnings: [...warnings, ...result.warnings] };
 }
 
 /** Remove a step, repairing anything that pointed at it. */
@@ -197,6 +209,20 @@ export function disableStep(definition: JobDefinition, stepId: number): StepEdit
 
       if (!arrivesHere) continue;
 
+      // Only a *fall-through* into this step can be put back later: re-enabling
+      // works by restoring the chain, and step ids are positions. An explicit
+      // "on failure go to step N" is different — once rewired it is
+      // indistinguishable from a branch that always pointed at the bypass, so
+      // nothing can restore it and the operator has to be told now rather than
+      // discovering it after a round trip.
+      if (step[actionKey] === StepAction.GoToStep) {
+        warnings.push(
+          `"${s.name}" branches explicitly to "${target.name}" on ${
+            branch === 'onSuccess' ? 'success' : 'failure'
+          }. That branch is being repointed past it, and re-enabling the step will not put it back.`,
+        );
+      }
+
       if (bypass === null) {
         // The disabled step ended the job, so whatever fed it must end it too.
         step[actionKey] =
@@ -248,22 +274,48 @@ export function enableStep(definition: JobDefinition, stepId: number): StepEditR
   const index = ordered.findIndex((s) => s.stepId === stepId);
   const previous = ordered[index - 1];
   const isLast = index === ordered.length - 1;
+  /** Where `disableStep` sent traffic that used to arrive here. */
+  const bypass = ordered[index + 1]?.stepId ?? null;
 
   const steps = definition.steps.map((s) => {
     if (s.stepId !== stepId) {
-      // The step immediately above falls through to it again. Keyed on "does
-      // not currently arrive here" rather than on the specific wiring
-      // `disableStep` left behind: disabling the *last* step turns the one
-      // above it into a Quit rather than a jump, and matching only on the jump
-      // would leave that case impossible to undo.
-      const arrives =
-        previous && s.stepId === previous.stepId
-          ? nextStepAfter(definition, s, true) === stepId
-          : true;
-      if (previous && s.stepId === previous.stepId && !arrives) {
-        return { ...s, onSuccessAction: StepAction.GoToNextStep, onSuccessStepId: 0 };
+      // Both branches of the step immediately above fall through to it again.
+      //
+      // `disableStep` rewires *every* inbound branch, success and failure, but
+      // only this one is reversible: re-enabling restores the chain, and step
+      // ids are positions, so "the branch that would naturally land here" is
+      // knowable. Repairing only `onSuccess` meant a round trip moved a failure
+      // handler permanently — the exact failure the module header warns about.
+      // An explicit `GoToStep` from anywhere else is unrecoverable by
+      // construction, which is why `disableStep` now warns at the time.
+      //
+      // Keyed on "does not currently arrive here" rather than on the specific
+      // wiring left behind: disabling the *last* step turns the one above it
+      // into a Quit rather than a jump, and matching only on the jump would
+      // leave that case impossible to undo.
+      if (!previous || s.stepId !== previous.stepId) return { ...s };
+
+      const step = { ...s };
+      for (const branch of ['onSuccess', 'onFail'] as const) {
+        const actionKey = `${branch}Action` as const;
+        const stepIdKey = `${branch}StepId` as const;
+        if (nextStepAfter(definition, s, branch === 'onSuccess') === stepId) continue;
+
+        // Restore only the shape `disableStep` actually leaves: an explicit
+        // jump over this step to the one after it. Anything else is left alone
+        // — a predecessor whose failure branch is `QuitWithFailure` was never
+        // touched by the disable, and converting it to a fall-through here
+        // would invent a route through the job that nobody asked for.
+        const jumpedOver =
+          step[actionKey] === StepAction.GoToStep && bypass !== null && step[stepIdKey] === bypass;
+        const endedInstead =
+          branch === 'onSuccess' && bypass === null && step[actionKey] === StepAction.QuitWithSuccess;
+        if (!jumpedOver && !endedInstead) continue;
+
+        step[actionKey] = StepAction.GoToNextStep;
+        step[stepIdKey] = 0;
       }
-      return { ...s };
+      return step;
     }
 
     // The step itself has to lead somewhere, or re-enabling it would strand

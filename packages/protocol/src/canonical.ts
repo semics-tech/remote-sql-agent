@@ -81,7 +81,21 @@ export function normaliseJobDefinition(job: JobDefinition): JobDefinition {
     steps: [...job.steps]
       .sort((a, b) => a.stepId - b.stepId)
       .map((s) => ({ ...s, command: normaliseText(s.command) })),
-    schedules: [...job.schedules].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
+    // Name first, then the whole schedule as a tiebreak.
+    //
+    // SQL Server permits two schedules with the same name on one job, and
+    // `Array.sort` is stable — so with only the name to go on, the canonical
+    // output kept whatever order msdb happened to return the rows in. That
+    // order is not guaranteed between polls, so two identical estates produced
+    // two different hashes, and the job reported itself drifted, repeatedly,
+    // with nobody having touched it. The tiebreak makes the order a property of
+    // the content rather than of the read.
+    schedules: [...job.schedules].sort((a, b) => {
+      if (a.name !== b.name) return a.name < b.name ? -1 : 1;
+      const left = JSON.stringify(sortKeysDeep(a));
+      const right = JSON.stringify(sortKeysDeep(b));
+      return left < right ? -1 : left > right ? 1 : 0;
+    }),
     targetServers: [...job.targetServers].sort(),
   };
 }

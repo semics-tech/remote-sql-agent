@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, gte, ne, sql } from 'drizzle-orm';
+import { inferRunningStep, type JobDefinition } from '@remote-sql-agent/protocol';
 import type { Database } from '../db/client.js';
-import { jobActivity, jobHistory } from '../db/schema.js';
+import { jobActivity, jobHistory, jobVersions, jobs } from '../db/schema.js';
 
 /**
  * Per-job statistics and per-step baselines.
@@ -256,13 +257,48 @@ async function getCurrentRun(
         .orderBy(asc(jobHistory.sqlInstanceId))
     : [];
 
+  // Derived from the definition, not read off `jobActivity`.
+  //
+  // `sysjobactivity.last_executed_step_id` — which is what feeds
+  // `activity.currentStepId` — is the step that *finished*, and is 0 for the
+  // whole of the first step because nothing has finished yet. Publishing it as
+  // the current step named the step one behind, and named nothing at all at the
+  // start of every run.
+  //
+  // CLAUDE.md: this question must be answered once and shared, because two
+  // implementations drift and the symptom is one screen contradicting another.
+  // `getRunningJobs` already used `inferRunningStep`; this is the second caller
+  // that was not.
+  const [definitionRow] = startedAt
+    ? await db
+        .select({ definition: jobVersions.definition })
+        .from(jobVersions)
+        .innerJoin(
+          jobs,
+          and(
+            eq(jobs.instanceId, jobVersions.instanceId),
+            eq(jobs.jobUuid, jobVersions.jobUuid),
+            eq(jobs.currentVersionNo, jobVersions.versionNo),
+          ),
+        )
+        .where(and(eq(jobVersions.instanceId, instanceId), eq(jobVersions.jobUuid, jobUuid)))
+    : [];
+
+  const definition = definitionRow?.definition as JobDefinition | undefined;
+  const ordered = definition ? [...definition.steps].sort((a, b) => a.stepId - b.stepId) : [];
+  const derivedStepId =
+    definition && ordered.length > 0 ? inferRunningStep(definition, completedSteps) : null;
+  const derived = ordered.find((s) => s.stepId === derivedStepId);
+
   return {
     startedAt,
     elapsedSeconds: startedAt
       ? Math.max(0, Math.round((now.getTime() - startedAt.getTime()) / 1000))
       : null,
-    currentStepId: activity.currentStepId,
-    currentStepName: activity.currentStepName,
+    // Falls back to what msdb reported only when there is no definition to
+    // derive from — a job mirrored before its first definition poll.
+    currentStepId: definition ? derivedStepId : activity.currentStepId,
+    currentStepName: definition ? (derived?.name ?? null) : activity.currentStepName,
     completedSteps,
   };
 }
