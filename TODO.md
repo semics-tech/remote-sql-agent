@@ -1,5 +1,9 @@
 # To Do
 1. sql / powershell linting in the monaco editor?
+1. Show all jobs on the overview page, filter. / toggle for success, fail, running, long running, etc.
+1. More granular RBAC - group assignments for individual environments, e.g. production_admin group can only write / execute on servers with the 'production' tag, but can read / view all servers. This would be a new table in the database that maps groups to environments and permissions, need to consider being able to manage through Azure groups / role assignments
+1. Do a full code quality and security review of the codebase
+1. Ability to scrub logs from SQLAgent
 
 # In Progress
 1. Job edit screen needs rearranging

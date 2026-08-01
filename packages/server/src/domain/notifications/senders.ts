@@ -271,15 +271,15 @@ export function secretHint(kind: NotificationChannelKind, secret: string): strin
   }
 }
 
-/** Reject a webhook that is not a URL we would ever POST to. */
+/**
+ * Reject a webhook that is not a URL we would ever POST to, at save time.
+ *
+ * The same check as the send path, deliberately. Validating only the scheme here
+ * meant a channel pointed at the metadata service saved cleanly and was refused
+ * later, somewhere the administrator was not looking — so the rule appeared to
+ * be about delivery rather than about what may be configured at all. Refusing on
+ * the way in is what makes it a rule.
+ */
 export function assertWebhookUrl(value: string): void {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new NotificationSendError('That webhook URL is not a valid URL.', false);
-  }
-  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-    throw new NotificationSendError('A webhook URL must be http or https.', false);
-  }
+  assertWebhookUrlAllowed(value, 'That');
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../src/config.js';
-import { assertWebhookUrlAllowed } from '../src/domain/notifications/senders.js';
+import { assertWebhookUrl, assertWebhookUrlAllowed } from '../src/domain/notifications/senders.js';
 
 /**
  * Controls whose safe value is "on", and what happens when they are set wrong.
@@ -113,5 +113,17 @@ describe('where a webhook may be pointed', () => {
 
   it('refuses something that is not a URL at all', () => {
     expect(() => assertWebhookUrlAllowed('not a url', 'Webhook')).toThrow(/not a valid URL/u);
+  });
+
+  it('applies the same rule when the channel is saved, not only when it sends', () => {
+    // Validating only the scheme on save meant a channel pointed at the
+    // metadata service saved cleanly and was refused later, somewhere the
+    // administrator was not looking — which makes it read as a delivery quirk
+    // rather than a rule about what may be configured.
+    expect(() => assertWebhookUrl('http://169.254.169.254/latest/meta-data/')).toThrow(
+      /link-local/u,
+    );
+    expect(() => assertWebhookUrl('file:///etc/passwd')).toThrow(/http or https/u);
+    expect(() => assertWebhookUrl('https://hooks.internal.corp/x')).not.toThrow();
   });
 });
