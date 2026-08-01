@@ -1,7 +1,10 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { asc } from 'drizzle-orm';
 import { canonicaliseJobWithHash, type JobDefinition } from '@remote-sql-agent/protocol';
 import type { Database } from '../src/db/client.js';
+import { jobs } from '../src/db/schema.js';
 import {
+  markJobDeleted,
   markJobsMissingFromSnapshot,
   recordJobVersion,
   getJobVersions,
@@ -196,6 +199,24 @@ describe('snapshot reconciliation', () => {
     // "no information".
     await record(job(), 'local', JOB_A);
     expect(await markJobsMissingFromSnapshot(db, instanceId, [])).toBe(1);
+  });
+
+  it('deletes only the named job, leaving the rest of the instance alone', async () => {
+    // The distinction the hub got wrong: a single `deleted` delta reached
+    // `markJobsMissingFromSnapshot(db, instanceId, [])`, whose documented
+    // meaning is "this instance has no jobs any more", so one deleted job took
+    // every other job on the instance with it. Reconciling a whole instance is
+    // only ever correct from a *complete* snapshot.
+    await record(job(), 'local', JOB_A);
+    await record(job({ name: 'Second job' }), 'local', JOB_B);
+
+    await markJobDeleted(db, instanceId, JOB_A);
+
+    const rows = await db
+      .select({ jobUuid: jobs.jobUuid, deletedAt: jobs.deletedAt })
+      .from(jobs)
+      .orderBy(asc(jobs.jobUuid));
+    expect(rows.filter((r) => r.deletedAt !== null).map((r) => r.jobUuid)).toEqual([JOB_A]);
   });
 
   it('preserves history and versions through a soft delete', async () => {

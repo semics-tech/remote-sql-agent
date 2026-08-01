@@ -18,7 +18,7 @@ import { EnrolmentError, redeemEnrolmentToken } from '../worker-auth/enrolment.j
 import type { CommandService } from '../domain/commands.js';
 import { checkWorkerVersion } from './version-gate.js';
 import { commands } from '../db/schema.js';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type { Database } from '../db/client.js';
 import type { ServerConfig } from '../config.js';
 import { type WorkerRegistry, type LiveWorker } from './registry.js';
@@ -31,7 +31,11 @@ import {
   upsertActivity,
   upsertInstances,
 } from '../domain/ingest.js';
-import { markJobsMissingFromSnapshot, recordJobVersion } from '../domain/versioning.js';
+import {
+  markJobDeleted,
+  markJobsMissingFromSnapshot,
+  recordJobVersion,
+} from '../domain/versioning.js';
 import { writeAudit } from '../domain/audit.js';
 import type { NotificationService } from '../domain/notifications/service.js';
 import type { EventBroker } from '../api/events.js';
@@ -346,7 +350,13 @@ async function handleSession(
           if (!instanceId || !delta.job) break;
 
           if (delta.deleted) {
-            await markJobsMissingFromSnapshot(db, instanceId, []).catch(() => undefined);
+            // One job, by uuid. This used to call
+            // `markJobsMissingFromSnapshot(db, instanceId, [])`, and an empty
+            // list is *documented* as "this instance has no jobs any more" —
+            // so a single deleted delta soft-deleted every job on the
+            // instance, discarding the uuid it was told about. Reconciling a
+            // whole instance is only ever correct from a complete snapshot.
+            await markJobDeleted(db, instanceId, delta.job.jobUuid).catch(() => undefined);
             break;
           }
 
@@ -454,6 +464,7 @@ async function handleSession(
 
         case 'commandResult': {
           const result = msg.commandResult;
+          if (!workerId) break;
           log.info(
             { hostName, commandId: result.commandId, success: result.success, code: result.errorCode },
             'Command result received',
@@ -461,6 +472,7 @@ async function handleSession(
 
           const command = await deps.commands.recordResult({
             commandId: result.commandId,
+            workerId,
             success: result.success,
             errorCode: result.errorCode,
             errorDetail: result.errorDetail,
@@ -497,25 +509,35 @@ async function handleSession(
           // On a Conflict it is the *current* on-prem definition, which is
           // exactly what the three-way view needs, so it is recorded as drift.
           if (result.resultingJob) {
-            const instanceId = [...instanceIds.values()][0];
             const [commandRow] = await db
               .select({ instanceId: commands.instanceId, issuedBy: commands.issuedBy })
               .from(commands)
-              .where(eq(commands.id, result.commandId));
+              .where(and(eq(commands.id, result.commandId), eq(commands.workerId, workerId)));
 
-            const targetInstance = commandRow?.instanceId ?? instanceId;
-            if (targetInstance) {
-              verifyBlobHash(result.resultingJob, log);
-              await recordJobVersion(db, {
-                instanceId: targetInstance,
-                jobUuid: result.resultingJob.jobUuid,
-                canonicalJson: result.resultingJob.canonicalJson,
-                definitionHash: result.resultingJob.definitionHash,
-                origin: result.success ? 'remote' : 'local',
-                commandId: result.success ? result.commandId : null,
-                createdBy: result.success ? commandRow?.issuedBy ?? null : null,
-              });
+            // No fallback to "some instance on this session". There used to be
+            // one, and it meant an unknown command id still produced a version
+            // row with origin:'remote' — which sets isDrift=false, so a worker
+            // could launder a local SSMS edit as a control-plane change and the
+            // drift the operator needs to see would never be reported.
+            const targetInstance = commandRow?.instanceId;
+            if (!targetInstance || ![...instanceIds.values()].includes(targetInstance)) {
+              log.warn(
+                { hostName, commandId: result.commandId },
+                'Resulting job for a command this worker was not sent, or for an instance outside this session; ignoring',
+              );
+              break;
             }
+
+            verifyBlobHash(result.resultingJob, log);
+            await recordJobVersion(db, {
+              instanceId: targetInstance,
+              jobUuid: result.resultingJob.jobUuid,
+              canonicalJson: result.resultingJob.canonicalJson,
+              definitionHash: result.resultingJob.definitionHash,
+              origin: result.success ? 'remote' : 'local',
+              commandId: result.success ? result.commandId : null,
+              createdBy: result.success ? commandRow.issuedBy : null,
+            });
           }
           break;
         }

@@ -333,9 +333,16 @@ export class CommandService {
    * Returns enough of the command for the caller to raise a notification about
    * it, or null when the command is unknown — which happens legitimately if a
    * worker reconnects and reports a result for something already expired.
+   *
+   * Scoped to the worker the command was dispatched to. Selecting on the id
+   * alone let any authenticated worker finalise any command by guessing or
+   * replaying an id, writing a forged audit row attributed to itself and
+   * completing somebody else's change. A worker is trusted for its own
+   * instances; it is not trusted for the estate.
    */
   async recordResult(params: {
     commandId: string;
+    workerId: string;
     success: boolean;
     errorCode: string;
     errorDetail: string;
@@ -350,9 +357,12 @@ export class CommandService {
     const [command] = await this.db
       .select()
       .from(commands)
-      .where(eq(commands.id, params.commandId));
+      .where(and(eq(commands.id, params.commandId), eq(commands.workerId, params.workerId)));
     if (!command) {
-      this.logger.warn({ commandId: params.commandId }, 'Result for an unknown command; ignoring');
+      this.logger.warn(
+        { commandId: params.commandId, workerId: params.workerId, hostName: params.hostName },
+        'Result for a command this worker was not sent; ignoring',
+      );
       return null;
     }
 
@@ -365,7 +375,7 @@ export class CommandService {
         sqlErrorNumber: params.sqlErrorNumber || null,
         completedAt: new Date(),
       })
-      .where(eq(commands.id, params.commandId));
+      .where(and(eq(commands.id, params.commandId), eq(commands.workerId, params.workerId)));
 
     await writeAudit(this.db, {
       actorType: 'worker',
