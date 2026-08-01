@@ -402,5 +402,13 @@ only, never job content. `/metrics` is Prometheus text format.
 `RSAGENT_AUDIT_OTLP_ENDPOINT` forwards it somewhere off this host, which is the
 point. Any OTLP backend — Azure Monitor, Splunk, Datadog, Elastic, Loki.
 
+**Trace export.** A different signal on a different endpoint:
+`RSAGENT_TRACE_OTLP_ENDPOINT` forwards one span per API request and one span
+per worker command (dispatch to result or expiry) to an OTLP traces collector.
+Off by default — like audit export, there is nowhere useful for it to go until
+you set the endpoint. `RSAGENT_TRACE_SAMPLE_RATIO` caps the volume on a large
+estate; the default of 1 traces everything, which is fine at this product's
+usual traffic.
+
 Then work through the deployment checklist in
 [security.md](security.md#deployment-checklist).

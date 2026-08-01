@@ -160,6 +160,22 @@ const configSchema = z.object({
     maxAttempts: z.coerce.number().int().positive(),
   }),
 
+  // --- Trace export (see src/tracing.ts) --------------------------------------
+  trace: z.object({
+    /** Off by default: a request-and-command span for every one of them is
+     * useful once there's somewhere for it to go, and noise otherwise. */
+    otlpEnabled: z.coerce.boolean(),
+    /** OTLP/HTTP traces endpoint, e.g. http://otel-collector:4318/v1/traces —
+     * a different path from the audit logs endpoint above; most collectors
+     * that accept one accept both, but never assume the same URL does both. */
+    otlpEndpoint: z.string().optional(),
+    otlpHeaders: z.record(z.string(), z.string()),
+    serviceName: z.string(),
+    /** 1 = every request and command traced. Below 1, a ratio sampler decides
+     * per trace id, so a trace's own spans are always sampled consistently. */
+    sampleRatio: z.coerce.number().min(0).max(1),
+  }),
+
   /** Default worker poll intervals, pushed down in HelloAck. */
   definitionPollSeconds: z.coerce.number().int().positive(),
   historyPollSeconds: z.coerce.number().int().positive(),
@@ -346,6 +362,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       exportIntervalMs: env.RSAGENT_AUDIT_EXPORT_INTERVAL_MS ?? 10_000,
       exportBatchSize: env.RSAGENT_AUDIT_EXPORT_BATCH_SIZE ?? 200,
       maxAttempts: env.RSAGENT_AUDIT_EXPORT_MAX_ATTEMPTS ?? 10,
+    },
+
+    trace: {
+      otlpEnabled: bool(env.RSAGENT_TRACE_OTLP_ENABLED, false, 'RSAGENT_TRACE_OTLP_ENABLED'),
+      otlpEndpoint: env.RSAGENT_TRACE_OTLP_ENDPOINT ?? env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT,
+      otlpHeaders: parseHeaders(
+        env.RSAGENT_TRACE_OTLP_HEADERS ?? env.OTEL_EXPORTER_OTLP_HEADERS,
+      ),
+      serviceName: env.OTEL_SERVICE_NAME ?? 'remote-sql-agent',
+      sampleRatio: env.RSAGENT_TRACE_SAMPLE_RATIO ?? 1,
     },
 
     definitionPollSeconds: env.RSAGENT_DEFINITION_POLL_SECONDS ?? 30,

@@ -12,6 +12,8 @@ import rateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
 import { z } from 'zod';
 import type { Logger } from 'pino';
+import { SpanKind, SpanStatusCode, type Span } from '@opentelemetry/api';
+import { getTracer } from '../tracing.js';
 import {
   NO_JOB_WRITE,
   ROLES,
@@ -173,6 +175,43 @@ export async function createApp(deps: AppDeps) {
     reply.header('x-frame-options', 'DENY');
     reply.header('referrer-policy', 'same-origin');
     return payload;
+  });
+
+  // One span per request. Not `@opentelemetry/instrumentation-http`: that
+  // package instruments by monkey-patching `node:http` on `require`, which has
+  // to happen before Fastify (or anything else) first imports it — impossible
+  // from inside this module, which is itself imported after Fastify. A pair of
+  // Fastify hooks sidesteps the whole ordering problem for a fraction of the
+  // dependency surface. See tracing.ts's module comment for why this span is
+  // never a parent of a command span, even for a request that dispatches one.
+  const requestSpans = new WeakMap<FastifyRequest, Span>();
+  app.addHook('onRequest', async (request) => {
+    requestSpans.set(
+      request,
+      getTracer().startSpan(`${request.method} ${request.url}`, { kind: SpanKind.SERVER }),
+    );
+  });
+  app.addHook('onResponse', async (request, reply) => {
+    const span = requestSpans.get(request);
+    if (!span) return;
+    // The route pattern, not the raw URL — `/api/jobs/:instanceId`, not
+    // `/api/jobs/3f2b…`, so spans for the same route group together instead of
+    // one span name per distinct id. Unset on a 404: nothing matched.
+    const route = request.routeOptions?.url;
+    if (route) span.updateName(`${request.method} ${route}`);
+    span.setAttribute('http.request.method', request.method);
+    span.setAttribute('http.response.status_code', reply.statusCode);
+    span.setAttribute('url.path', request.url);
+    if (reply.statusCode >= 500) span.setStatus({ code: SpanStatusCode.ERROR });
+    span.end();
+  });
+  app.addHook('onError', async (request, _reply, error) => {
+    const span = requestSpans.get(request);
+    if (!span) return;
+    span.recordException(error);
+    span.setStatus({ code: SpanStatusCode.ERROR, message: error.message });
+    // Not ended here: onResponse still fires once the error handler has sent a
+    // reply, and ending a span twice is a misuse warning for no benefit.
   });
 
   app.setErrorHandler((error: FastifyError, request, reply) => {
