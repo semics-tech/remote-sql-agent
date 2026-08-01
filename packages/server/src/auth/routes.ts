@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyReply } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { Database } from '../db/client.js';
 import type { ServerConfig } from '../config.js';
@@ -8,9 +8,11 @@ import {
   createSession,
   revokeSession,
   CSRF_COOKIE,
+  CSRF_HEADER,
   SESSION_COOKIE,
 } from './sessions.js';
 import { requireSession } from './rbac.js';
+import { generateSecret, hashToken, safeEqualHex } from './passwords.js';
 import { writeAudit } from '../domain/audit.js';
 import { ROLE_PERMISSIONS } from '@remote-sql-agent/protocol';
 
@@ -56,12 +58,32 @@ export async function registerAuthRoutes(
     });
   }
 
+  /**
+   * A CSRF token exists only once a session does — `issueCookies` mints one at
+   * login. Login itself is the one mutating request that happens before that,
+   * so it needs its own: an anonymous double-submit cookie, set the first time
+   * the client asks for `/api/auth/config` — which every sign-in page loads
+   * before showing the form — and checked against the header the client
+   * already sends on every mutating request (`apiFetch` in the dashboard does
+   * this unconditionally, login included). Without this, a cross-site page
+   * cannot read the *response* of a login it triggers, but the request still
+   * reaches the server and its `Set-Cookie` still lands — signing the victim
+   * into an attacker-chosen account without ever showing them a page.
+   */
+  function ensurePreAuthCsrfCookie(request: FastifyRequest, reply: FastifyReply): void {
+    if (request.cookies[CSRF_COOKIE]) return;
+    reply.setCookie(CSRF_COOKIE, generateSecret(24), { ...cookieOptions, httpOnly: false });
+  }
+
   /** What sign-in methods this deployment offers. Unauthenticated by design. */
-  app.get('/api/auth/config', async () => ({
-    localEnabled: config.auth.mode === 'local' || config.auth.mode === 'both',
-    entraEnabled: (config.auth.mode === 'entra' || config.auth.mode === 'both') && entra !== null,
-    entraLoginUrl: '/api/auth/entra/login',
-  }));
+  app.get('/api/auth/config', async (request, reply) => {
+    ensurePreAuthCsrfCookie(request, reply);
+    return {
+      localEnabled: config.auth.mode === 'local' || config.auth.mode === 'both',
+      entraEnabled: (config.auth.mode === 'entra' || config.auth.mode === 'both') && entra !== null,
+      entraLoginUrl: '/api/auth/entra/login',
+    };
+  });
 
   app.get(
     '/api/auth/me',
@@ -84,6 +106,15 @@ export async function registerAuthRoutes(
       },
     },
     async (request, reply) => {
+      const csrfCookie = request.cookies[CSRF_COOKIE];
+      const providedCsrf = request.headers[CSRF_HEADER];
+      const csrfHeader = Array.isArray(providedCsrf) ? providedCsrf[0] : providedCsrf;
+      if (!csrfCookie || !csrfHeader || !safeEqualHex(hashToken(csrfHeader), hashToken(csrfCookie))) {
+        return reply
+          .status(403)
+          .send({ error: 'CsrfFailed', detail: 'Missing or invalid CSRF token. Reload and retry.' });
+      }
+
       if (config.auth.mode === 'entra') {
         return reply
           .status(400)

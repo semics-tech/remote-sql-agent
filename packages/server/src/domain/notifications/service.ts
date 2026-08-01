@@ -173,7 +173,18 @@ export class NotificationService {
     return row !== undefined;
   }
 
-  /** Send everything due. Failures back off; permanent ones stop retrying. */
+  /**
+   * Send everything due. Failures back off; permanent ones stop retrying.
+   *
+   * `#draining` only prevents two overlapping drains *in this process* — the
+   * SELECT below takes no row lock (no `FOR UPDATE SKIP LOCKED`), so two
+   * control-plane replicas draining at once would both select the same due
+   * deliveries and send duplicate notifications. This is currently harmless:
+   * the control plane runs as exactly one replica for an unrelated, stronger
+   * reason (the worker registry is an in-memory map — see "Exactly one
+   * replica" in docs/deployment.md), so there is only ever one drain loop
+   * running anywhere. Add row-claiming here first if that ever changes.
+   */
   async drain(limit = 50): Promise<number> {
     if (this.#draining) return 0;
     this.#draining = true;

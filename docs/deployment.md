@@ -44,6 +44,13 @@ dashboard looks healthy.
 This also means **you cannot split the API and the hub into two services** — the
 REST process must hold the worker sockets in order to dispatch to them.
 
+It also happens to be why the notification delivery sweep
+(`NotificationService.drain`) gets away with no row-level locking: two
+replicas draining at once would both pick up the same due deliveries and send
+duplicate notifications. Harmless today because there is only ever one
+replica; add `FOR UPDATE SKIP LOCKED` there before this constraint is ever
+relaxed.
+
 Scale up, not out. See [Sizing](#sizing).
 
 ---
