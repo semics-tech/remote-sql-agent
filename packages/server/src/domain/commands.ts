@@ -587,7 +587,7 @@ export function buildProtoCommand(
         payload: {
           $case: 'upsertSchedule',
           upsertSchedule: {
-            scheduleUuid: str('scheduleUuid'),
+            scheduleName: str('scheduleName'),
             canonicalJson: str('canonicalJson'),
             baseDefinitionHash: str('baseDefinitionHash'),
           },
@@ -599,7 +599,7 @@ export function buildProtoCommand(
         payload: {
           $case: 'deleteSchedule',
           deleteSchedule: {
-            scheduleUuid: str('scheduleUuid'),
+            scheduleName: str('scheduleName'),
             baseDefinitionHash: str('baseDefinitionHash'),
           },
         },
