@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node"]
+  },
+  // The loose ends: build and maintenance scripts, and the config files at the
+  // repository root. Every one of them was outside any tsconfig, so nothing
+  // typechecked them and the type-aware lint rules could not see them either —
+  // and `build-sea.ts` and `set-version.ts` are release machinery, which is the
+  // worst place to find out a type was wrong.
+  "include": ["scripts/**/*.ts", "packages/*/scripts/**/*.ts", "vitest.config.ts"]
+}
