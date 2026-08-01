@@ -46,6 +46,21 @@ services:
     # Not published: only the control plane needs it.
     expose:
       - '5432'
+    security_opt:
+      - no-new-privileges:true
+    # Not cap_drop: [ALL] — verified against this image directly. The official
+    # entrypoint starts as root, chmods and chowns the data directory, then
+    # switches to the postgres user via gosu (setuid/setgid); dropping ALL
+    # makes every one of those fail on first start ("Operation not permitted",
+    # "failed switching to 'postgres'"). no-new-privileges alone is still real
+    # containment — it blocks the container from gaining privileges beyond
+    # what it started with — and does not touch this path.
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
 
   server:
     # Pulled, never built. This file used to carry a `build:` stanza pointing at
@@ -55,7 +70,7 @@ services:
     #
     # ghcr.io/semics-tech/remote-sql-agent/control-plane is the same image at
     # the same digest if you prefer GitHub's registry.
-    image: ${RSAGENT_IMAGE:-techsemics/remote-sql-agent}:${RSAGENT_VERSION:-latest}
+    image: ${RSAGENT_IMAGE:-techsemics/remote-sql-agent}:${RSAGENT_VERSION:?set RSAGENT_VERSION in .env — see the comment on it in .env.example}
     restart: unless-stopped
     depends_on:
       postgres:
@@ -107,6 +122,24 @@ services:
     ports:
       - '${RSAGENT_HTTP_BIND:-0.0.0.0}:${RSAGENT_HTTP_PORT:-8080}:8080'
       - '${RSAGENT_GRPC_PORT:-8443}:8443'
+    # Matches deploy/k8s/control-plane.yaml's securityContext — same image,
+    # same guarantee. The container already runs as `node` (see the Dockerfile)
+    # and writes nothing to disk itself; the one thing that needs a writable
+    # path is tsx caching its TypeScript transforms under /tmp, which the tmpfs
+    # mount below covers without giving up the read-only root.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    mem_limit: 2g
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
 
   # Only started by `docker compose --profile tls up -d`.
   caddy:
@@ -134,6 +167,22 @@ services:
     ports:
       - '80:80'
       - '443:443'
+    # Verified against this image: NET_BIND_SERVICE is the one capability
+    # caddy needs beyond a default-non-root process, to bind 80/443. Everything
+    # else it does is inside the two volumes above, so cap_drop: [ALL] plus
+    # that one add is a full lockdown rather than a partial one.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
 
 volumes:
   pgdata:

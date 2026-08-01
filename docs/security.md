@@ -26,6 +26,7 @@ The build in this repository implements milestones M0–M3 of the architecture s
 | CSRF protection | §6.5 | **Implemented** (double-submit token bound to the session). |
 | Automatic certificate rotation at 2/3 lifetime | §6.2 | **Not implemented.** Rotation is manual. |
 | Approval workflow | §6.4 | **Not implemented.** M4, along with the write path. |
+| SBOM generation and container image scanning | backlog | **Not implemented.** `pnpm audit --audit-level high` runs in CI on every PR and `minimumReleaseAge` (`pnpm-workspace.yaml`) delays resolving a package until it has survived 3 days in the registry, but neither produces a queryable software bill of materials or scans the published `control-plane` image's OS-level packages (the base image's own `apt` layer, not just the Node dependency tree). Adding this is a tool choice — Trivy, Grype and Syft-plus-a-registry-scanner all fit the "no data ever leaves the estate except what the audit log already exports" constraint differently — and is being left as a deliberate follow-up rather than picked here. |
 
 > **Still not production-ready.** The write path (M4) and packaging (M5) do not exist, and
 > certificate auto-rotation is manual. But the control plane is no longer open: it requires
