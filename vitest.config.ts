@@ -65,6 +65,20 @@ export default defineConfig({
           root: './packages/worker',
           environment: 'node',
           include: ['test/**/*.test.ts'],
+          // credential-key.test.ts generates real RSA-4096 keys, and some of
+          // its cases generate two. Prime search is randomised, so the cost is
+          // a long tail rather than an average — measured over twelve runs it
+          // spread 139ms to 1353ms, a factor of ten, on a machine at load 10.
+          // At load 35 a single test was seen taking 1551ms, and a two-key case
+          // is double that before the tail is counted.
+          //
+          // Against vitest's 5s default that produced a test which failed on
+          // whichever case happened to draw the slow prime: a different one
+          // each run, which is the signature of a flake rather than a bug.
+          // Same reasoning as the server project's 20s for argon2id — the work
+          // is slow by design, and the timeout is here to catch a hang, not to
+          // police a duration.
+          testTimeout: 20_000,
         },
       },
       {
