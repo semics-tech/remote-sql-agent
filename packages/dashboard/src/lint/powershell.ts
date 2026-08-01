@@ -71,7 +71,10 @@ interface ScanResult {
 const BEFORE_COMMENT = new Set([' ', '\t', '\n', '\r', ';', '{', '}', '(', ')', '|', ',', '=']);
 
 function scan(text: string, locate: Locator): ScanResult {
-  const chars = [...text];
+  // split(''), not [...text] — see the note in tsql.ts. The spread iterates
+  // code points while every offset here is a UTF-16 index, so a single
+  // non-BMP character desynchronises the mask from the source.
+  const chars = text.split('');
   const diagnostics: Diagnostic[] = [];
   let i = 0;
 
