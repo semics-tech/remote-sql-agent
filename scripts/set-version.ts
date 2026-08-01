@@ -78,22 +78,66 @@ for (const path of manifestPaths()) {
 
 // The worker reports this to the control plane on every heartbeat, and it is
 // what the dashboard shows next to a host. Left behind, it silently reports
-// the previous release forever.
-const indexPath = join(repoRoot, 'packages', 'worker', 'src', 'index.ts');
-const indexSource = readFileSync(indexPath, 'utf8');
-const indexUpdated = indexSource.replace(
-  /^(const WORKER_VERSION = ')[^']*(';)$/mu,
-  (_match, before: string, after: string) => `${before}${version}${after}`,
-);
-if (indexUpdated === indexSource) {
+// the previous release forever. Lives in its own file (version.ts) rather
+// than index.ts, because the shipped bundle carries no package.json to read
+// a version from at runtime — but check index.ts too, so this keeps working
+// against a checkout from before that split.
+const workerVersionCandidates = [
+  join(repoRoot, 'packages', 'worker', 'src', 'version.ts'),
+  join(repoRoot, 'packages', 'worker', 'src', 'index.ts'),
+];
+let patchedWorkerVersion = false;
+for (const path of workerVersionCandidates) {
+  let source: string;
+  try {
+    source = readFileSync(path, 'utf8');
+  } catch {
+    continue;
+  }
+  const updated = source.replace(
+    /^(export const WORKER_VERSION = '|const WORKER_VERSION = ')[^']*(';)$/mu,
+    (_match, before: string, after: string) => `${before}${version}${after}`,
+  );
+  if (updated === source) continue;
+  writeFileSync(path, updated);
+  console.log(`  ${path.slice(repoRoot.length + 1)} (WORKER_VERSION)`);
+  patchedWorkerVersion = true;
+  break;
+}
+if (!patchedWorkerVersion) {
   console.error(
-    '\nCould not find WORKER_VERSION in packages/worker/src/index.ts.\n' +
+    '\nCould not find WORKER_VERSION in packages/worker/src/version.ts or index.ts.\n' +
       'It is reported on every heartbeat, so it must not be left stale — update it by hand.',
   );
   process.exit(1);
 }
-writeFileSync(indexPath, indexUpdated);
-console.log('  packages/worker/src/index.ts (WORKER_VERSION)');
+
+// Deploy examples an operator copies verbatim. Stale here means every fresh
+// install pins a release behind the one that was just cut.
+const deployTargets: Array<{ path: string; pattern: RegExp }> = [
+  { path: join(repoRoot, 'deploy', '.env.example'), pattern: /^(RSAGENT_VERSION=)[^\n]*$/mu },
+  {
+    path: join(repoRoot, 'deploy', 'k8s', 'control-plane.yaml'),
+    pattern: /^(\s*image: ghcr\.io\/semics-tech\/remote-sql-agent\/control-plane:)[^\s]+$/mu,
+  },
+  { path: join(repoRoot, 'deploy', 'cloud-init.yaml'), pattern: /^(\s*RSAGENT_VERSION=")[^"]*(")$/mu },
+  { path: join(repoRoot, 'docs', 'deployment.md'), pattern: /^(RSAGENT_VERSION=)\d[^\s#]*/mu },
+];
+for (const { path, pattern } of deployTargets) {
+  const source = readFileSync(path, 'utf8');
+  const updated = source.replace(pattern, (...args: unknown[]) => {
+    // Regexes above have either one or two capture groups (a trailing quote
+    // for cloud-init's `"..."` form); args is [match, ...groups, offset, string].
+    const groups = args.slice(1, -2) as string[];
+    return groups.length > 1 ? `${groups[0]}${version}${groups[1]}` : `${groups[0]}${version}`;
+  });
+  if (updated === source) {
+    console.warn(`  no RSAGENT_VERSION pin found: ${path.slice(repoRoot.length + 1)}`);
+    continue;
+  }
+  writeFileSync(path, updated);
+  console.log(`  ${path.slice(repoRoot.length + 1)}`);
+}
 
 console.log(`\nSet ${changed} manifests to ${version}.`);
 console.log('\nNext:');

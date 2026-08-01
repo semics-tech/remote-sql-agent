@@ -123,7 +123,7 @@ spec:
       terminationGracePeriodSeconds: 30
       containers:
         - name: control-plane
-          image: ghcr.io/semics-tech/remote-sql-agent/control-plane:0.1.1
+          image: ghcr.io/semics-tech/remote-sql-agent/control-plane:0.2.0
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
