@@ -96,7 +96,15 @@ export class ControlPlaneSession {
   }
 
   #connect(): void {
-    void this.#connectAsync();
+    // Every failure has to end at #scheduleReconnect. `void`-ing this promise
+    // without a catch is how a worker ended up alive, touching its health file
+    // every 30 s, and connected to nothing: a wrong `caCertPath` threw out of
+    // buildChannelCredentials, the rejection went unhandled, and the reconnect
+    // was never scheduled — so the process neither retried nor exited.
+    this.#connectAsync().catch((err: unknown) => {
+      this.logger.error({ err }, 'Connection attempt failed');
+      this.#scheduleReconnect('connect failed');
+    });
   }
 
   async #connectAsync(): Promise<void> {
@@ -221,6 +229,15 @@ export class ControlPlaneSession {
 
   #scheduleReconnect(reason: string): void {
     if (this.#stopped || this.#reconnectTimer) return;
+    // A failed attempt can leave a half-built client or stream behind — the
+    // throw might have come from `session()` or the first `write`. Dropping
+    // them here keeps one leaked channel per retry from accumulating for the
+    // life of a worker that cannot reach its control plane.
+    this.#connected = false;
+    this.#stream = null;
+    this.#client?.close();
+    this.#client = null;
+
     const delay = this.#backoff.next();
     this.logger.warn({ reason, retryInMs: delay }, 'Disconnected from control plane');
     this.#reconnectTimer = setTimeout(() => {
