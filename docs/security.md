@@ -241,6 +241,37 @@ control plane is the party that uses them, so it necessarily holds them in usabl
 never returned by the API, only a `secretHint` (`hooks.slack.com/…/T0A9`) that is enough to tell two
 channels apart and useless to anyone who reads it.
 
+### A webhook is an outbound request the control plane makes on request
+
+Anyone who can configure a channel can make the control plane issue an HTTP POST from inside the
+network it sits in, and press **Test** to do it on demand. The threat model treats a malicious
+administrator as in scope (§3), so this is bounded rather than trusted:
+
+- **The response body is never returned to the caller.** A failure reports the status code and
+  nothing else. Echoing the body made the test button a readable oracle: point a channel anywhere,
+  press Test, read the reply out of the error message.
+- **Redirects are refused.** A redirect is a second request to a host no check ever saw. No real
+  webhook endpoint answers a POST with one.
+- **The link-local range is refused** — `169.254.0.0/16`, its IPv4-mapped form, `fe80::/10`, and the
+  metadata hostnames cloud providers publish. That is where instance metadata services hand out role
+  credentials to anything that asks, and it is never a legitimate webhook target.
+
+RFC1918 addresses are deliberately **allowed**. This product lives inside the firewall, so an
+internal relay on a private address is the normal target; blocking those would break the primary use
+case and become a setting every estate turns off. The containment that matters is that nothing comes
+back — a request that lands somewhere it should not tells the sender nothing.
+
+The limit, stated rather than implied: the check is on the literal host. A *name* that resolves to a
+link-local address is not caught, and resolving here would not catch it either, since DNS can answer
+differently for the check and for the request.
+
+### SMTP will not send a password in the clear
+
+A channel with a username configured sets `requireTLS`, so a server that does not offer STARTTLS is
+a connection failure rather than a cleartext `AUTH`. Without it an active MITM only has to omit the
+capability. Unauthenticated relays are exempt: they are normal internally, often have no TLS at all,
+and have no credential to protect.
+
 ## SQL injection
 
 No SQL statement anywhere in the worker or control plane is built by string concatenation or

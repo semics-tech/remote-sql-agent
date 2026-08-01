@@ -208,9 +208,32 @@ function parseHeaders(raw: string | undefined): Record<string, string> {
   return out;
 }
 
-function bool(value: string | undefined, fallback: boolean): boolean {
+const TRUE_VALUES = new Set(['true', '1', 'yes', 'on', 'y']);
+const FALSE_VALUES = new Set(['false', '0', 'no', 'off', 'n']);
+
+/**
+ * A boolean environment variable, refusing anything it does not recognise.
+ *
+ * The refusal is the point. This used to compare against `'true' | '1' | 'yes'`
+ * exactly, so any other spelling silently became **false** — and two of the
+ * three call sites are security controls whose safe value is true.
+ * `RSAGENT_GRPC_REQUIRE_TLS=True` started the hub in plaintext with worker API
+ * keys on the wire; `RSAGENT_REQUIRE_APPROVAL_JOB_WRITE=True` turned off
+ * four-eyes. Both look correct in a compose file and neither logs anything.
+ *
+ * Refusing at boot is the only way an operator finds out. A typo that disables
+ * a control has to be loud, and there is no reading of `RSAGENT_GRPC_REQUIRE_TLS=maybe`
+ * that should leave the server running.
+ */
+function bool(value: string | undefined, fallback: boolean, name: string): boolean {
   if (value === undefined) return fallback;
-  return value === 'true' || value === '1' || value === 'yes';
+  const normalised = value.trim().toLowerCase();
+  if (TRUE_VALUES.has(normalised)) return true;
+  if (FALSE_VALUES.has(normalised)) return false;
+  throw new Error(
+    `${name} must be a boolean (true/false, 1/0, yes/no, on/off) but was "${value}". ` +
+      'Refusing to start rather than guess: this setting is silently security-relevant.',
+  );
 }
 
 function list(value: string | undefined, fallback: string[]): string[] {
@@ -310,11 +333,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       tlsCertPath: env.RSAGENT_GRPC_TLS_CERT,
       tlsKeyPath: env.RSAGENT_GRPC_TLS_KEY,
       tlsClientCaPath: env.RSAGENT_GRPC_TLS_CLIENT_CA,
-      requireTls: bool(env.RSAGENT_GRPC_REQUIRE_TLS, true),
+      requireTls: bool(env.RSAGENT_GRPC_REQUIRE_TLS, true, 'RSAGENT_GRPC_REQUIRE_TLS'),
     },
 
     audit: {
-      otlpEnabled: bool(env.RSAGENT_AUDIT_OTLP_ENABLED, false),
+      otlpEnabled: bool(env.RSAGENT_AUDIT_OTLP_ENABLED, false, 'RSAGENT_AUDIT_OTLP_ENABLED'),
       otlpEndpoint: env.RSAGENT_AUDIT_OTLP_ENDPOINT ?? env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT,
       otlpHeaders: parseHeaders(
         env.RSAGENT_AUDIT_OTLP_HEADERS ?? env.OTEL_EXPORTER_OTLP_HEADERS,
@@ -333,7 +356,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     historyBatchSize: env.RSAGENT_HISTORY_BATCH_SIZE ?? 500,
     commandTtlSeconds: env.RSAGENT_COMMAND_TTL_SECONDS ?? 900,
     historyRetentionDays: env.RSAGENT_HISTORY_RETENTION_DAYS ?? 90,
-    requireApprovalForJobWrite: bool(env.RSAGENT_REQUIRE_APPROVAL_JOB_WRITE, false),
+    requireApprovalForJobWrite: bool(env.RSAGENT_REQUIRE_APPROVAL_JOB_WRITE, false, 'RSAGENT_REQUIRE_APPROVAL_JOB_WRITE'),
     approvalExemptRoles: list(env.RSAGENT_APPROVAL_EXEMPT_ROLES, ['Admin']).filter((r) =>
       (ROLES as readonly string[]).includes(r),
     ),
