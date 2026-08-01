@@ -340,6 +340,26 @@ export interface IssuedCommand {
   requiresApproval: boolean;
 }
 
+/**
+ * A refusal from the API, carrying the machine-readable code alongside the
+ * prose.
+ *
+ * The code matters because the caller sometimes has to *act* on the kind of
+ * refusal rather than just show it — a conflict opens the three-way view, and
+ * matching that on the wording of the message is a check that breaks the next
+ * time somebody rewrites the sentence.
+ */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly code: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
 async function send<T>(path: string, method: string, body?: unknown): Promise<T> {
   const res = await apiFetch(path, {
     method,
@@ -349,7 +369,11 @@ async function send<T>(path: string, method: string, body?: unknown): Promise<T>
     const detail = (await res.json().catch(() => ({}))) as { detail?: string; error?: string };
     // The server's refusal messages explain *why* — surfacing them verbatim is
     // more use than a generic failure toast.
-    throw new Error(detail.detail ?? detail.error ?? `Request failed (${res.status})`);
+    throw new ApiError(
+      detail.detail ?? detail.error ?? `Request failed (${res.status})`,
+      detail.error ?? 'Unknown',
+      res.status,
+    );
   }
   return (await res.json()) as T;
 }

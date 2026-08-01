@@ -57,8 +57,8 @@ import {
   revokeCredential,
   rotateWorkerKey,
 } from '../worker-auth/enrolment.js';
-import { eq } from 'drizzle-orm';
-import { commandState, sqlAuthMode, workers } from '../db/schema.js';
+import { and, eq } from 'drizzle-orm';
+import { commandState, jobs, sqlAuthMode, workers } from '../db/schema.js';
 import {
   CommandError,
   prepareJobDefinition,
@@ -536,21 +536,87 @@ export async function createApp(deps: AppDeps) {
       remoteAddress: request.ip,
     });
 
+  /**
+   * The hash the caller says their change was based on.
+   *
+   * Required for every change to an existing job, and this is load-bearing: the
+   * worker reads an empty base hash as "create — nothing to conflict with"
+   * (`command-handler.ts`, `checkConflict`). So omitting the field skipped the
+   * drift check outright, and `allowOverwrite` — the flag that exists to make
+   * overwriting an unacknowledged DBA edit a deliberate act — was bypassable by
+   * simply not sending it.
+   *
+   * The control plane already holds the authoritative hash, so it is also
+   * checked here rather than only on the SQL host. That turns a stale editor
+   * into an immediate 409 instead of a command that queues, dispatches, and
+   * comes back refused seconds later.
+   */
+  const baseHashFor = async (
+    instanceId: string,
+    jobUuid: string,
+    supplied: string | undefined,
+    allowOverwrite: boolean,
+  ): Promise<string> => {
+    // An explicit overwrite is the operator saying "I have seen the conflict
+    // and I mean it". Nothing to check; the worker skips its own check too.
+    if (allowOverwrite) return supplied ?? '';
+
+    if (supplied === undefined) {
+      throw new CommandError(
+        400,
+        'BaseHashRequired',
+        'Changing an existing job needs the definition hash your change was based on, ' +
+          'so a concurrent edit on the SQL host is not silently overwritten. ' +
+          'Send baseDefinitionHash, or allowOverwrite to overwrite deliberately.',
+      );
+    }
+
+    const [row] = await db
+      .select({ currentDefinitionHash: jobs.currentDefinitionHash })
+      .from(jobs)
+      .where(and(eq(jobs.instanceId, instanceId), eq(jobs.jobUuid, jobUuid)));
+
+    // No row, or a job the control plane has never held a definition for: the
+    // supplied hash is all there is to go on, and the worker still checks it.
+    if (!row?.currentDefinitionHash) return supplied;
+
+    if (row.currentDefinitionHash !== supplied) {
+      throw new CommandError(
+        409,
+        'Conflict',
+        'This job changed since you loaded it. Reload to see the current definition, ' +
+          'then re-apply your change.',
+      );
+    }
+    return supplied;
+  };
+
   app.post(
     '/api/instances/:instanceId/jobs/:jobUuid/toggle',
     { preHandler: instanceGuard('job.toggle') },
     async (request) => {
       const { instanceId, jobUuid } = jobParams.parse(request.params);
-      const { enabled, baseDefinitionHash } = z
-        .object({ enabled: z.boolean(), baseDefinitionHash: z.string().optional() })
+      const { enabled, baseDefinitionHash, allowOverwrite } = z
+        .object({
+          enabled: z.boolean(),
+          baseDefinitionHash: z.string().optional(),
+          allowOverwrite: z.boolean().optional(),
+        })
         .parse(request.body);
+
+      const base = await baseHashFor(
+        instanceId,
+        jobUuid,
+        baseDefinitionHash,
+        allowOverwrite === true,
+      );
 
       return issue(request, {
         instanceId,
         kind: 'toggleJob',
         jobUuid,
-        payload: { jobUuid, enabled, baseDefinitionHash: baseDefinitionHash ?? '' },
-        baseDefinitionHash: baseDefinitionHash ?? null,
+        payload: { jobUuid, enabled, baseDefinitionHash: base },
+        baseDefinitionHash: base || null,
       });
     },
   );
@@ -642,6 +708,13 @@ export async function createApp(deps: AppDeps) {
 
       const { canonicalJson } = prepareJobDefinition(body.definition);
 
+      // A create has nothing to conflict with, so it is the one case where an
+      // absent base hash is correct rather than a bypass.
+      const base =
+        jobUuid === 'new'
+          ? ''
+          : await baseHashFor(instanceId, jobUuid, body.baseDefinitionHash, body.allowOverwrite === true);
+
       return issue(request, {
         instanceId,
         kind: 'upsertJob',
@@ -649,10 +722,10 @@ export async function createApp(deps: AppDeps) {
         payload: {
           jobUuid: jobUuid === 'new' ? '' : jobUuid,
           canonicalJson,
-          baseDefinitionHash: body.baseDefinitionHash ?? '',
+          baseDefinitionHash: base,
           allowOverwrite: body.allowOverwrite === true,
         },
-        baseDefinitionHash: body.baseDefinitionHash ?? null,
+        baseDefinitionHash: base || null,
       });
     },
   );
@@ -662,16 +735,26 @@ export async function createApp(deps: AppDeps) {
     { preHandler: instanceGuard('job.write') },
     async (request) => {
       const { instanceId, jobUuid } = jobParams.parse(request.params);
-      const { baseDefinitionHash } = z
-        .object({ baseDefinitionHash: z.string().optional() })
+      const { baseDefinitionHash, allowOverwrite } = z
+        .object({
+          baseDefinitionHash: z.string().optional(),
+          allowOverwrite: z.boolean().optional(),
+        })
         .parse(request.body ?? {});
+
+      const base = await baseHashFor(
+        instanceId,
+        jobUuid,
+        baseDefinitionHash,
+        allowOverwrite === true,
+      );
 
       return issue(request, {
         instanceId,
         kind: 'deleteJob',
         jobUuid,
-        payload: { jobUuid, baseDefinitionHash: baseDefinitionHash ?? '' },
-        baseDefinitionHash: baseDefinitionHash ?? null,
+        payload: { jobUuid, baseDefinitionHash: base },
+        baseDefinitionHash: base || null,
       });
     },
   );

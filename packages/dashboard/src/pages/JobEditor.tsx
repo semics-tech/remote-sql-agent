@@ -16,6 +16,7 @@ import {
   explainJobWriteBlock,
 } from '@remote-sql-agent/protocol/browser';
 import {
+  ApiError,
   awaitCommandOutcome,
   explainCommandFailure,
   useInstanceCapabilities,
@@ -160,7 +161,13 @@ export function JobEditor({
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Save failed.';
       setError(message);
-      if (/conflict/iu.test(message)) setConflict(true);
+      // The API now answers a stale base hash itself, before anything is
+      // queued, so the conflict arrives as a 409 rather than as a command
+      // outcome seconds later. Matched on the code: the wording is prose and
+      // will be rewritten, the code is the contract.
+      if (err instanceof ApiError ? err.code === 'Conflict' : /conflict/iu.test(message)) {
+        setConflict(true);
+      }
     } finally {
       setBusy(false);
     }
