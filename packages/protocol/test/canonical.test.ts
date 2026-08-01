@@ -78,6 +78,24 @@ describe('canonicaliseJob', () => {
     const { canonicalJson } = canonicaliseJobWithHash(job());
     expect(canonicaliseJob(parseJobDefinition(canonicalJson))).toBe(canonicalJson);
   });
+
+  it('does not quote the input when it will not parse', () => {
+    // V8's own SyntaxError reads `Unexpected token 's', "sqlcmd -S "... is not
+    // valid JSON` — ten characters of a step body, in a message that travels
+    // to the worker's errorDetail, the control plane's audit row, and the SIEM
+    // from there. Step bodies routinely carry connection strings.
+    const malformed = 'sqlcmd -S prod01 -U sa -P Hunter2!';
+
+    expect(() => parseJobDefinition(malformed)).toThrow(/not valid JSON/u);
+    try {
+      parseJobDefinition(malformed);
+      expect.unreachable('should have thrown');
+    } catch (err) {
+      const message = (err as Error).message;
+      expect(message).not.toContain('sqlcmd');
+      expect(message).not.toContain('Hunter2');
+    }
+  });
 });
 
 describe('hashing', () => {
