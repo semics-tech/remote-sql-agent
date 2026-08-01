@@ -78,10 +78,23 @@ erode it.
 
 - **[M3]** mTLS with a pinned CA; TLS 1.2+ enforced; anything else rejected.
 - **[now]** Per-command signatures are verified against a public key delivered in `HelloAck`,
-  independently of the transport. This is what defends against a compromised TLS-terminating proxy
-  in front of the control plane — a scenario mTLS alone does not cover.
+  independently of the transport.
+- **[now]** That key can be **pinned** in `worker.yaml` as
+  `controlPlane.commandSigningKeyFingerprint`, and a worker refuses the whole session if what
+  arrives does not match.
+
+  The pin is what makes signatures defend against a compromised TLS-terminating proxy — a scenario
+  mTLS alone does not cover. **Unpinned, they do not.** A proxy that terminates TLS also supplies
+  `HelloAck`, so it substitutes its own signing key and signs its own commands, and the check proves
+  only "whoever sent HelloAck also signed these". This document claimed the stronger property
+  before the pin existed; it was wrong.
+
+  A worker without a pin logs the fingerprint it received, once per session, so the value is to
+  hand and the absence is visible.
 - **Residual risk today:** the channel is plaintext in this build. See the warning in
-  `security.md`.
+  `security.md`. A pin does not help if an attacker is positioned before the *first* connection —
+  it is trust-on-first-configure, and the fingerprint should be carried to the host by whatever
+  channel already carries the enrolment token.
 
 ### 5. Command replay
 

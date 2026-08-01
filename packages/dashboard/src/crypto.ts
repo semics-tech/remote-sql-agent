@@ -29,6 +29,16 @@ export function canEncryptCredentials(): boolean {
   return typeof globalThis.crypto?.subtle?.importKey === 'function';
 }
 
+/**
+ * Smallest RSA modulus this will encrypt a SQL credential to.
+ *
+ * The worker generates 4096-bit keys, so nothing legitimate is near this. It
+ * exists because the key comes from the control plane and there is nothing in a
+ * browser to pin it against — a floor removes the cheapest substitution, which
+ * is a small factorable key that `importKey` would otherwise accept in silence.
+ */
+export const MINIMUM_MODULUS_BITS = 2048;
+
 export const INSECURE_CONTEXT_MESSAGE =
   'Your browser will not encrypt credentials over an insecure connection. ' +
   'Serve the dashboard over HTTPS, then enter the credential. ' +
@@ -84,6 +94,20 @@ export async function encryptCredential(
   } catch (err) {
     throw new CredentialEncryptionError(
       `The worker published a key this browser cannot use: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  // The key arrives from the control plane, which by design cannot read what is
+  // encrypted to it — so a control plane that substituted a key of its own
+  // could. Pinning is not available in a browser, but a *size* floor is, and it
+  // removes the cheapest version of the attack: `importKey` happily accepts a
+  // 1024-bit modulus, which is factorable and would have been used silently.
+  const modulusBits = (key.algorithm as RsaHashedKeyAlgorithm).modulusLength;
+  if (modulusBits < MINIMUM_MODULUS_BITS) {
+    throw new CredentialEncryptionError(
+      `That worker published a ${modulusBits}-bit key, and this will not encrypt a SQL ` +
+        `credential to anything below ${MINIMUM_MODULUS_BITS} bits. The worker generates ` +
+        '4096-bit keys, so a key this small did not come from one.',
     );
   }
 

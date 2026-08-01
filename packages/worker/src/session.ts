@@ -8,6 +8,7 @@ import {
   type Capability,
   effectiveCapabilities,
   isMaxCapabilityTier,
+  signingKeyFingerprint,
 } from '@remote-sql-agent/protocol';
 import type { WorkerConfig } from './config.js';
 import { Backoff } from './backoff.js';
@@ -168,6 +169,27 @@ export class ControlPlaneSession {
           );
         }
 
+        // Pinned, if the operator pinned it. Without a pin this key is simply
+        // whatever arrived on the channel, so a proxy that terminates TLS also
+        // supplies HelloAck and can substitute its own — see the field comment
+        // in config.ts. Rejecting the whole session is the right response: a
+        // worker that cannot trust the signing key cannot trust any command
+        // that follows.
+        const pinned = this.config.controlPlane.commandSigningKeyFingerprint;
+        if (pinned && ack.commandSigningPublicKey) {
+          const actual = signingKeyFingerprint(ack.commandSigningPublicKey);
+          if (actual !== pinned.toLowerCase()) {
+            this.logger.error(
+              { expected: pinned.toLowerCase(), actual },
+              'The control plane presented a command signing key that does not match the pinned ' +
+                'fingerprint in worker.yaml. Refusing the session — either the control plane was ' +
+                're-keyed, or something is terminating TLS between here and it.',
+            );
+            this.#handleDisconnect('command signing key did not match the pin');
+            return;
+          }
+        }
+
         this.#commandSigningPublicKey = ack.commandSigningPublicKey;
         if (!this.#commandSigningPublicKey && this.#capabilities.length > 1) {
           // Without it, no command can be verified — and an unverifiable command
@@ -175,6 +197,15 @@ export class ControlPlaneSession {
           this.logger.error(
             'The control plane granted write capabilities but sent no command signing key. ' +
               'Commands cannot be verified and will all be refused.',
+          );
+        } else if (!pinned && this.#capabilities.length > 1) {
+          // Said once per session, not suppressed. A control that silently does
+          // nothing is worse than one that is visibly off, and the threat model
+          // claims this defends against a TLS-terminating proxy.
+          this.logger.warn(
+            { fingerprint: signingKeyFingerprint(this.#commandSigningPublicKey) },
+            'Command signing key is not pinned. Set controlPlane.commandSigningKeyFingerprint in ' +
+              'worker.yaml to this value so a substituted key is refused rather than trusted.',
           );
         }
 

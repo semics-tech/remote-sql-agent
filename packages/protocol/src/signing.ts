@@ -1,4 +1,10 @@
-import { createHash, createSign, createVerify, generateKeyPairSync } from 'node:crypto';
+import {
+  createHash,
+  createPublicKey,
+  createSign,
+  createVerify,
+  generateKeyPairSync,
+} from 'node:crypto';
 import { canonicalJsonStringify } from './canonical.js';
 import type { Command } from './gen/rsagent/v1/worker.js';
 
@@ -18,6 +24,29 @@ import type { Command } from './gen/rsagent/v1/worker.js';
  */
 
 export const SIGNING_ALGORITHM = 'RSA-SHA256';
+
+/**
+ * A stable identifier for a command signing key: sha256 of its SPKI DER, hex.
+ *
+ * The DER rather than the PEM, so line endings, header wording and wrapping
+ * cannot change the answer for the same key. This is what a worker pins in
+ * `worker.yaml` and what the control plane prints for an operator to copy, and
+ * the two have to agree exactly — which is why there is one implementation of
+ * it rather than one on each side.
+ *
+ * Matches `openssl pkey -pubin -outform DER | openssl dgst -sha256`.
+ */
+export function signingKeyFingerprint(publicKeyPem: string): string {
+  if (!publicKeyPem) return '';
+  try {
+    const der = createPublicKey(publicKeyPem).export({ type: 'spki', format: 'der' });
+    return createHash('sha256').update(der).digest('hex');
+  } catch {
+    // An unparseable key can never match a pin, and returning a sentinel keeps
+    // the caller's comparison total rather than making it handle a throw.
+    return '';
+  }
+}
 
 export interface CommandSigningKeyPair {
   privateKeyPem: string;

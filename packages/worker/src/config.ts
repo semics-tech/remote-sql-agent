@@ -63,6 +63,29 @@ export const workerConfigSchema = z.object({
         clientKeyPath: z.string().optional(),
       })
       .prefault({}),
+    /**
+     * SHA-256 of the SPKI DER of the control plane's command signing key, hex.
+     *
+     * Optional, and the reason it exists is worth stating plainly. The signing
+     * key arrives in `HelloAck`, and `docs/threat-model.md` §4 calls per-command
+     * signatures the defence against a compromised TLS-terminating proxy — a
+     * scenario mTLS alone does not cover. With nothing to compare the key
+     * against, that is not what they deliver: a proxy that terminates TLS also
+     * supplies `HelloAck`, so it substitutes its own key and signs its own
+     * commands, and the check only proves "whoever sent HelloAck also signed
+     * these".
+     *
+     * Set this and the claim becomes true. Leave it unset and the worker logs,
+     * once per session, that the signing key is unpinned — because a control
+     * that silently does nothing is worse than one that is visibly off.
+     *
+     * Print the value on the control plane with:
+     *   openssl pkey -pubin -in signing.pub -outform DER | openssl dgst -sha256
+     */
+    commandSigningKeyFingerprint: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/iu, 'Expected a 64-character hex sha256 fingerprint.')
+      .optional(),
     reconnect: z
       .object({
         initialDelayMs: z.number().int().positive().default(1_000),

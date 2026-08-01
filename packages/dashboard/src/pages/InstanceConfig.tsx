@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   useInstanceConfigs,
   useWorkerAdmin,
@@ -177,6 +177,34 @@ function InstanceConfigForm({
   const secureContext = canEncryptCredentials();
   const needsPassword = authMode === 'sql' && !existing?.hasCredential && password.length === 0;
 
+  /**
+   * The fingerprint of the key the password will be encrypted to.
+   *
+   * Shown because it is the only thing an operator can check. The key arrives
+   * from the control plane, which is precisely the party the encryption is
+   * meant to exclude — so a control plane serving a key of its own would be
+   * able to read every credential entered here, and nothing in the browser can
+   * pin it. Printing the fingerprint lets it be compared against what the
+   * worker logged on the SQL host, which is a check that does not depend on
+   * trusting the control plane at all.
+   */
+  const [keyFingerprint, setKeyFingerprint] = useState<string | null>(null);
+  useEffect(() => {
+    if (authMode !== 'sql' || !secureContext) return;
+    let cancelled = false;
+    void admin
+      .credentialKey(workerId)
+      .then((key) => {
+        if (!cancelled) setKeyFingerprint(key.fingerprint);
+      })
+      .catch(() => {
+        if (!cancelled) setKeyFingerprint(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [admin, authMode, secureContext, workerId]);
+
   async function save(): Promise<void> {
     setBusy(true);
     setError(null);
@@ -307,6 +335,17 @@ function InstanceConfigForm({
                   'Encrypted here before it is sent. It is not stored in this page after saving.'
                 )}
               </div>
+              {secureContext && keyFingerprint ? (
+                <div className="faint">
+                  Encrypting to key{' '}
+                  <span className="mono" title={keyFingerprint}>
+                    {keyFingerprint.slice(0, 16)}…
+                  </span>
+                  . The worker logs this fingerprint on the SQL host when it starts — comparing
+                  them is what proves the control plane has not substituted a key it could read
+                  the password with.
+                </div>
+              ) : null}
             </div>
           </>
         ) : null}
