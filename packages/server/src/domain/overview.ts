@@ -1,7 +1,16 @@
 import { and, asc, desc, eq, gte, inArray, isNull, ne, sql } from 'drizzle-orm';
 import { inferRunningStep, type JobDefinition } from '@remote-sql-agent/protocol';
 import type { Database } from '../db/client.js';
-import { instances, jobActivity, jobHistory, jobs, jobVersions, workers } from '../db/schema.js';
+import { environmentTag, environmentTagJoin } from '../db/environment-tag.js';
+import {
+  instances,
+  jobActivity,
+  jobHistory,
+  jobs,
+  jobVersions,
+  workerInstanceConfigs,
+  workers,
+} from '../db/schema.js';
 
 /**
  * The operations overview — "what is happening right now, and what should I
@@ -660,7 +669,7 @@ export async function listEstateJobs(
         instanceId: instances.id,
         instanceName: instances.instanceName,
         hostName: workers.hostName,
-        environmentTag: instances.environmentTag,
+        environmentTag,
         jobUuid: jobs.jobUuid,
         jobName: jobs.name,
         enabled: jobs.enabled,
@@ -676,6 +685,7 @@ export async function listEstateJobs(
       .from(jobs)
       .innerJoin(instances, eq(instances.id, jobs.instanceId))
       .innerJoin(workers, eq(workers.id, instances.workerId))
+      .leftJoin(workerInstanceConfigs, environmentTagJoin)
       .leftJoin(
         jobActivity,
         and(eq(jobActivity.instanceId, jobs.instanceId), eq(jobActivity.jobUuid, jobs.jobUuid)),

@@ -2,16 +2,17 @@ import { and, asc, eq, isNotNull, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { ROLES, type Role } from '@remote-sql-agent/protocol';
 import type { Database } from '../db/client.js';
+import { environmentTag, environmentTagJoin } from '../db/environment-tag.js';
 import {
-  ALL_ENVIRONMENTS,
   environmentGrants,
   grantSubjectKind,
   instances,
   users,
+  workerInstanceConfigs,
   workers,
   type GrantSubjectKind,
 } from '../db/schema.js';
-import type { EnvironmentGrant, Principal } from './environments.js';
+import { normaliseTag, type EnvironmentGrant, type Principal } from './environments.js';
 
 /** Reading and writing `environment_grants`. The decisions live in environments.ts. */
 
@@ -81,8 +82,15 @@ export async function saveGrant(
     if (!user) throw new GrantError(400, 'UnknownUser', 'No user with that id.');
   }
 
-  const environmentTag =
-    input.environmentTag === ALL_ENVIRONMENTS ? ALL_ENVIRONMENTS : input.environmentTag.trim();
+  // Stored exactly as it is compared. The resolver already lowercases both
+  // sides, but storing what was typed let `Production` and `production` sit in
+  // the table as two rows that both match — and since the resolver keeps the
+  // more privileged of the two, correcting a grant *downward* silently did
+  // nothing. Normalising here is what makes the unique index mean what it says.
+  const tag = normaliseTag(input.environmentTag);
+  if (tag === null) {
+    throw new GrantError(400, 'EmptyEnvironmentTag', 'An environment tag cannot be blank.');
+  }
 
   const [row] = await db
     .insert(environmentGrants)
@@ -90,7 +98,7 @@ export async function saveGrant(
       subjectKind: input.subjectKind,
       subjectKey: input.subjectKey,
       subjectLabel: input.subjectLabel ?? null,
-      environmentTag,
+      environmentTag: tag,
       role: input.role,
       createdBy,
     })
@@ -127,20 +135,30 @@ export async function environmentOfInstance(
   db: Database,
   instanceId: string,
 ): Promise<string | null | undefined> {
+  // Left join, so a tagless instance still returns a row. An inner join would
+  // collapse "untagged" into "no such instance", and the guard answers those
+  // two differently.
   const [row] = await db
-    .select({ environmentTag: instances.environmentTag })
+    .select({ environmentTag })
     .from(instances)
+    .leftJoin(workerInstanceConfigs, environmentTagJoin)
     .where(eq(instances.id, instanceId));
   return row === undefined ? undefined : row.environmentTag;
 }
 
-/** Tags actually in use, so the admin screen offers a list rather than a text box. */
+/**
+ * Tags actually in use, so the admin screen offers a list rather than a text box.
+ *
+ * Read straight off the config table rather than through `instances`, which also
+ * lists a tag configured for a worker that has not connected yet — the admin
+ * tags it and grants against it in one sitting, before enrolment finishes.
+ */
 export async function listEnvironmentTags(db: Database): Promise<string[]> {
   const rows = await db
-    .selectDistinct({ environmentTag: instances.environmentTag })
-    .from(instances)
-    .where(isNotNull(instances.environmentTag))
-    .orderBy(asc(instances.environmentTag));
+    .selectDistinct({ environmentTag: workerInstanceConfigs.environmentTag })
+    .from(workerInstanceConfigs)
+    .where(isNotNull(workerInstanceConfigs.environmentTag))
+    .orderBy(asc(workerInstanceConfigs.environmentTag));
   return rows.map((r) => r.environmentTag).filter((t): t is string => t !== null);
 }
 
@@ -161,7 +179,8 @@ export async function untaggedInstances(db: Database) {
     })
     .from(instances)
     .innerJoin(workers, eq(workers.id, instances.workerId))
-    .where(and(isNull(instances.environmentTag), isNull(instances.detachedAt)))
+    .leftJoin(workerInstanceConfigs, environmentTagJoin)
+    .where(and(isNull(environmentTag), isNull(instances.detachedAt)))
     .orderBy(asc(workers.hostName), asc(instances.instanceName));
 }
 

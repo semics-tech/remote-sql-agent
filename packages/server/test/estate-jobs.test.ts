@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Database } from '../src/db/client.js';
 import { instances, jobActivity, jobHistory, jobs } from '../src/db/schema.js';
 import { listEstateJobs, type JobFacet } from '../src/domain/overview.js';
-import { setupTestDatabase, seedInstance, truncateAll } from './helpers/db.js';
+import { setupTestDatabase, seedInstance, tagInstance, truncateAll } from './helpers/db.js';
 import { eq } from 'drizzle-orm';
 
 /**
@@ -192,7 +192,7 @@ describe('filtering', () => {
 
   it('matches text against the job, host, instance, category and environment', async () => {
     const { instanceId } = await seedInstance(db, 'PRODSQL01', 'MSSQLSERVER');
-    await db.update(instances).set({ environmentTag: 'production' }).where(eq(instances.id, instanceId));
+    await tagInstance(db, instanceId, 'production');
     await seedJob(instanceId, 'Nightly Backup');
     await seedJob(instanceId, 'Reindex');
 

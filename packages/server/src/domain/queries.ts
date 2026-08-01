@@ -15,6 +15,7 @@ import {
   type SQL,
 } from 'drizzle-orm';
 import type { Database } from '../db/client.js';
+import { environmentTag, environmentTagJoin } from '../db/environment-tag.js';
 import {
   agentLogEntries,
   instances,
@@ -22,6 +23,7 @@ import {
   jobHistory,
   jobs,
   jobVersions,
+  workerInstanceConfigs,
   workers,
 } from '../db/schema.js';
 
@@ -66,7 +68,7 @@ export async function getEstateOverview(db: Database): Promise<EstateRow[]> {
       sqlVersion: instances.sqlVersion,
       sqlEdition: instances.sqlEdition,
       agentStatus: instances.agentStatus,
-      environmentTag: instances.environmentTag,
+      environmentTag,
       lastSeenAt: instances.lastSeenAt,
       workerConnectedAt: workers.connectedAt,
       jobCount: sql<number>`COUNT(DISTINCT ${jobs.id}) FILTER (WHERE ${jobs.deletedAt} IS NULL)`,
@@ -80,6 +82,7 @@ export async function getEstateOverview(db: Database): Promise<EstateRow[]> {
     })
     .from(instances)
     .innerJoin(workers, eq(workers.id, instances.workerId))
+    .leftJoin(workerInstanceConfigs, environmentTagJoin)
     .leftJoin(jobs, eq(jobs.instanceId, instances.id))
     .leftJoin(
       jobActivity,
@@ -94,7 +97,7 @@ export async function getEstateOverview(db: Database): Promise<EstateRow[]> {
       instances.sqlVersion,
       instances.sqlEdition,
       instances.agentStatus,
-      instances.environmentTag,
+      environmentTag,
       instances.lastSeenAt,
       workers.connectedAt,
     )
@@ -127,7 +130,7 @@ export async function getInstance(db: Database, instanceId: string) {
       // What SQL Server will let the worker edit here, as the worker reported
       // it. Separate from `capabilities`, which is what this product grants.
       jobWriteMode: instances.jobWriteMode,
-      environmentTag: instances.environmentTag,
+      environmentTag,
       lastSeenAt: instances.lastSeenAt,
       workerId: workers.id,
       workerConnectedAt: workers.connectedAt,
@@ -137,6 +140,7 @@ export async function getInstance(db: Database, instanceId: string) {
     })
     .from(instances)
     .innerJoin(workers, eq(workers.id, instances.workerId))
+    .leftJoin(workerInstanceConfigs, environmentTagJoin)
     .where(eq(instances.id, instanceId));
   return row ?? null;
 }

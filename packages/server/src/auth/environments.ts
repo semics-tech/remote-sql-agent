@@ -52,7 +52,7 @@ export function membershipKey(kind: GrantSubjectKind, key: string): string {
  * anything — but "the grant I created does nothing and there is no error"
  * is close to undiagnosable from the dashboard, so it is worth not doing.
  */
-function normaliseTag(tag: string | null): string | null {
+export function normaliseTag(tag: string | null): string | null {
   const trimmed = tag?.trim().toLowerCase();
   return trimmed ? trimmed : null;
 }
