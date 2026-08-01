@@ -169,12 +169,19 @@ async function main(): Promise<void> {
             try {
               await monitor.refreshIdentity();
               await monitor.sendSnapshot();
-              monitor.startPolling(intervals);
             } catch (err) {
               logger.error(
                 { err, instance: monitor.instanceName },
-                'Failed to start monitoring instance',
+                'Failed to send the reconnect snapshot; polling this instance anyway',
               );
+            } finally {
+              // In a finally, and this is the point. The snapshot runs four
+              // queries against msdb, and one deadlock or timeout used to mean
+              // polling was never started for this instance *for the whole
+              // session* — while it kept appearing in every heartbeat, so
+              // nothing anywhere said it had stopped being watched. A missing
+              // snapshot costs one stale reconcile; no polling costs everything.
+              monitor.startPolling(intervals);
             }
           }
         })();
@@ -200,7 +207,11 @@ async function main(): Promise<void> {
             );
           }
           drainOutbox();
-          touchHealthFile(config.healthFilePath);
+          touchHealthFile(config.healthFilePath, {
+            monitoring: monitors.size,
+            awaitingFirstConnect: monitors.awaitingFirstConnect,
+            connectedToControlPlane: session?.connected ?? false,
+          });
         }, intervals.heartbeatSeconds * 1000);
         heartbeatTimer.unref();
 
@@ -394,14 +405,31 @@ function resolveIntervals(config: WorkerConfig, serverConfig: ConfigUpdate | und
   };
 }
 
-/** Touched each heartbeat so WinSW/systemd can detect a wedged event loop (§5.4). */
-function touchHealthFile(path: string): void {
+/**
+ * Written each heartbeat so WinSW/systemd can detect a wedged event loop (§5.4).
+ *
+ * The mtime is still the liveness signal and nothing reads the contents, so the
+ * body is free to say something useful. It says what the process is actually
+ * doing, because "alive" and "working" came apart in three separate ways and
+ * the file reported the first one in every case: an operator looking at a
+ * worker that has silently stopped monitoring anything now has somewhere to
+ * look that says so.
+ */
+function touchHealthFile(path: string, state: HealthState): void {
   try {
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, new Date().toISOString(), 'utf8');
+    writeFileSync(path, `${JSON.stringify({ at: new Date().toISOString(), ...state })}\n`, 'utf8');
   } catch {
     // A failure to write the health file must never take the worker down.
   }
+}
+
+interface HealthState {
+  /** Instances being polled right now. */
+  monitoring: number;
+  /** Configured in worker.yaml and not connected yet — still being retried. */
+  awaitingFirstConnect: string[];
+  connectedToControlPlane: boolean;
 }
 
 main().catch((err: unknown) => {

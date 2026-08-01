@@ -45,14 +45,60 @@ export interface MonitorSetDeps {
   credentialKey: CredentialKeyPair;
 }
 
+/** How often to retry a `worker.yaml` instance that would not connect. */
+const RETRY_INTERVAL_MS = 60_000;
+
 export class MonitorSet {
   #entries = new Map<string, Entry>();
   #intervals: PollIntervals | null = null;
+  /**
+   * `worker.yaml` instances that have not connected yet.
+   *
+   * These used to be dropped on the floor. `#ensure` returned an outcome
+   * without inserting an entry, and `addLocal`'s outcomes are discarded by the
+   * caller — so on a Windows reboot, where the service starts before msdb is
+   * accepting connections, the worker gave up on the instance permanently,
+   * reported zero instances, and went on touching its health file every 30 s.
+   * Both unit files claim the worker exits on "no reachable SQL instance"; it
+   * does not, and this is what makes that claim safe to drop rather than fix
+   * by exiting.
+   */
+  #awaitingFirstConnect = new Map<string, InstanceConfig>();
+  #retryTimer: NodeJS.Timeout | null = null;
 
   constructor(private readonly deps: MonitorSetDeps) {}
 
   get size(): number {
     return this.#entries.size;
+  }
+
+  /** Instances configured on this host that have never connected. */
+  get awaitingFirstConnect(): string[] {
+    return [...this.#awaitingFirstConnect.keys()];
+  }
+
+  /** Stop retrying. Called on shutdown; safe to call twice. */
+  stopRetrying(): void {
+    if (this.#retryTimer) clearInterval(this.#retryTimer);
+    this.#retryTimer = null;
+  }
+
+  #scheduleRetries(): void {
+    if (this.#retryTimer || this.#awaitingFirstConnect.size === 0) return;
+    this.#retryTimer = setInterval(() => {
+      void this.#retryPending();
+    }, RETRY_INTERVAL_MS);
+    this.#retryTimer.unref();
+  }
+
+  async #retryPending(): Promise<void> {
+    for (const [name, config] of [...this.#awaitingFirstConnect]) {
+      const outcome = await this.#ensure(config, 'file', signatureOf(config));
+      if (outcome.status === 'connected') {
+        this.deps.logger.info({ instance: name }, 'Instance reachable again; now monitoring');
+      }
+    }
+    if (this.#awaitingFirstConnect.size === 0) this.stopRetrying();
   }
 
   get(instanceName: string): InstanceMonitor | undefined {
@@ -190,17 +236,36 @@ export class MonitorSet {
     try {
       await monitor.connect();
     } catch (err) {
-      this.deps.logger.error(
-        { err, instance: config.name },
-        'Could not connect to SQL Server instance',
-      );
+      const status = classifyConnectionError(err);
+      // A host-configured instance keeps being retried. `unreachable` is
+      // routinely transient — a Windows reboot starts this service before msdb
+      // accepts connections — and giving up on the first attempt is how a
+      // worker ends up monitoring nothing while reporting itself healthy.
+      // `auth_failed` is retried too: a rotated login is fixed by an
+      // administrator, not by restarting the service.
+      if (source === 'file') {
+        if (!this.#awaitingFirstConnect.has(config.name)) {
+          this.deps.logger.error(
+            { err, instance: config.name, status, retryInMs: RETRY_INTERVAL_MS },
+            'Could not connect to SQL Server instance; will keep retrying',
+          );
+        }
+        this.#awaitingFirstConnect.set(config.name, config);
+        this.#scheduleRetries();
+      } else {
+        this.deps.logger.error(
+          { err, instance: config.name, status },
+          'Could not connect to SQL Server instance',
+        );
+      }
       return {
         instanceName: config.name,
-        status: classifyConnectionError(err),
+        status,
         detail: err instanceof Error ? err.message : String(err),
       };
     }
 
+    this.#awaitingFirstConnect.delete(config.name);
     this.#entries.set(config.name, { monitor, source, signature });
 
     // A newly configured instance must not sit idle until the next reconnect:
@@ -263,6 +328,8 @@ export class MonitorSet {
   }
 
   async closeAll(): Promise<void> {
+    this.stopRetrying();
+    this.#awaitingFirstConnect.clear();
     await Promise.all(this.monitors().map((m) => m.close().catch(() => undefined)));
     this.#entries.clear();
   }
