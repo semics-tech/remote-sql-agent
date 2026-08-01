@@ -250,8 +250,16 @@ async function updateJobProperties(
     .input('job_id', sql.UniqueIdentifier, jobUuid)
     .input('new_name', sql.NVarChar(128), definition.name)
     .input('enabled', sql.TinyInt, definition.enabled ? 1 : 0)
-    .input('description', sql.NVarChar(512), nullIfEmpty(definition.description))
-    .input('category_name', sql.NVarChar(128), nullIfEmpty(definition.categoryName))
+    // `''`, not NULL. `sp_update_job` reads NULL as "leave this alone", so
+    // `nullIfEmpty` here made *clearing* a description or a category a silent
+    // no-op: the operator was told the save succeeded, msdb kept the old value,
+    // and the next poll reported their own edit back as on-prem drift — forever,
+    // because every retry repeated the same no-op. The three operator names
+    // below already passed `''` for exactly this reason; these three did not.
+    .input('description', sql.NVarChar(512), definition.description ?? '')
+    .input('category_name', sql.NVarChar(128), definition.categoryName ?? '')
+    // Owner stays nullable: SQL Server requires a valid login here, and `''` is
+    // not one. NULL genuinely is the right way to say "leave the owner alone".
     .input('owner_login_name', sql.NVarChar(128), nullIfEmpty(definition.ownerLoginName))
     .input('notify_level_email', sql.Int, definition.notifications.emailLevel)
     .input('notify_level_netsend', sql.Int, definition.notifications.netsendLevel)
