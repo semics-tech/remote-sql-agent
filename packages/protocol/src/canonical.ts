@@ -147,7 +147,39 @@ export function canonicaliseAlertWithHash(alert: unknown): CanonicalResult<Alert
   return { definition: parsed, canonicalJson, hash: hashCanonical(canonicalJson) };
 }
 
-/** Parse canonical JSON back into a validated definition. */
+/**
+ * Parse canonical JSON back into a validated definition.
+ *
+ * The `JSON.parse` is wrapped because V8's SyntaxError quotes the input:
+ * `Unexpected token 's', "sqlcmd -S "... is not valid JSON` puts the first ten
+ * characters of a step body into a message that reaches the worker's
+ * `errorDetail`, the control plane's audit row, and from there the SIEM. Step
+ * bodies routinely carry connection strings, so the position is reported and
+ * the content is not.
+ *
+ * The schema errors below are safe as they stand — zod reports paths and
+ * expected types, never the offending value.
+ */
 export function parseJobDefinition(canonicalJson: string): JobDefinition {
-  return jobDefinitionSchema.parse(JSON.parse(canonicalJson));
+  const parsed = tryParseJson(canonicalJson);
+  if ('error' in parsed) throw new SyntaxError(parsed.error);
+  return jobDefinitionSchema.parse(parsed.value);
+}
+
+/**
+ * Parse, reporting failure as a value rather than by rethrowing.
+ *
+ * Written this way so the caller's `throw` is not inside a `catch`: the error
+ * we would otherwise attach as `cause` is precisely the one carrying the quoted
+ * step body, and a cause chain is walked by every error serialiser we use. The
+ * position is the only part of V8's message worth keeping, so it is the only
+ * part kept.
+ */
+function tryParseJson(text: string): { value: unknown } | { error: string } {
+  try {
+    return { value: JSON.parse(text) };
+  } catch (err) {
+    const at = err instanceof SyntaxError ? / at position \d+/u.exec(err.message)?.[0] : undefined;
+    return { error: `Job definition is not valid JSON${at ?? ''}.` };
+  }
 }

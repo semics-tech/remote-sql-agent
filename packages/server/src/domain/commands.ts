@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { and, asc, desc, eq, inArray, lt, or } from 'drizzle-orm';
 import {
   APPROVAL_REQUIRED_BY_DEFAULT,
@@ -176,7 +177,7 @@ export class CommandService {
         instanceId: input.instanceId,
         jobUuid: input.jobUuid,
         requiresApproval,
-        payload: input.payload,
+        payload: auditablePayload(input.payload),
       },
       remoteAddress: input.remoteAddress ?? null,
     });
@@ -634,6 +635,54 @@ export function buildProtoCommand(
 }
 
 /** Validate and canonicalise a job definition submitted from the dashboard. */
+/**
+ * Fields of a command payload that may be written to the audit log.
+ *
+ * An **allowlist**, not a blocklist, and that is the whole point: a payload
+ * field added for a new command kind is excluded until somebody decides it is
+ * safe, rather than published to the SIEM the moment it is introduced.
+ *
+ * `canonicalJson` is the one deliberately absent — it is the full job
+ * definition, and step bodies routinely carry connection strings (CLAUDE.md).
+ * The pino config redacts `*.canonicalJson` for exactly this reason, but
+ * `writeAudit` writes to a table and never passes through pino.
+ */
+const AUDITABLE_PAYLOAD_FIELDS = new Set([
+  'jobUuid',
+  'jobName',
+  'enabled',
+  'allowed',
+  'stepName',
+  'baseDefinitionHash',
+  'allowOverwrite',
+  'scheduleName',
+  'operatorName',
+]);
+
+/**
+ * A command payload reduced to what the audit trail needs.
+ *
+ * The definition is represented by its hash: enough to correlate an audit row
+ * with a version in the timeline, which is what an auditor is actually doing,
+ * without the trail becoming a second copy of every step body.
+ */
+export function auditablePayload(payload: unknown): Record<string, unknown> {
+  if (typeof payload !== 'object' || payload === null) return {};
+
+  const detail: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(payload)) {
+    if (AUDITABLE_PAYLOAD_FIELDS.has(key)) detail[key] = value;
+  }
+
+  const canonicalJson = (payload as { canonicalJson?: unknown }).canonicalJson;
+  if (typeof canonicalJson === 'string' && canonicalJson.length > 0) {
+    detail.definitionHash = createHash('sha256').update(canonicalJson).digest('hex');
+    detail.definitionBytes = Buffer.byteLength(canonicalJson);
+  }
+
+  return detail;
+}
+
 export function prepareJobDefinition(definition: unknown): {
   canonicalJson: string;
   hash: string;
