@@ -14,20 +14,45 @@ const JOB_URL = `/instances/${INSTANCE_ID}/jobs/${JOB_UUID}`;
  */
 
 /**
- * Replace the step body Monaco is showing.
+ * Type a body into a step that starts empty.
  *
- * `insertText` rather than `type`. Typing fires a key event per character, and
- * Monaco's suggestion widget consumes some of them — the first version of this
- * test intermittently ended up with `R10, 1);` in the buffer instead of the
- * RAISERROR it typed, and passed or failed on the timing of a popup. The
- * insertion still goes through the editor's real change pipeline, which is what
- * these tests are actually about.
+ * Deliberately not "replace the body". Monaco renders through the EditContext
+ * API here rather than a hidden textarea, and Playwright's synthetic select-all
+ * and Delete do not drive it — only `insertText` does. The previous version of
+ * this helper pressed select-all/Delete and then inserted, which silently
+ * *appended* to the fixture body. Every test still passed, because they only
+ * asserted which findings appeared and never on which line.
+ *
+ * `insertText` rather than `type` for a separate reason: typing fires a key
+ * event per character and Monaco's suggestion widget consumes some of them, so
+ * an earlier version intermittently ended up with `R10, 1);` in the buffer
+ * instead of the RAISERROR it typed. The insertion still goes through the
+ * editor's real change pipeline, which is what these tests are about.
+ *
+ * The empty-body assertion is first because a helper that quietly appends is
+ * exactly what this is here to prevent recurring.
  */
-async function replaceBody(page: Page, editor: Locator, body: string): Promise<void> {
-  await editor.click();
-  await page.keyboard.press('ControlOrMeta+a');
-  await page.keyboard.press('Delete');
+async function typeBody(page: Page, editor: Locator, body: string): Promise<void> {
+  await expect(editor.locator('.view-line')).toHaveText(['']);
+  await editor.locator('.view-lines').click();
   await page.keyboard.insertText(body);
+  await expect(editor.locator('.view-line').first()).toContainText(body.split('\n')[0]!);
+}
+
+/**
+ * A step with an empty body, made the way an operator makes one.
+ *
+ * Using the product's own Add step rather than a fixture step keeps the
+ * reachability tests looking at the three-step job they were written against —
+ * an unreachable fourth step in the fixture changes what every one of them
+ * counts.
+ */
+async function addEmptyStep(page: Page): Promise<Locator> {
+  const steps = panel(page, /^Steps/);
+  await steps.getByRole('button', { name: 'Add step' }).click();
+  const editor = steps.locator('.monaco-editor').first();
+  await expect(editor).toBeVisible();
+  return editor;
 }
 
 test.describe('job editor: steps', () => {
@@ -121,14 +146,11 @@ test.describe('job editor: steps', () => {
     await page.goto(JOB_URL);
 
     const steps = panel(page, /^Steps/);
-    await steps.getByRole('row', { name: /Rebuild indexes/ }).click();
-
-    const editor = steps.locator('.monaco-editor').first();
-    await expect(editor).toBeVisible();
-    // The fixture body is clean, so nothing should be claimed before typing.
+    const editor = await addEmptyStep(page);
+    // Nothing typed yet, so nothing should be claimed.
     await expect(steps.locator('.lint-bar')).toHaveCount(0);
 
-    await replaceBody(page, editor, "RAISERROR('Import failed', 10, 1);");
+    await typeBody(page, editor, "RAISERROR('Import failed', 10, 1);");
 
     const bar = steps.locator('.lint-bar');
     await expect(bar).toContainText('1 warning');
@@ -138,15 +160,38 @@ test.describe('job editor: steps', () => {
     await expect(bar).toContainText('does not fail the step');
   });
 
+  /**
+   * An emoji anywhere in the body used to move every finding onto the wrong
+   * line and hide the real ones — the mask was built by code point and indexed
+   * by UTF-16 offset. Asserted here as well as in the unit tests because the
+   * line number is what the operator actually acts on, and it is the number
+   * that travels all the way through Monaco to the screen.
+   */
+  test('puts the finding on the right line when the body contains an emoji', async ({ page }) => {
+    await mockApi(page);
+    await page.goto(JOB_URL);
+
+    const steps = panel(page, /^Steps/);
+    const editor = await addEmptyStep(page);
+
+    await typeBody(page, editor, "-- 🚨 nightly\nRAISERROR('Backup failed 🚨', 10, 1);");
+
+    const bar = steps.locator('.lint-bar');
+    await expect(bar).toContainText('1 warning');
+
+    await bar.getByRole('button', { name: /warning/ }).click();
+    await expect(bar).toContainText('tsql/raiserror-not-fatal');
+    // Line 2 — the RAISERROR — not line 1, the comment it was displaced onto.
+    await expect(bar.locator('.lint-line')).toHaveText('Line 2');
+  });
+
   test('re-lints under the other language when the step type changes', async ({ page }) => {
     await mockApi(page);
     await page.goto(JOB_URL);
 
     const steps = panel(page, /^Steps/);
-    await steps.getByRole('row', { name: /Rebuild indexes/ }).click();
-
-    const editor = steps.locator('.monaco-editor').first();
-    await replaceBody(page, editor, 'Write-Host "starting"');
+    const editor = await addEmptyStep(page);
+    await typeBody(page, editor, 'Write-Host "starting"');
 
     // Still T-SQL, and nothing in the T-SQL rules has anything to say about it.
     await expect(steps.locator('.lint-bar')).toHaveCount(0);

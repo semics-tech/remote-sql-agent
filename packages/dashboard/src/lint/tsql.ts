@@ -62,7 +62,12 @@ interface ScanResult {
  * than stopping at the first close-comment marker.
  */
 function scan(text: string, locate: Locator): ScanResult {
-  const chars = [...text];
+  // split(''), not [...text]: the spread iterates *code points*, and every
+  // offset here — the loop counter, `blank`, `locate`, and Monaco's own columns
+  // — is a UTF-16 index. One emoji makes the array shorter than the string, so
+  // after it the mask erases the wrong range and every diagnostic lands on the
+  // wrong line.
+  const chars = text.split('');
   const diagnostics: Diagnostic[] = [];
   let i = 0;
 
@@ -331,8 +336,13 @@ function statementSeparators(masked: string, locate: Locator): Diagnostic[] {
 
   for (const { pattern, name } of checks) {
     let match: RegExpExecArray | null;
-    while ((match = pattern.exec(masked)) !== null && out.length < MAX_PER_RULE) {
+    // Per check, not `out.length`: these are three unrelated findings sharing
+    // one function, and a shared budget meant five missing semicolons before a
+    // CTE silenced the THROW and MERGE checks entirely.
+    let count = 0;
+    while ((match = pattern.exec(masked)) !== null && count < MAX_PER_RULE) {
       if (precededByBoundary(masked, match.index)) continue;
+      count += 1;
       out.push(
         at(locate, match.index, match.index + Math.min(match[0].length, 24), {
           code: 'tsql/missing-semicolon',

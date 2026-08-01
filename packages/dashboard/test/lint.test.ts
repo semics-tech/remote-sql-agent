@@ -290,6 +290,77 @@ describe('pathological input', () => {
   });
 });
 
+describe('characters outside the basic multilingual plane', () => {
+  /**
+   * The mask and the source have to agree on what an offset means.
+   *
+   * `[...text]` iterates code points; every offset in these modules — the scan
+   * loop, `blank`, `locate`, and Monaco's own columns — is a UTF-16 index. One
+   * emoji made the masked array shorter than the string, so from that point on
+   * the mask erased the wrong range and every finding landed on the wrong line.
+   * A DBA writing `RAISERROR('Backup failed 🚨', 16, 1)` got a red squiggle on
+   * a line that was fine, and lost the real findings.
+   */
+  const EMOJI = '🚨';
+
+  it('finds the same T-SQL problems with and without an emoji in a comment', () => {
+    const plain = 'BEGIN\nSELECT 1\nGO\nEND';
+    const withEmoji = `-- ${EMOJI}${EMOJI}${EMOJI} alert\n${plain}`;
+
+    expect(codes(lintTsql(plain))).toContain('tsql/go-inside-block');
+    const found = lintTsql(withEmoji);
+    expect(codes(found)).toContain('tsql/go-inside-block');
+    // One line further down, and nowhere else.
+    expect(found[0]).toMatchObject({ startLine: 4 });
+  });
+
+  it('keeps the diagnostic on the right line for each masked region', () => {
+    const cases: Array<[string, string]> = [
+      ['line comment', `-- ${EMOJI}\n`],
+      ['block comment', `/* ${EMOJI} */\n`],
+      ['string literal', `SELECT '${EMOJI}';\n`],
+      ['quoted identifier', `SELECT [${EMOJI}] FROM t;\n`],
+    ];
+
+    for (const [name, prefix] of cases) {
+      // RAISERROR at severity 10 is the rule; it sits on the line after the
+      // prefix in every case, so the expected line is a constant.
+      const found = lintTsql(`${prefix}RAISERROR('failed', 10, 1);`);
+      expect(codes(found), name).toContain('tsql/raiserror-not-fatal');
+      expect(found.find((d) => d.code === 'tsql/raiserror-not-fatal'), name).toMatchObject({
+        startLine: 2,
+      });
+    }
+  });
+
+  it('does not desynchronise a PowerShell here-string containing an emoji', () => {
+    const body = `$m = @'\n${EMOJI} done\n'@\nWrite-Host $m`;
+    const found = lintPowerShell(body);
+    expect(codes(found)).toContain('ps/write-host');
+    expect(found.find((d) => d.code === 'ps/write-host')).toMatchObject({ startLine: 4 });
+  });
+});
+
+describe('one rule running out of budget does not silence another', () => {
+  it('still reports THROW and MERGE after five CTE findings', () => {
+    // `statementSeparators` runs three unrelated checks and used to share one
+    // budget across all of them, so a body with enough CTE findings hid the
+    // other two entirely.
+    const ctes = Array.from(
+      { length: 6 },
+      (_, i) => `SELECT ${i}\nWITH c${i} AS (SELECT 1 AS a)\nSELECT * FROM c${i}`,
+    ).join('\n');
+    const body = `${ctes}\nSELECT 1\nTHROW;\nSELECT 2\nMERGE INTO dbo.T AS t USING dbo.S AS s ON 1=1;`;
+
+    const messages = lintTsql(body)
+      .filter((d) => d.code === 'tsql/missing-semicolon')
+      .map((d) => d.message);
+
+    expect(messages.some((m) => m.includes('THROW'))).toBe(true);
+    expect(messages.some((m) => m.includes('MERGE'))).toBe(true);
+  });
+});
+
 describe('summary line', () => {
   it('is null when there is nothing to report', () => {
     expect(summariseDiagnostics([])).toBeNull();
