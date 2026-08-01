@@ -11,7 +11,8 @@
   "packageManager": "pnpm@10.23.0",
   "scripts": {
     "build": "turbo run build",
-    "typecheck": "turbo run typecheck",
+    "typecheck": "turbo run typecheck && pnpm typecheck:scripts",
+    "typecheck:scripts": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
     "test:unit": "vitest run --project protocol --project server --project worker --project dashboard",

@@ -11,6 +11,14 @@ export function SignIn() {
   );
   const [busy, setBusy] = useState(false);
 
+  /**
+   * Voided explicitly at the call site below, not passed to `onSubmit` raw.
+   *
+   * React's `onSubmit` expects void, so handing it an async function leaves the
+   * promise unobserved. That is safe here only because the whole body sits
+   * inside try/catch/finally — the first line added outside it would become a
+   * sign-in failure nobody ever sees.
+   */
   async function onSubmit(event: FormEvent): Promise<void> {
     event.preventDefault();
     setBusy(true);
@@ -47,7 +55,7 @@ export function SignIn() {
         ) : null}
 
         {config?.localEnabled ? (
-          <form onSubmit={onSubmit}>
+          <form onSubmit={(event) => void onSubmit(event)}>
             <label htmlFor="username">Username</label>
             <input
               id="username"
