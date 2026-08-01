@@ -28,6 +28,7 @@ import {
   type JobsFingerprint,
 } from './sql/agent-repo.js';
 import { connectInstance } from './sql/pool.js';
+import { PendingAttributionMap } from './pending-attribution.js';
 
 /**
  * Owns one SQL Server instance: its connection, its polling loops and its
@@ -81,6 +82,11 @@ const ACTIVE_POLL_MS = 750;
  */
 const START_BURST_MS = 15_000;
 
+/** See PendingAttributionMap for why this needs a TTL at all. Generous
+ * relative to a normal poll interval (seconds) — the cost of expiring one
+ * early is only that one delta going unattributed. */
+const PENDING_ATTRIBUTION_TTL_MS = 10 * 60 * 1000;
+
 export class InstanceMonitor {
   #pool: sql.ConnectionPool | null = null;
   #identity: InstanceIdentity | null = null;
@@ -117,7 +123,7 @@ export class InstanceMonitor {
    * the next delta for that job so the control plane attributes it to the
    * command rather than to someone editing in SSMS.
    */
-  #pendingAttribution = new Map<string, string>();
+  #pendingAttribution = new PendingAttributionMap(PENDING_ATTRIBUTION_TTL_MS);
 
   constructor(private readonly deps: InstanceMonitorDeps) {}
 
