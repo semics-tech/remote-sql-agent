@@ -231,11 +231,15 @@ function GrantForm({ environments }: { environments: string[] }) {
 function GrantTable({ grants }: { grants: EnvironmentGrant[] }) {
   const admin = useEnvironmentGrantAdmin();
   const [removing, setRemoving] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   async function remove(id: string): Promise<void> {
     setRemoving(id);
+    setError(null);
     try {
       await admin.remove(id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not remove the grant.');
     } finally {
       setRemoving(null);
     }
@@ -243,6 +247,7 @@ function GrantTable({ grants }: { grants: EnvironmentGrant[] }) {
 
   return (
     <div className="table-scroll">
+      {error ? <div className="error">{error}</div> : null}
       <table>
         <thead>
           <tr>

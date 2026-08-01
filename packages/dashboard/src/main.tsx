@@ -4,6 +4,7 @@ import { BrowserRouter } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { App } from './App.jsx';
 import { AuthProvider } from './auth.jsx';
+import { ErrorBoundary } from './ErrorBoundary.jsx';
 import './styles.css';
 
 const queryClient = new QueryClient({
@@ -24,12 +25,14 @@ if (!root) throw new Error('Root element missing from index.html');
 
 createRoot(root).render(
   <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <AuthProvider>
-          <App />
-        </AuthProvider>
-      </BrowserRouter>
-    </QueryClientProvider>
+    <ErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <BrowserRouter>
+          <AuthProvider>
+            <App />
+          </AuthProvider>
+        </BrowserRouter>
+      </QueryClientProvider>
+    </ErrorBoundary>
   </StrictMode>,
 );
