@@ -99,6 +99,16 @@ async function sendEmail(
     // An unauthenticated relay is normal on an internal network, so credentials
     // are only attached when a username is actually configured.
     auth: config.username ? { user: config.username, pass: channel.secret ?? '' } : undefined,
+    // Only when a password is actually going over the link. `secure: false`
+    // means "start in the clear and upgrade with STARTTLS", and nodemailer
+    // treats the upgrade as optional — so an active MITM that simply omits the
+    // STARTTLS capability gets the whole `AUTH` exchange in cleartext, with no
+    // error anywhere. Requiring it turns that into a connection failure.
+    //
+    // Not required on an unauthenticated relay: those are normal on an internal
+    // network, frequently have no TLS at all, and there is no credential to
+    // protect — refusing them would break the common case to defend nothing.
+    requireTLS: Boolean(config.username) && !config.secure,
     connectionTimeout: context.timeoutMs,
     greetingTimeout: context.timeoutMs,
     socketTimeout: context.timeoutMs,
@@ -125,6 +135,70 @@ async function sendEmail(
   }
 }
 
+/**
+ * Hosts a webhook may never reach, whatever an administrator types.
+ *
+ * Deliberately narrow. This product lives *inside* the firewall, so an internal
+ * relay on an RFC1918 address is the normal webhook target, not the exception —
+ * blocking private ranges wholesale would break the primary use case and become
+ * a flag every estate turns off.
+ *
+ * What is blocked is the link-local range, which is never a legitimate webhook
+ * target and is where every cloud provider parks its instance metadata service.
+ * `169.254.169.254` hands out role credentials to anything that asks.
+ *
+ * The boundary, stated rather than implied: this checks the *literal* host. A
+ * name that resolves to a link-local address gets through, and resolving here
+ * would not close it either — DNS can answer differently for the check and for
+ * the request. What does close the oracle is that the response body is never
+ * returned to the caller and redirects are refused, so even a request that
+ * lands somewhere it should not tells the sender nothing back.
+ */
+const BLOCKED_HOST_PATTERNS = [
+  // 169.254.0.0/16. The decimal, octal and hex spellings of the same address
+  // need no patterns of their own: `new URL()` normalises `http://2852039166/`,
+  // `http://0xa9fea9fe/` and `http://0251.0376.0251.0376/` all to this form.
+  // Checked rather than assumed — three patterns for them were written first
+  // and turned out to be dead code.
+  /^169\.254\./u,
+  // The same range IPv4-mapped. `[::ffff:169.254.169.254]` does *not* survive
+  // as a dotted quad — `new URL()` renders it `[::ffff:a9fe:a9fe]` — so
+  // matching on `::ffff:169.254.` would have missed every one of these.
+  /^\[?::ffff:a9fe:/iu,
+  /^\[?fe80:/iu,
+  // The names cloud providers publish for the same endpoint.
+  /^metadata\.google\.internal$/iu,
+  /^metadata\.goog$/iu,
+];
+
+/** Throws unless this URL is one a webhook is allowed to reach. */
+export function assertWebhookUrlAllowed(raw: string, label: string): URL {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new NotificationSendError(`${label} webhook URL is not a valid URL.`, false);
+  }
+
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new NotificationSendError(
+      `${label} webhook URL must be http or https, not ${url.protocol.replace(':', '')}.`,
+      false,
+    );
+  }
+
+  const host = url.hostname.toLowerCase();
+  if (BLOCKED_HOST_PATTERNS.some((pattern) => pattern.test(host))) {
+    throw new NotificationSendError(
+      `${label} webhook URL points at the link-local range, which is where cloud ` +
+        'instance metadata lives. Refusing to send there.',
+      false,
+    );
+  }
+
+  return url;
+}
+
 async function postJson(
   channel: Channel,
   body: unknown,
@@ -132,10 +206,11 @@ async function postJson(
   context: SendContext,
   label: string,
 ): Promise<void> {
-  const url = channel.secret;
-  if (!url) {
+  const raw = channel.secret;
+  if (!raw) {
     throw new NotificationSendError(`${label} channel "${channel.name}" has no webhook URL.`, false);
   }
+  const url = assertWebhookUrlAllowed(raw, label);
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), context.timeoutMs);
@@ -146,12 +221,20 @@ async function postJson(
       headers: { 'content-type': 'application/json', ...headers },
       body: JSON.stringify(body),
       signal: controller.signal,
+      // A redirect is a second request to somewhere the check above never saw,
+      // which would hand back exactly the reachability this is meant to remove.
+      // No legitimate webhook endpoint answers a POST with a redirect.
+      redirect: 'error',
     });
 
     if (!response.ok) {
-      const detail = (await response.text().catch(() => '')).slice(0, 500);
       throw new NotificationSendError(
-        `${label} returned ${response.status} ${response.statusText}${detail ? `: ${detail}` : ''}`,
+        // Status and statusText only. Echoing the body made `/test` a readable
+        // oracle: point a channel at any host, press Test, and read the reply
+        // out of the error message. The body is of no use to an operator
+        // diagnosing their own webhook and of considerable use to anyone
+        // probing the network the control plane sits in.
+        `${label} returned ${response.status} ${response.statusText}.`,
         // 4xx other than 408/429 means the request itself is wrong.
         response.status >= 500 || response.status === 408 || response.status === 429,
       );
@@ -188,15 +271,15 @@ export function secretHint(kind: NotificationChannelKind, secret: string): strin
   }
 }
 
-/** Reject a webhook that is not a URL we would ever POST to. */
+/**
+ * Reject a webhook that is not a URL we would ever POST to, at save time.
+ *
+ * The same check as the send path, deliberately. Validating only the scheme here
+ * meant a channel pointed at the metadata service saved cleanly and was refused
+ * later, somewhere the administrator was not looking — so the rule appeared to
+ * be about delivery rather than about what may be configured at all. Refusing on
+ * the way in is what makes it a rule.
+ */
 export function assertWebhookUrl(value: string): void {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new NotificationSendError('That webhook URL is not a valid URL.', false);
-  }
-  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-    throw new NotificationSendError('A webhook URL must be http or https.', false);
-  }
+  assertWebhookUrlAllowed(value, 'That');
 }
