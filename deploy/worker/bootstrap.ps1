@@ -42,6 +42,11 @@ function Install-RsAgentWorker {
         # dashboard origin, derived from -ControlPlane.
         [string] $PackageUrl = '',
 
+        # Verify the download against this SHA-256. Take the value from the
+        # GitHub release, not from the control plane: a checksum served by the
+        # same host as the package only detects corruption in transit.
+        [string] $PackageSha256 = '',
+
         [string] $InstallDir = "$env:ProgramFiles\RemoteSqlAgent",
 
         # Pin a private CA for the hub's TLS certificate.
@@ -72,17 +77,43 @@ function Install-RsAgentWorker {
         try {
             Invoke-WebRequest -Uri $PackageUrl -OutFile $zip -UseBasicParsing
         } catch {
+            # Deliberately no longer suggests retrying over plain http://.
+            # This installs a Windows service on a database server; talking an
+            # operator out of TLS to get past a download error is the wrong
+            # trade, and it was the example this message led with.
             throw @"
 Could not download the worker package from $PackageUrl
 
   $($_.Exception.Message)
 
-If the control plane is served over plain HTTP, or on a non-standard port, pass
-the URL explicitly:
+If the control plane serves downloads on a different port or host name, pass the
+URL explicitly:
 
   Install-RsAgentWorker -ControlPlane '$ControlPlane' -Token '<token>' ``
-                        -PackageUrl 'http://$hubHost:8080/downloads/rsagent-worker-windows.zip'
+                        -PackageUrl 'https://$hubHost:8443/downloads/rsagent-worker-windows.zip'
+
+If TLS is the problem, fix the certificate or pin your CA with -CaCertPath
+rather than falling back to http.
 "@
+        }
+
+        # Verified when the operator supplies a digest.
+        #
+        # Threat-model section 1 bounds a compromised control plane by the
+        # worker's own maxCapability ceiling. That bound does not hold if the
+        # same control plane also ships the binary the ceiling is enforced by,
+        # so the value worth checking against is the one published with the
+        # GitHub release — not one fetched from the host serving the package,
+        # which proves only that the bytes arrived intact.
+        if ($PackageSha256) {
+            Write-Host 'Verifying the package against the supplied SHA-256'
+            $actual = (Get-FileHash -Path $zip -Algorithm SHA256).Hash
+            if ($actual -ne $PackageSha256.Replace('-', '').Trim().ToUpperInvariant()) {
+                throw "The worker package does not match -PackageSha256 (got $actual). Not installing it."
+            }
+        } else {
+            Write-Host 'Note: no -PackageSha256 given, so the package is trusted because the'
+            Write-Host '      control plane served it. See docs/security.md.'
         }
 
         Expand-Archive -Path $zip -DestinationPath $staging -Force

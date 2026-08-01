@@ -1,6 +1,5 @@
 import * as grpc from '@grpc/grpc-js';
-import { writeFileSync, mkdirSync, chmodSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { writeSecretFile } from './secret-file.js';
 import { generateKeyPairSync, createSign } from 'node:crypto';
 import { EnrolmentClient, type EnrolResponse } from '@remote-sql-agent/protocol';
 import { loadWorkerConfig, type WorkerConfig } from './config.js';
@@ -119,13 +118,8 @@ export async function enrol(options: EnrolOptions): Promise<void> {
 }
 
 function writeSecret(path: string, contents: string, mode = 0o600): void {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, contents, { encoding: 'utf8', mode });
-  try {
-    chmodSync(path, mode);
-  } catch {
-    // Windows: no POSIX modes. DPAPI protection is applied by the installer.
-  }
+  // See secret-file.ts. This writes the mTLS private key, among other things.
+  writeSecretFile(path, contents, mode);
 }
 
 /**

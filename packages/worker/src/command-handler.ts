@@ -307,17 +307,30 @@ async function checkConflict(
   baseDefinitionHash: string,
   allowOverwrite: boolean,
 ): Promise<ApplyOutcome | null> {
-  // An empty base hash means "create", or an operator action with no definition
-  // to conflict with.
-  if (!baseDefinitionHash || allowOverwrite) return null;
+  // An empty base hash means "create", and there is nothing to conflict with.
+  if (!baseDefinitionHash) return null;
 
   const blob = await readJobBlob(context, jobUuid);
+
+  // Checked *before* `allowOverwrite` short-circuits, which is the fix.
+  //
+  // `sp_add_job` has no input job id — msdb allocates one — so an upsert
+  // against a job that has been deleted on the SQL host cannot restore the
+  // original uuid. It used to fall through and create a *second* job under a
+  // new one, which is a duplicate schedule running a duplicate job every night,
+  // arrived at by pressing the button the conflict dialog told the operator to
+  // press. Refusing keeps the uuid in the version timeline pointing at the job
+  // it names; re-creating is still available, as an explicit new job.
   if (!blob) {
     return refuse(
       'Conflict',
-      'That job no longer exists on this instance. Refresh and try again.',
+      'That job no longer exists on this instance, so there is nothing to overwrite. ' +
+        'Someone deleted it in SSMS. Create it as a new job if you still want it — ' +
+        'it will get a new id, and its history will start fresh.',
     );
   }
+
+  if (allowOverwrite) return null;
 
   if (blob.definitionHash !== baseDefinitionHash) {
     return {
