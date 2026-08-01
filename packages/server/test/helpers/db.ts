@@ -61,6 +61,36 @@ export async function truncateAll(db: Database): Promise<void> {
   );
 }
 
+/**
+ * Tag an instance the way the product does — through its configuration row.
+ *
+ * There is deliberately no shortcut that writes the tag onto `instances`. The
+ * first version of this feature shipped inert precisely because every test set
+ * the tag somewhere the product never writes it, so the guard looked correct
+ * against a value nothing produced.
+ */
+export async function tagInstance(
+  db: Database,
+  instanceId: string,
+  environmentTag: string | null,
+): Promise<void> {
+  const [row] = await db.execute(
+    `SELECT worker_id, instance_name FROM instances WHERE id = '${instanceId}'` as never,
+  );
+  const { worker_id: workerId, instance_name: instanceName } = row as {
+    worker_id: string;
+    instance_name: string;
+  };
+
+  const value = environmentTag === null ? 'NULL' : `'${environmentTag.replaceAll("'", "''")}'`;
+  await db.execute(
+    `INSERT INTO worker_instance_configs (worker_id, instance_name, server_address, environment_tag)
+     VALUES ('${workerId}', '${instanceName}', 'localhost', ${value})
+     ON CONFLICT (worker_id, instance_name)
+     DO UPDATE SET environment_tag = ${value}` as never,
+  );
+}
+
 /** Insert a worker + instance and return the instance id. */
 export async function seedInstance(
   db: Database,

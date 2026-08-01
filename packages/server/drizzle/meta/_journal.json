@@ -43,6 +43,13 @@
       "when": 1785517901314,
       "tag": "0005_demonic_skullbuster",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1785571204575,
+      "tag": "0006_overconfident_salo",
+      "breakpoints": true
     }
   ]
 }

@@ -1,6 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { pino } from 'pino';
-import { eq } from 'drizzle-orm';
 import { generateKeyPairSync } from 'node:crypto';
 import type { Role } from '@remote-sql-agent/protocol';
 import type { Database } from '../src/db/client.js';
@@ -13,7 +12,7 @@ import { WorkerRegistry } from '../src/hub/registry.js';
 import { environmentGrants, instances, jobs, users } from '../src/db/schema.js';
 import { createSession, CSRF_HEADER, SESSION_COOKIE } from '../src/auth/sessions.js';
 import { membershipKey } from '../src/auth/environments.js';
-import { setupTestDatabase, seedInstance, truncateAll } from './helpers/db.js';
+import { setupTestDatabase, seedInstance, tagInstance, truncateAll } from './helpers/db.js';
 
 /**
  * The real routes, behind the real `createApp`.
@@ -93,7 +92,7 @@ async function signIn(userId: string) {
  */
 async function productionEstate() {
   const { instanceId } = await seedInstance(db);
-  await db.update(instances).set({ environmentTag: 'production' }).where(eq(instances.id, instanceId));
+  await tagInstance(db, instanceId, 'production');
   await db.insert(jobs).values({ instanceId, jobUuid: JOB_UUID, name: 'Nightly Backup' });
 
   const userId = await seedUser('Viewer', [membershipKey('entra_group', PROD_GROUP)]);
@@ -330,8 +329,9 @@ describe('what the dashboard is told about an instance', () => {
         .limit(1);
       const [other] = await db
         .insert(instances)
-        .values({ workerId: uat!.workerId, instanceName: 'UAT1', environmentTag: 'uat' })
+        .values({ workerId: uat!.workerId, instanceName: 'UAT1' })
         .returning({ id: instances.id });
+      await tagInstance(db, other!.id, 'uat');
       const auth = await signIn(userId);
 
       const response = await app.inject({
@@ -345,6 +345,121 @@ describe('what the dashboard is told about an instance', () => {
       expect(body.yourPermissions).not.toContain('job.write');
       // Reads are still there: the SPA must not grey out the UAT job page.
       expect(body.yourPermissions).toContain('job.read');
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe('tagging an instance the way the product does', () => {
+  /**
+   * The gap every other test in this feature had.
+   *
+   * They all set the tag with a direct `db.update`, and the product writes it
+   * somewhere else entirely — so the guard was read against a value nothing
+   * produced, and the whole feature shipped inert while 54 tests passed. This is
+   * the only test that goes through the tagging route an administrator uses, and
+   * it is the one that fails if the two ever part company again.
+   */
+  async function tagViaApi(
+    app: Awaited<ReturnType<typeof buildApp>>,
+    workerId: string,
+    tag: string,
+  ): Promise<{ cookie: string; csrf: string }> {
+    const admin = await signIn(await seedUser('Admin'));
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/workers/${workerId}/instance-configs`,
+      headers: { cookie: admin.cookie, [CSRF_HEADER]: admin.csrf },
+      payload: {
+        instanceName: 'MSSQLSERVER',
+        serverAddress: 'localhost',
+        authMode: 'integrated',
+        environmentTag: tag,
+      },
+    });
+    expect(response.statusCode, response.body).toBeLessThan(300);
+    return admin;
+  }
+
+  it('lets a grant on that tag reach the instance', async () => {
+    const app = await buildApp();
+    try {
+      const { instanceId, workerId } = await seedInstance(db);
+      await db.insert(jobs).values({ instanceId, jobUuid: JOB_UUID, name: 'Nightly Backup' });
+      const userId = await seedUser('Viewer', [membershipKey('entra_group', PROD_GROUP)]);
+      await db.insert(environmentGrants).values({
+        subjectKind: 'entra_group',
+        subjectKey: PROD_GROUP,
+        environmentTag: 'production',
+        role: 'Editor',
+      });
+      const auth = await signIn(userId);
+
+      const toggle = () =>
+        app.inject({
+          method: 'POST',
+          url: `/api/instances/${instanceId}/jobs/${JOB_UUID}/toggle`,
+          headers: { cookie: auth.cookie, [CSRF_HEADER]: auth.csrf },
+          payload: { enabled: false },
+        });
+
+      // Untagged, so the grant cannot reach it and only the base role applies.
+      expect(refusedByAuthorisation(await toggle())).toBe(true);
+
+      await tagViaApi(app, workerId, 'production');
+
+      const after = await toggle();
+      expect(refusedByAuthorisation(after), `still refused: ${after.body}`).toBe(false);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('reports the tag it was given, case-folded, on the capabilities route', async () => {
+    const app = await buildApp();
+    try {
+      const { instanceId, workerId } = await seedInstance(db);
+      // Typed with a capital by an administrator; compared lowercase everywhere.
+      await tagViaApi(app, workerId, 'Production');
+      const auth = await signIn(await seedUser('Viewer'));
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/instances/${instanceId}/capabilities`,
+        headers: { cookie: auth.cookie },
+      });
+      expect(response.json().environmentTag).toBe('production');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('treats a blank tag as untagged rather than as a tag nothing matches', async () => {
+    const app = await buildApp();
+    try {
+      const { instanceId, workerId } = await seedInstance(db);
+      const admin = await tagViaApi(app, workerId, '   ');
+      const auth = await signIn(await seedUser('Viewer'));
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/instances/${instanceId}/capabilities`,
+        headers: { cookie: auth.cookie },
+      });
+      expect(response.json().environmentTag).toBeNull();
+
+      // And it shows up where an administrator will look for it.
+      const grants = await app.inject({
+        method: 'GET',
+        url: '/api/environment-grants',
+        headers: { cookie: admin.cookie },
+      });
+      const body = grants.json();
+      expect(body.untaggedInstances.map((i: { instanceId: string }) => i.instanceId)).toContain(
+        instanceId,
+      );
+      expect(body.environments).not.toContain('');
     } finally {
       await app.close();
     }

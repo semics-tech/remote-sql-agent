@@ -1,6 +1,7 @@
 import { createHash, createPublicKey } from 'node:crypto';
 import { and, asc, eq } from 'drizzle-orm';
 import type { Database } from '../db/client.js';
+import { normaliseTag } from '../auth/environments.js';
 import type { WorkerRegistry } from '../hub/registry.js';
 import {
   instances,
@@ -247,7 +248,11 @@ export async function upsertInstanceConfig(
     loginName: integrated ? null : (input.loginName ?? null),
     encryptTls: input.encryptTls ?? true,
     trustServerCertificate: input.trustServerCertificate ?? false,
-    environmentTag: input.environmentTag ?? null,
+    // Normalised to exactly what the resolver compares against. A blank tag
+    // stored as `''` was the worst of both: no grant could match it, and it did
+    // not appear in the untagged list either, so the instance was invisible in
+    // both directions.
+    environmentTag: normaliseTag(input.environmentTag ?? null),
   };
 
   // Integrated auth clears any stored ciphertext: leaving a password behind for

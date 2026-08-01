@@ -8,7 +8,7 @@ import { environmentGrants, instances, users } from '../src/db/schema.js';
 import { requireInstancePermission, requirePermission } from '../src/auth/rbac.js';
 import { createSession, CSRF_HEADER, SESSION_COOKIE } from '../src/auth/sessions.js';
 import { membershipKey } from '../src/auth/environments.js';
-import { setupTestDatabase, seedInstance, truncateAll } from './helpers/db.js';
+import { setupTestDatabase, seedInstance, tagInstance, truncateAll } from './helpers/db.js';
 
 /**
  * The guard, against a real database.
@@ -47,7 +47,7 @@ async function seedUser(role: Role, identityGroups: string[] = []): Promise<stri
 }
 
 async function tag(instanceId: string, environmentTag: string | null): Promise<void> {
-  await db.update(instances).set({ environmentTag }).where(eq(instances.id, instanceId));
+  await tagInstance(db, instanceId, environmentTag);
 }
 
 async function addGrant(
@@ -136,8 +136,9 @@ describe('a grant reaching the instance', () => {
       const { workerId } = await seedInstance(db, 'PRODHOST');
       const [uat] = await db
         .insert(instances)
-        .values({ workerId, instanceName: 'UAT1', environmentTag: 'uat' })
+        .values({ workerId, instanceName: 'UAT1' })
         .returning({ id: instances.id });
+      await tag(uat!.id, 'uat');
 
       const userId = await seedUser('Viewer', [membershipKey('entra_group', PROD_GROUP)]);
       await addGrant(PROD_GROUP, 'production', 'Editor');

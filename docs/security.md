@@ -89,7 +89,17 @@ nothing here" is indistinguishable from a permissions bug. Use the environment
 tag `*` for a grant that should reach everything, including untagged instances.
 
 Tags are matched **ignoring case** and surrounding whitespace, so `Production`
-on the instance satisfies a grant written for `production`.
+on the instance satisfies a grant written for `production`. Both sides are
+normalised on the way in as well as on comparison, so a tag cannot exist twice
+in two casings.
+
+An instance carries the tag of the **configuration that created it**
+(`worker_instance_configs`), which is what the dashboard writes when an
+administrator tags it. An instance that came from a worker's own `worker.yaml`
+has no configuration row and is therefore untagged — reachable by base role
+only, per the rule above. There is deliberately no second copy of the tag on
+`instances`: the first version of this feature had one, nothing wrote to it, and
+the guard read `NULL` for every instance in the estate.
 
 ### Estate-wide permissions are never conferred by a grant
 

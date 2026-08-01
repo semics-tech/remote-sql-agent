@@ -272,8 +272,13 @@ job_versions(
 ## 8. Data Model (control plane, principal tables)
 
 ```
-instances(id, host_id, name, environment_tag, sql_version, agent_status, last_seen, ...)
+instances(id, host_id, name, sql_version, agent_status, last_seen, ...)
 workers(id, host_id, cert_serial, cert_expires, version, capabilities jsonb, max_capability_reported, ...)
+worker_instance_configs(id, worker_id, instance_name, server_address, auth_mode, environment_tag, ...)
+                                       -- the environment tag lives here, on the
+                                       -- configuration that sets it, not on the
+                                       -- instance row a worker's Hello creates
+environment_grants(id, subject_kind, subject_key, environment_tag, role, ...)   -- §6.5
 jobs(id, instance_id, job_uuid, name, enabled, current_version_no, category, owner, is_drifted, ...)
 job_versions(...)                      -- §7.2
 job_history(id, instance_id, job_uuid, step_id, run_status, run_datetime, duration, message, sql_instance_id_hwm, ...)

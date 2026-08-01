@@ -85,7 +85,9 @@ export const instances = pgTable(
      * back out, never filtered or joined on, and the allowlist is a list.
      */
     jobWriteMode: jsonb('job_write_mode'),
-    environmentTag: text('environment_tag'),
+    // No environment tag here on purpose. It lives on the config row that sets
+    // it — see db/environment-tag.ts. A column here had no writer and read as
+    // NULL for every instance, which silently disabled the whole grant system.
     lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
     /**
      * Set when an administrator stops monitoring this instance.
