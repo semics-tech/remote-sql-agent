@@ -4,6 +4,7 @@ import { useEstateJobs, type EstateJob, type JobFacet } from '../api.js';
 import { Empty, LastRunCell, Panel } from '../components.jsx';
 import { formatDateTime, formatDuration } from '../format.js';
 import { liveElapsedSeconds, useTicker } from '../ticker.js';
+import { useDebouncedValue } from '../useDebouncedValue.js';
 
 /**
  * Every job in the estate, on the page someone already has open.
@@ -63,10 +64,11 @@ export function AllJobs() {
   const [open, setOpen] = useState(false);
   const [facets, setFacets] = useState<JobFacet[]>([]);
   const [filter, setFilter] = useState('');
+  const debouncedFilter = useDebouncedValue(filter, 250);
 
   // Not fetched until opened: this is the one query on the page that can return
   // thousands of rows, and the panel is closed most of the time.
-  const { data, isLoading, error, dataUpdatedAt } = useEstateJobs(facets, filter, open);
+  const { data, isLoading, error, dataUpdatedAt } = useEstateJobs(facets, debouncedFilter, open);
 
   const toggle = (facet: JobFacet) =>
     setFacets((current) =>
@@ -131,10 +133,17 @@ export function AllJobs() {
           ) : isLoading ? (
             <div className="empty">Loading…</div>
           ) : data && data.jobs.length === 0 ? (
+            // data.total counts jobs matching the *text* filter (see EstateJobsResult),
+            // so it reads as the estate's grand total only while that filter is
+            // empty — with one typed in, total === 0 means "nothing matches",
+            // not "nothing is mirrored", and telling someone to go add a worker
+            // is exactly wrong advice for a search that just did not hit.
             <Empty
-              title={data.total === 0 ? 'No jobs mirrored yet' : 'Nothing matches'}
+              title={
+                data.total === 0 && !debouncedFilter.trim() ? 'No jobs mirrored yet' : 'Nothing matches'
+              }
               hint={
-                data.total === 0
+                data.total === 0 && !debouncedFilter.trim()
                   ? 'Add a worker from the Estate page to start mirroring a SQL Server host.'
                   : 'Clear the filters to see everything.'
               }

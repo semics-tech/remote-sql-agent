@@ -1,4 +1,4 @@
-import { Fragment, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import { CAPABILITIES, MAX_CAPABILITY_TIERS, effectiveCapabilities } from '@remote-sql-agent/protocol/browser';
 import type { MaxCapabilityTier } from '@remote-sql-agent/protocol/browser';
@@ -191,6 +191,20 @@ function CapabilityEditor({ worker }: { worker: WorkerRow }) {
   const effective = effectiveCapabilities(granted, ceiling);
 
   const dirty = JSON.stringify([...granted].sort()) !== JSON.stringify([...worker.capabilities].sort());
+
+  // `granted` only takes its initial value from `worker.capabilities` — a
+  // prop that a 5s poll refreshes underneath this component. Without this,
+  // an operator who has not touched anything watches checkboxes that stopped
+  // reflecting the live worker the moment the panel opened, and an operator
+  // mid-edit would have that edit clobbered by every poll if this ran
+  // unconditionally — hence only resyncing while nothing is unsaved.
+  // `worker.capabilities` is the only thing that should retrigger this —
+  // `dirty` is read to decide whether to skip, not something a change in it
+  // alone should cause a resync for.
+  useEffect(() => {
+    if (dirty) return;
+    setGranted(worker.capabilities);
+  }, [worker.capabilities]);
 
   async function save(): Promise<void> {
     setBusy(true);
