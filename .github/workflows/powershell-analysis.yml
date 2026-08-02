@@ -1,0 +1,40 @@
+name: PowerShell analysis
+
+# CodeQL (codeql.yml) only covers javascript-typescript, and Semgrep
+# (semgrep.yml) is TypeScript-only too -- neither touches the Windows
+# installer. See deploy/worker/PSScriptAnalyzerSettings.psd1 for what this
+# checks and why it's scoped to a handful of rules rather than the full
+# default set.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  analyse:
+    name: PSScriptAnalyzer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Install-Module -Name PSScriptAnalyzer -RequiredVersion 1.25.0 `
+            -Force -Scope CurrentUser -Repository PSGallery
+
+      - name: Analyse deploy/worker's PowerShell scripts
+        shell: pwsh
+        run: |
+          $results = Invoke-ScriptAnalyzer -Path deploy/worker -Recurse `
+            -Settings deploy/worker/PSScriptAnalyzerSettings.psd1
+          $results | Format-Table -AutoSize
+          if ($results.Count -gt 0) {
+            Write-Error "$($results.Count) PSScriptAnalyzer finding(s) -- see the table above."
+            exit 1
+          }
