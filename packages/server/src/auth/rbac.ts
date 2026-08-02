@@ -34,9 +34,11 @@ declare module 'fastify' {
     user?: AuthenticatedUser;
     sessionId?: string;
     /**
-     * Set by `requireInstancePermission` when a grant — rather than the base
-     * role — is what let the request through. Recorded on the audit row so the
-     * trail says which environment's authority was used.
+     * The environment the named instance belongs to, resolved by
+     * `requireInstancePermission` whenever the request names one — whether
+     * base role or a grant is what let it through. Recorded on the audit row
+     * so the trail says which environment a write happened in, not only which
+     * instance.
      */
     environmentTag?: string | null;
   }
@@ -107,9 +109,12 @@ const instanceFromParams: InstanceResolver = (_db, request) => {
  * Build a preHandler enforcing a permission *against one instance*.
  *
  * Identical to `requirePermission` up to the permission check, then: if the
- * base role already allows it, nothing else happens and no extra query runs.
- * Only a user whose base role is insufficient pays for the grant lookup, which
- * is the case this feature exists for.
+ * base role already allows it, the request proceeds without the grant table
+ * ever being loaded — only a user whose base role is insufficient pays for
+ * that lookup. The environment tag itself *is* resolved even on the base-role
+ * path, one query, so it can be attributed on the audit row; that used to
+ * happen only when a grant was what let the request through, which meant a
+ * base-role Admin's write carried no environment at all.
  *
  * Fails closed at every step. An instance that cannot be identified, or that
  * does not exist, is refused rather than evaluated as "untagged" — otherwise a
@@ -125,9 +130,39 @@ export function requireInstancePermission(
     const session = await authenticate(deps, request, reply);
     if (!session) return;
 
+    const instanceId = await resolveInstance(deps.db, request);
+
+    // Resolved before the permission check, and unconditionally when an
+    // instance is named — not only on the path where a grant was needed. This
+    // is the fix for a gap the review found: `request.environmentTag` used to
+    // stay unset whenever base role alone was enough, so a base-role Admin's
+    // write carried no environment in the audit trail at all. The extra query
+    // lands on every instance-scoped write rather than only the ones a grant
+    // decided, which is a deliberate cost: writes are human-paced, and knowing
+    // which environment an audited change happened in is the whole point of
+    // having environments.
+    //
+    // Caught rather than left to throw: `resolveInstance` reads the path
+    // parameter with no format validation of its own (that happens later, in
+    // the route body), so an instance id that is not a valid UUID used to
+    // reach this query only on the grant-needed path and would surface as a
+    // raw 500. Treating a lookup failure the same as "no such instance" keeps
+    // the existing fail-closed behaviour for a user who needs a grant, and
+    // stops an unrelated malformed-id case turning into an unhandled error for
+    // a base-role user who did not need one.
+    let environmentTag: string | null | undefined;
+    if (instanceId) {
+      try {
+        environmentTag = await environmentOfInstance(deps.db, instanceId);
+      } catch (err) {
+        request.log?.warn({ err, instanceId }, 'Could not resolve the environment for this instance');
+        environmentTag = undefined;
+      }
+    }
+    if (environmentTag !== undefined) request.environmentTag = environmentTag;
+
     if (roleHasPermission(session.user.role, permission)) return;
 
-    const instanceId = await resolveInstance(deps.db, request);
     if (!instanceId) {
       await reply.status(403).send({
         error: 'Forbidden',
@@ -136,7 +171,6 @@ export function requireInstancePermission(
       return;
     }
 
-    const environmentTag = await environmentOfInstance(deps.db, instanceId);
     if (environmentTag === undefined) {
       // Deliberately not a 404: the caller has not been shown that this
       // instance exists, and a 404-versus-403 split here is an existence
@@ -150,10 +184,7 @@ export function requireInstancePermission(
 
     const principal = principalOf(session.user);
     const grants = await loadGrants(deps.db);
-    if (canInEnvironment(principal, grants, permission, environmentTag)) {
-      request.environmentTag = environmentTag;
-      return;
-    }
+    if (canInEnvironment(principal, grants, permission, environmentTag)) return;
 
     // Say where they *can* do it. Once grants exist, "your role cannot
     // job.write" is often simply untrue — they can, one environment over — and

@@ -200,7 +200,7 @@ export function RunTimeline({
         </div>
 
         <ol className="timeline-lanes">
-          {run.steps.map((step) => {
+          {run.steps.map((step, index) => {
             const left = (step.offsetSeconds / run.totalSeconds) * 100;
             // Floored so a zero-second step is still a visible mark rather than
             // nothing at all — "it ran and was instant" is information.
@@ -210,7 +210,11 @@ export function RunTimeline({
             } for ${formatDuration(step.durationSeconds)}`;
 
             return (
-              <li key={step.stepId} className="timeline-lane">
+              // Position, not just stepId: a step chain that branches back to an
+              // earlier step (on_fail_step_id/on_success_step_id pointing
+              // backwards) revisits the same step_id more than once in one run,
+              // and sysjobhistory writes a separate row each time.
+              <li key={`${step.stepId}-${index}`} className="timeline-lane">
                 <span className="timeline-label" title={`${step.stepId}. ${step.name}`}>
                   <span className="timeline-step-id">{step.stepId}</span>
                   {step.name}

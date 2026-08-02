@@ -1,5 +1,5 @@
 import { Link, useParams } from 'react-router';
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import {
   useDiff,
   useJob,
@@ -335,7 +335,11 @@ function RunRows({ run, open, onToggle }: { run: HistoryRun; open: boolean; onTo
 /** §7.2 Versions tab — timeline plus diff, with origin attribution. */
 function VersionsTab({ instanceId, jobUuid }: { instanceId?: string; jobUuid?: string }) {
   const versions = useJobVersions(instanceId, jobUuid);
-  const list = versions.data?.versions ?? [];
+  // `?? []` would otherwise mint a new array every render, which the effect
+  // below sees as "the list changed" even when it did not — re-running the
+  // from/to initialization is harmless here, but the identity churn is exactly
+  // what react-hooks/exhaustive-deps is flagging as a footgun elsewhere.
+  const list = useMemo(() => versions.data?.versions ?? [], [versions.data]);
   const [from, setFrom] = useState<number | null>(null);
   const [to, setTo] = useState<number | null>(null);
 

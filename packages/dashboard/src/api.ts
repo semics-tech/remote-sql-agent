@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { JobDefinition, JobWriteMode, Role } from '@remote-sql-agent/protocol/browser';
 import { apiFetch } from './auth.jsx';
 
@@ -674,6 +674,10 @@ export function useEstateJobs(facets: readonly JobFacet[], filter: string, enabl
     queryKey: ['estate-jobs', status, filter.trim()],
     queryFn: () => get<EstateJobs>(`/api/jobs${query ? `?${query}` : ''}`),
     refetchInterval: LIVE_REFRESH_MS,
+    // Filter and facet changes both re-key this query; without this the table
+    // would flash empty and "Loading…" on every change instead of updating in
+    // place once the new rows arrive.
+    placeholderData: keepPreviousData,
     enabled,
   });
 }
@@ -797,6 +801,9 @@ export function useJobGroups(groupBy: GroupKey, filter: string) {
         `/api/jobs/groups?by=${groupBy}${filter ? `&filter=${encodeURIComponent(filter)}` : ''}`,
       ),
     refetchInterval: LIVE_REFRESH_MS,
+    // See useEstateJobs: without this, changing the filter or grouping flashes
+    // the list empty until the new rows land instead of updating in place.
+    placeholderData: keepPreviousData,
   });
 }
 

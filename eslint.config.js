@@ -1,4 +1,5 @@
 import js from '@eslint/js';
+import reactHooks from 'eslint-plugin-react-hooks';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
@@ -80,6 +81,20 @@ export default tseslint.config(
             'SQL must not be built by concatenation. Use a static string literal and bind values with request.input(...).',
         },
       ],
+    },
+  },
+  {
+    // The dashboard is the only package with hooks. `rules-of-hooks` catches a
+    // hook called conditionally or outside a component; `exhaustive-deps`
+    // catches an effect that reads a value it did not list as a dependency —
+    // the same class of bug as CapabilityEditor's stale `useState` initializer
+    // (fixed by an explicit resync `useEffect`), just easier to miss on review
+    // than the promise-lifecycle bugs the type-aware rules above catch.
+    files: ['packages/dashboard/**/*.{ts,tsx}'],
+    plugins: { 'react-hooks': reactHooks },
+    rules: {
+      'react-hooks/rules-of-hooks': 'error',
+      'react-hooks/exhaustive-deps': 'warn',
     },
   },
   {

@@ -803,7 +803,10 @@ function SchedulesSection({
             </thead>
             <tbody>
               {draft.schedules.map((s, index) => (
-                <tr key={s.name}>
+                // Index too, not just name: msdb enforces no uniqueness on
+                // sysschedules.name, so two distinct schedules attached to the
+                // same job can legitimately share a display name.
+                <tr key={`${s.name}-${index}`}>
                   <td className="nowrap">{s.name}</td>
                   <td>
                     <input

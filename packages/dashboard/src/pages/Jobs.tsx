@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { useJobGroups, type GroupKey, type JobGroup } from '../api.js';
 import { Panel, QueryState, Empty, LastRunCell } from '../components.jsx';
 import { formatDateTime, formatDuration } from '../format.js';
+import { useDebouncedValue } from '../useDebouncedValue.js';
 
 /**
  * Jobs across the whole estate, grouped.
@@ -25,9 +26,10 @@ const GROUPINGS: Array<{ key: GroupKey; label: string; hint: string }> = [
 export function Jobs() {
   const [groupBy, setGroupBy] = useState<GroupKey>('name');
   const [filter, setFilter] = useState('');
+  const debouncedFilter = useDebouncedValue(filter, 250);
   const [onlyProblems, setOnlyProblems] = useState(false);
 
-  const { data, isLoading, error } = useJobGroups(groupBy, filter);
+  const { data, isLoading, error } = useJobGroups(groupBy, debouncedFilter);
   const all = data?.groups ?? [];
   const groups = onlyProblems ? all.filter((g) => g.failing > 0 || g.neverRun > 0) : all;
 
