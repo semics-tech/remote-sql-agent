@@ -115,6 +115,30 @@ describe('T-SQL: things that compile and then behave differently in a job step',
     expect(lintTsql('UPDATE STATISTICS dbo.Orders;')).toEqual([]);
   });
 
+  it('still flags an UPDATE with no outer WHERE even when a subquery has one', () => {
+    // Regression: a plain /\bWHERE\b/ search over the whole statement text
+    // matched the subquery's WHERE too, so this unrestricted UPDATE — every
+    // row of Employees gets the same computed Salary — read as qualified.
+    const found = lintTsql(
+      "UPDATE dbo.Employees SET Salary = (SELECT AVG(Salary) FROM dbo.Bench WHERE Dept = 'IT');",
+    );
+    expect(codes(found)).toEqual(['tsql/write-without-where']);
+  });
+
+  it('still flags a DELETE with no outer WHERE even when a joined derived table has one', () => {
+    const found = lintTsql(
+      'DELETE o FROM dbo.Orders o JOIN (SELECT CustomerId FROM dbo.Bench WHERE Flag = 1) b ON o.CustomerId = b.CustomerId;',
+    );
+    expect(codes(found)).toEqual(['tsql/write-without-where']);
+  });
+
+  it('does not flag an UPDATE that has both a subquery WHERE and its own outer WHERE', () => {
+    const found = lintTsql(
+      "UPDATE dbo.Employees SET Salary = (SELECT AVG(Salary) FROM dbo.Bench WHERE Dept = 'IT') WHERE Id = 1;",
+    );
+    expect(found).toEqual([]);
+  });
+
   it('still sees the first statement of a batch after GO', () => {
     // Regression: the GO separator was consuming one character rather than the
     // whole line, so the next statement began "O\n  DELETE …" and no rule
