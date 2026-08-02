@@ -2,6 +2,28 @@ packages:
   - 'packages/*'
   - 'tests/*'
 
+# A compromised or typosquatted package is overwhelmingly likely to be pulled
+# from the registry within days of publication — this is what caught the
+# xz-utils and event-stream-style incidents before most consumers ever
+# installed them. Refusing to resolve anything published in the last 3 days
+# costs nothing in the common case (nobody here is chasing a package's first
+# hour) and buys the window in which most malicious publishes get caught.
+#
+# `pnpm audit --audit-level high` in CI is a separate, complementary check: it
+# catches known vulnerabilities in packages already in the lockfile. This
+# catches an unknown-vulnerability supply-chain compromise before it is known.
+#
+# An urgent legitimate release (a same-day CVE fix) can be pulled in early with
+# minimumReleaseAgeExclude: ['pkg-name@x.y.z'] — see
+# https://pnpm.io/settings/dependency-resolution#minimumreleaseageexclude.
+#
+# deploy/Dockerfile's `pnpm deploy --legacy` step (building the trimmed
+# production server) is deliberately exempted from this via
+# --config.minimum-release-age=0 on that one command — see the comment there
+# for why re-checking age at every image build is actively wrong, not merely
+# unnecessary.
+minimumReleaseAge: 4320
+
 # pnpm 10 blocks lifecycle scripts by default. These are the only packages that
 # legitimately need one (native builds / vendored binaries).
 onlyBuiltDependencies:
