@@ -393,7 +393,7 @@ function unqualifiedWrites(masked: string, locate: Locator): Diagnostic[] {
     // Temp tables and table variables are per-run scratch; emptying one whole
     // is the normal way to use it.
     if (target.startsWith('#') || target.startsWith('@')) continue;
-    if (/\bWHERE\b/i.test(body)) continue;
+    if (hasOuterWhere(body)) continue;
 
     const offset = stmt.start + head.index + head[0].search(/\S/);
     out.push(
@@ -405,6 +405,32 @@ function unqualifiedWrites(masked: string, locate: Locator): Diagnostic[] {
     );
   }
   return out;
+}
+
+/**
+ * True when `body` has a `WHERE` at paren depth 0 — the statement's own
+ * clause, as opposed to one belonging to a subquery, derived table, or
+ * function call used to compute an assigned value or a join condition.
+ *
+ * A plain `\bWHERE\b` search over the whole statement text used to accept
+ * any WHERE anywhere, so `UPDATE T SET x = (SELECT y FROM Z WHERE ...)` —
+ * an UPDATE with no restriction on T at all — read as qualified and never
+ * warned.
+ */
+function hasOuterWhere(body: string): boolean {
+  const pattern = /\bWHERE\b/gi;
+  let depth = 0;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(body)) !== null) {
+    for (let i = cursor; i < match.index; i += 1) {
+      if (body[i] === '(') depth += 1;
+      else if (body[i] === ')') depth -= 1;
+    }
+    cursor = match.index;
+    if (depth <= 0) return true;
+  }
+  return false;
 }
 
 /**
