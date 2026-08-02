@@ -78,14 +78,15 @@ export async function registerAuthRoutes(
   /**
    * What sign-in methods this deployment offers. Unauthenticated by design.
    *
-   * codeql[js/missing-rate-limiting]: it is — globally, at 600 req/min per
-   * client, via `@fastify/rate-limit` registered in api/app.ts before this
-   * function is called. CodeQL's dataflow does not follow a Fastify plugin
-   * registered on `app` in one file into a route registered on the same
-   * instance from a function passed that `app`, so it cannot see the barrier
-   * that is actually there. A route-local limiter here would be redundant,
-   * not a fix.
+   * It is rate-limited — globally, at 600 req/min per client, via
+   * `@fastify/rate-limit` registered in api/app.ts before this function is
+   * called. CodeQL's dataflow does not follow a Fastify plugin registered on
+   * `app` in one file into a route registered on the same instance from a
+   * function passed that `app`, so it cannot see the barrier that is
+   * actually there (js/missing-rate-limiting, suppressed below). A
+   * route-local limiter here would be redundant, not a fix.
    */
+  // codeql[js/missing-rate-limiting]
   app.get('/api/auth/config', async (request, reply) => {
     ensurePreAuthCsrfCookie(request, reply);
     return {
