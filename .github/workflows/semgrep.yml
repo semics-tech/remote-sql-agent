@@ -1,0 +1,28 @@
+name: Semgrep
+
+# Custom rules only — for third-party rule packs (OWASP top ten, etc.) CodeQL
+# with security-extended already covers the same ground for javascript-
+# typescript. This is for invariants specific to this codebase's own
+# architecture that no generic query models, starting with "every mutating
+# route is CSRF-checked" — see .semgrep/fastify-route-guards.yml.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  route-guards:
+    name: Custom rules (Fastify route guards)
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep:1.172.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Every mutating Fastify route has an auth/CSRF guard
+        run: semgrep scan --config .semgrep/ --error packages/server/src/
