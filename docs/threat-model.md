@@ -4,8 +4,10 @@ Scope: the worker, the control plane, and the channel between them. Per §6, a w
 effectively remote code execution on a database server — job steps can run T-SQL, PowerShell and
 CmdExec — so the analysis assumes a capable, motivated attacker.
 
-Status markers: **[now]** mitigated in this build (M0–M2); **[M3]** / **[M4]** planned for the
-milestone shown. See `security.md` for the overall implementation status.
+Status markers: **[now]** mitigated in the current build; **[planned]** tracked as a known gap in
+`migration.md`, not yet built. See `security.md` for the overall implementation status — as of this
+writing every architecture-spec milestone (M0–M5) is implemented, so nothing below is marked against
+a milestone number that has since shipped.
 
 ## Assets
 
@@ -42,7 +44,8 @@ erode it.
   attacker's expressiveness is bounded by what the worker version already implements.
 - **[now]** Unknown capability strings are dropped by the worker, so a modified control plane cannot
   invent a capability an older worker will honour.
-- **[M3]** Certificate revocation lets an operator cut workers off once compromise is detected.
+- **[now]** Certificate revocation lets an operator cut a compromised worker off; checked on every new
+  connection, not cached from a previous one.
 - **Residual risk:** for any worker whose ceiling is above `readOnly`, the attacker can do everything
   that ceiling permits. **Set the ceiling to the minimum the site actually needs — it is the only
   control that survives this scenario.**
@@ -51,10 +54,17 @@ erode it.
 
 *Attacker extracts the client certificate and key from a SQL Server host.*
 
-- **[M3]** Certificates are short-lived (90 days) and rotate at 2/3 lifetime.
-- **[M3]** Revocation is checked on every connection.
-- **[M3]** Enrolment tokens are single-use, one-hour, and bound to a host name, so the certificate
+- **[now]** Certificates are short-lived (90 days) and renew themselves at **half** lifetime, over the
+  session the current certificate already authenticated — see `packages/worker/src/cert-renewal.ts`.
+- **[now]** Revocation is checked on every connection (`packages/server/src/worker-auth/authenticate.ts`).
+- **[now]** Enrolment tokens are single-use, one-hour, and bound to a host name, so the certificate
   cannot be re-minted for a different box.
+- **Residual risk, specific to renewal:** possession of a working certificate authorises reissuing a
+  new one (EST `simplereenroll`/kubelet-style renewal-by-possession), so a stolen certificate can
+  renew itself indefinitely rather than expiring the attacker out. That is the accepted trade in every
+  comparable system; the bound is the audit row written per renewal
+  (`worker.certificate.renewed`) and the per-connection revocation check above, not an expiry the
+  legitimate worker would trip over first.
 - **Residual risk:** a stolen certificate grants the ability to *impersonate a worker* — to feed
   false job definitions and history upward. It does not grant the ability to send commands. Feeding
   false state upward is still serious: it could hide a malicious job from the estate view.
@@ -65,18 +75,28 @@ erode it.
 
 *A legitimate Admin abuses their access.*
 
-- **[M4]** `job.write` requires a second approver by default; the RBAC model deliberately separates
-  authoring (`Editor`) from approval (`command.approve`, Admin only), so no single non-Admin role
-  can both write and rubber-stamp. Asserted in `capabilities.test.ts`.
+- **[now, off by default]** `job.write` and operator writes can require a second approver
+  (`RSAGENT_REQUIRE_APPROVAL_JOB_WRITE=true`); the RBAC model deliberately separates authoring
+  (`Editor`) from approval (`command.approve`, Admin only), so no single non-Admin role can both
+  write and rubber-stamp. Asserted in `capabilities.test.ts`. Off by default because an unconditional
+  four-eyes rule is unusable for a single DBA running their own estate — see the decision record in
+  `migration.md`.
 - **[now]** The audit module has no update or delete path, and none should be added.
-- **[M3]** Every mutation and session event is attributed to a user.
-- **Residual risk:** an Admin with database access can edit `audit_log` directly. Genuine protection
-  requires shipping the audit log off-box; SIEM export is on the post-v1 backlog and should be
-  treated as a real requirement, not a nicety, for environments where this scenario matters.
+- **[now]** Every mutation and session event is attributed to a user.
+- **Residual risk:** an Admin with database access can edit `audit_log` directly, and — if the
+  approval rule is left off, which is the default — a single Admin can also write and apply a change
+  with no second party involved at all. Genuine protection against the former requires shipping the
+  audit log off-box (OTLP export is implemented; see `authentication.md` §3). Against the latter,
+  turn the approval rule on for any estate where a single actor writing job steps unsupervised is a
+  real risk — it is a config value, not something still being built.
 
 ### 4. Machine-in-the-middle on the worker channel
 
-- **[M3]** mTLS with a pinned CA; TLS 1.2+ enforced; anything else rejected.
+- **[now]** The hub refuses to start without a TLS certificate (`RSAGENT_GRPC_TLS_CERT`/`_KEY`), and
+  that requirement holds regardless of which worker auth mode is in use. `mtls` mode additionally
+  pins the control plane's CA on the worker side (`--ca-cert` / `-CaCertPath`), rejecting anything
+  signed by a different authority. Node's TLS stack refuses below TLS 1.2 by default; nothing in this
+  codebase lowers that floor.
 - **[now]** Per-command signatures are verified against a public key delivered in `HelloAck`,
   independently of the transport.
 - **[now]** That key can be **pinned** in `worker.yaml` as
@@ -91,10 +111,12 @@ erode it.
 
   A worker without a pin logs the fingerprint it received, once per session, so the value is to
   hand and the absence is visible.
-- **Residual risk today:** the channel is plaintext in this build. See the warning in
-  `security.md`. A pin does not help if an attacker is positioned before the *first* connection —
-  it is trust-on-first-configure, and the fingerprint should be carried to the host by whatever
-  channel already carries the enrolment token.
+- **Residual risk:** the signing-key pin is trust-on-first-configure. It does not help if an attacker
+  is positioned before the *first* connection — the fingerprint should be carried to the host by
+  whatever channel already carries the enrolment token, not copied later over the same connection
+  it is meant to protect. `RSAGENT_GRPC_REQUIRE_TLS=false` exists for a lab on a trusted network and
+  removes the TLS layer entirely if set; it is not a supported production configuration and nothing
+  in the installers sets it.
 
 ### 5. Command replay
 
@@ -132,7 +154,7 @@ it to report on those instances, not to command others.
 - **[now]** The worker compiles no native code at all: its outbox uses the runtime's built-in
   `node:sqlite`, so the code that runs on a customer's database server is the bundle plus the
   pinned Node runtime and nothing else. `argon2` is the only native module in the tree, and it is
-  control-plane only. `win-dpapi` joins it in M3.
+  control-plane only.
 - **[now]** Generated protobuf output is checked in and CI fails if it drifts from the `.proto`
   source, so a compromised codegen toolchain cannot silently alter the wire contract.
 
@@ -149,8 +171,10 @@ it to report on those instances, not to command others.
 
 ## Assumptions
 
-- The SQL Server host's filesystem is trustworthy: `worker.yaml` and the private key are protected
-  by DPAPI (Windows) or `0600` (Linux).
+- The SQL Server host's filesystem is trustworthy: `worker.yaml` and the private key are protected by
+  `0600` on Linux, and on Windows by NTFS ACLs the installer sets restricting the install directory to
+  Administrators and SYSTEM — **not** DPAPI. DPAPI-wrapping the key at rest is still open; see
+  [migration.md](migration.md).
 - The control-plane host is patched and access-controlled.
 - Operators set `maxCapability` deliberately rather than leaving it at whatever the installer
   defaults to. The default is `readOnly`, and it should stay there unless a site has a concrete

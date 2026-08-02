@@ -172,6 +172,7 @@ Ordered by how likely they are to matter.
 | Windows worker package not served | The control plane serves `rsagent-worker-linux.tar.gz`, so the Linux one-liner is self-contained. The Windows zip needs the Node runtime and WinSW, which the release workflow assembles — the container does not bundle it, so `Install-RsAgentWorker` needs `-PackageUrl` pointing at the release asset until it does. | Small |
 | Schedule editing | Schedules can be enabled and disabled in the job editor, but their timing cannot be changed there. The schedule codec round-trips faithfully; only the editing UI is missing. | Medium |
 | No credential key rotation on demand | A worker's credential key rotates only when the key file is removed and the worker restarts. There is no dashboard button for it. | Small |
+| Worker credential file is not DPAPI-wrapped on Windows | `worker.key`/`credential.key` are protected by NTFS ACLs the installer sets (Administrators and SYSTEM only), the same property `0600` gives on Linux — not by DPAPI, which would additionally bind the file to the machine so copying it elsewhere does not work. `packages/worker/src/credentials.ts` has carried this as a to-do since before this table existed. | Small |
 | Retention partitioning | History and log tables are pruned by a scheduled delete, not partitioned. Fine to ~10M rows; large estates with long retention will want monthly partitions. | Medium |
 
 ### Control-plane HA, specifically

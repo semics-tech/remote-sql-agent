@@ -5,33 +5,37 @@ not yet enforce. Read the "Current status" table before deploying anything.
 
 ## Current status
 
-The build in this repository implements milestones M0–M3 of the architecture spec.
+All milestones of the architecture spec (M0–M5) are implemented, including the write path and
+release packaging. What remains is tracked as known gaps in [migration.md](migration.md), not as
+unbuilt milestones.
 
 | Control | Spec | Status |
 |---|---|---|
 | Outbound-only worker connections | §3.2.1 | **Implemented.** No worker component opens a listening socket. |
-| Read-only by default | §6.1.1 | **Implemented.** No write command is applied by the worker in this build. |
+| Read-only by default | §6.1.1 | **Implemented.** `maxCapability` defaults to `readOnly`, and the installer does not change that. |
 | Worker-local capability ceiling | §6.3 | **Implemented and tested**, including end to end: an enrolment granting `job.toggle` still resolves to `observe` for a worker pinned `readOnly`. |
 | Closed command vocabulary | §6.1.5 | **Implemented** as a protobuf enum. No "run arbitrary T-SQL" command exists. |
-| Command signing + replay window | §6.4 | **Implemented in the contracts package**, not yet exercised (no write path). |
-| Append-only audit log | §6.1.4 | **Implemented** for authentication, administration and worker session events. No update or delete path exists. |
+| Command signing + replay window | §6.4 | **Implemented and exercised** by the write path: every command is signed, and `isCommandFresh` rejects anything outside a 15-minute window (60s clock-skew tolerance). |
+| Write path (job, schedule and operator edits) | §6.4 | **Implemented.** Every write is capability-checked at both gates (see below), conflict-checked against the definition hash it was issued against, signed, and audited. |
+| Second-approver rule on job/operator writes | §6.4 | **Implemented, off by default.** `RSAGENT_REQUIRE_APPROVAL_JOB_WRITE=true` requires a second person to approve `upsertJob`, `deleteJob`, `upsertOperator` and `deleteOperator` before they reach `msdb`. See [capabilities.md](capabilities.md). |
+| Append-only audit log | §6.1.4 | **Implemented** for authentication, administration, worker session events and every command. No update or delete path exists. |
 | Audit export to a SIEM | backlog | **Implemented** via OTLP, queued with retry. See `authentication.md` §3. |
 | Parameterised SQL everywhere | §5.2 | **Implemented**, enforced by review and partially by an eslint rule — see "SQL injection" below for what the rule does and does not catch. |
-| Worker authentication | §6.2 | **Implemented**: enrolment tokens plus API key, mTLS, or Entra workload identity. |
-| Embedded CA, cert issuance/revocation | §6.2 | **Implemented** for mTLS mode. Revocation checked per connection. |
-| Automatic certificate renewal | §6.2 | **Implemented**: workers renew at half lifetime over the authenticated session, superseded certificates are revoked, and each renewal is audited. A worker offline past its expiry must be re-enrolled. |
+| Worker authentication | §6.2 | **Implemented**: enrolment tokens, then an API key, an mTLS client certificate, or Entra workload identity. mTLS is the installers' default. |
+| Embedded CA, cert issuance/revocation | §6.2 | **Implemented** for mTLS mode. Revocation is checked on every new connection (`worker-auth/authenticate.ts`), not cached. |
+| Automatic certificate renewal | §6.2 | **Implemented**: workers renew at half lifetime over the authenticated session, superseded certificates are revoked, and each renewal is audited. A worker offline past its expiry must be re-enrolled — see `packages/worker/src/cert-renewal.ts`. |
 | TLS on the worker hub | §6.2 | **Implemented**; the control plane refuses to start without it unless explicitly overridden. |
 | Dashboard authentication | §6.5 | **Implemented**: local argon2id accounts and/or Entra OIDC with app-role mapping. |
 | Server-side RBAC on every route | §6.5 | **Implemented.** Every route declares a permission; there is no unguarded data route. |
 | Environment-scoped write permissions | §6.5 | **Implemented.** Grants add a role within one environment tag. Additive only — see below. |
 | CSRF protection | §6.5 | **Implemented** (double-submit token bound to the session). |
-| Automatic certificate rotation at 2/3 lifetime | §6.2 | **Not implemented.** Rotation is manual. |
-| Approval workflow | §6.4 | **Not implemented.** M4, along with the write path. |
+| Release packaging (npm, Docker Hub, GHCR, single-file executables) | M5 | **Implemented.** See [releasing.md](releasing.md). The worker credential file is `0600` on Linux and NTFS-ACL-restricted on Windows, not DPAPI-wrapped — tracked in [migration.md](migration.md). |
 | SBOM generation and container image scanning | backlog | **Not implemented.** `pnpm audit --audit-level high` runs in CI on every PR and `minimumReleaseAge` (`pnpm-workspace.yaml`) delays resolving a package until it has survived 3 days in the registry, but neither produces a queryable software bill of materials or scans the published `control-plane` image's OS-level packages (the base image's own `apt` layer, not just the Node dependency tree). Adding this is a tool choice — Trivy, Grype and Syft-plus-a-registry-scanner all fit the "no data ever leaves the estate except what the audit log already exports" constraint differently — and is being left as a deliberate follow-up rather than picked here. |
+| Control-plane high availability | backlog | **Not implemented.** The worker registry is in-memory and one process holds each worker's socket; see [deployment.md](deployment.md#2-exactly-one-replica). |
 
-> **Still not production-ready.** The write path (M4) and packaging (M5) do not exist, and
-> certificate auto-rotation is manual. But the control plane is no longer open: it requires
-> authentication for every data route, and workers must present an enrolled credential.
+> **Read the deployment checklist below before treating this as production-ready anywhere.** Every
+> control the architecture spec calls for is implemented; what remains is operational — HA, SBOM
+> scanning, and the smaller items in [migration.md](migration.md) — not missing enforcement.
 
 ### Deployment checklist
 
