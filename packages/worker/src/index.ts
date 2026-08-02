@@ -3,8 +3,8 @@ import { dirname } from 'node:path';
 import { pino } from 'pino';
 import {
   toTimestamp,
-  type WorkerMessage,
   type ConfigUpdate,
+  type WorkerMessage,
 } from '@remote-sql-agent/protocol';
 import { loadWorkerConfig, type WorkerConfig } from './config.js';
 import { Outbox } from './outbox.js';
@@ -13,9 +13,8 @@ import { MonitorSet } from './monitor-set.js';
 import { loadOrCreateCredentialKey } from './credential-key.js';
 import { ControlPlaneSession } from './session.js';
 import { handleCommand } from './command-handler.js';
-
-const WORKER_VERSION = '0.2.0';
-const OUTBOX_DRAIN_BATCH = 50;
+import { WORKER_VERSION } from './version.js';
+import { drainOutbox as drainOutboxOnce } from './drain-outbox.js';
 
 async function main(): Promise<void> {
   // Offsets are the same whether this runs as `node rsagent-worker.mjs ...` or
@@ -133,23 +132,8 @@ async function main(): Promise<void> {
   let commandQueue: Promise<void> = Promise.resolve();
 
   const drainOutbox = (): void => {
-    if (!session?.connected) return;
-    for (;;) {
-      const batch = outbox.peek(OUTBOX_DRAIN_BATCH);
-      if (batch.length === 0) return;
-
-      const sent: number[] = [];
-      for (const row of batch) {
-        const message = JSON.parse(row.payload) as WorkerMessage;
-        if (!session.send(message)) break;
-        sent.push(row.id);
-      }
-      outbox.acknowledge(sent);
-
-      // Stopped early: the stream is no longer accepting writes. Leave the rest
-      // queued rather than spinning.
-      if (sent.length < batch.length) return;
-    }
+    if (!session) return;
+    drainOutboxOnce(outbox, session, logger);
   };
 
   session = new ControlPlaneSession(
@@ -207,6 +191,7 @@ async function main(): Promise<void> {
             );
           }
           drainOutbox();
+          outbox.pruneAppliedCommands();
           touchHealthFile(config.healthFilePath, {
             monitoring: monitors.size,
             awaitingFirstConnect: monitors.awaitingFirstConnect,

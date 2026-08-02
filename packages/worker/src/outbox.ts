@@ -29,55 +29,86 @@ export interface OutboxStats {
   evicted: number;
 }
 
+/** Comfortably beyond MAX_COMMAND_AGE_MS and any realistic command TTL. */
+const APPLIED_COMMAND_RETENTION_MS = 24 * 60 * 60 * 1000;
+const APPLIED_COMMAND_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
+
 export class Outbox {
   readonly #db: Database;
   readonly #maxRows: number;
   #evicted = 0;
+  #lastAppliedCommandPruneAt = 0;
+
+  #depth: number;
 
   constructor(path: string, maxRows: number) {
     mkdirSync(dirname(path), { recursive: true });
-    this.#db = new DatabaseSync(path);
-    this.#maxRows = maxRows;
 
-    // WAL keeps the writer from blocking on reads during a drain, and is the
-    // difference between a wedged poller and a smooth one on a busy instance.
-    //
-    // Issued through exec() because node:sqlite has no pragma() helper. Worth
-    // knowing: journal_mode returns the mode it actually settled on, and
-    // exec() discards it. SQLite refuses WAL on a network filesystem and stays
-    // in delete mode instead, so a worker whose state directory is on a share
-    // is slower under drain but still correct. It is not silent corruption,
-    // which is why this does not fail the start.
-    this.#db.exec('PRAGMA journal_mode = WAL');
-    this.#db.exec('PRAGMA synchronous = NORMAL');
+    // Every file SQLite creates here — the main db and, once WAL mode is on,
+    // its -wal and -shm siblings — otherwise lands at the OS default (typically
+    // 0644, world-readable). This outbox queues history and activity payloads,
+    // which routinely carry step output containing connection strings. A
+    // chmod after the fact would miss the WAL/SHM files: they are created
+    // lazily and do not inherit the main file's mode, so the umask is
+    // tightened for the whole of setup instead. No-op on Windows, which does
+    // not use POSIX permission bits.
+    const previousUmask = process.umask(0o077);
+    try {
+      this.#db = new DatabaseSync(path);
+      this.#maxRows = maxRows;
 
-    this.#db.exec(`
-      CREATE TABLE IF NOT EXISTS outbox (
-        id            INTEGER PRIMARY KEY AUTOINCREMENT,
-        kind          TEXT    NOT NULL,
-        instance_name TEXT    NOT NULL,
-        payload       TEXT    NOT NULL,
-        created_at    INTEGER NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS outbox_id_idx ON outbox (id);
+      // WAL keeps the writer from blocking on reads during a drain, and is the
+      // difference between a wedged poller and a smooth one on a busy instance.
+      //
+      // Issued through exec() because node:sqlite has no pragma() helper. Worth
+      // knowing: journal_mode returns the mode it actually settled on, and
+      // exec() discards it. SQLite refuses WAL on a network filesystem and stays
+      // in delete mode instead, so a worker whose state directory is on a share
+      // is slower under drain but still correct. It is not silent corruption,
+      // which is why this does not fail the start.
+      this.#db.exec('PRAGMA journal_mode = WAL');
+      this.#db.exec('PRAGMA synchronous = NORMAL');
 
-      -- Idempotency records for applied commands (§5.4). Retained separately
-      -- from the outbox because they must survive a drain.
-      CREATE TABLE IF NOT EXISTS applied_commands (
-        command_id TEXT PRIMARY KEY,
-        applied_at INTEGER NOT NULL,
-        success    INTEGER NOT NULL,
-        result     TEXT
-      );
+      this.#db.exec(`
+        CREATE TABLE IF NOT EXISTS outbox (
+          id            INTEGER PRIMARY KEY AUTOINCREMENT,
+          kind          TEXT    NOT NULL,
+          instance_name TEXT    NOT NULL,
+          payload       TEXT    NOT NULL,
+          created_at    INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS outbox_id_idx ON outbox (id);
 
-      -- Sync bookmarks, so a worker restart does not re-ship all history.
-      CREATE TABLE IF NOT EXISTS sync_state (
-        instance_name           TEXT PRIMARY KEY,
-        history_high_water_mark INTEGER NOT NULL DEFAULT 0,
-        agent_log_high_water    INTEGER,
-        definition_hashes       TEXT
-      );
-    `);
+        -- Idempotency records for applied commands (§5.4). Retained separately
+        -- from the outbox because they must survive a drain.
+        CREATE TABLE IF NOT EXISTS applied_commands (
+          command_id TEXT PRIMARY KEY,
+          applied_at INTEGER NOT NULL,
+          success    INTEGER NOT NULL,
+          result     TEXT
+        );
+
+        -- Sync bookmarks, so a worker restart does not re-ship all history.
+        CREATE TABLE IF NOT EXISTS sync_state (
+          instance_name           TEXT PRIMARY KEY,
+          history_high_water_mark INTEGER NOT NULL DEFAULT 0,
+          agent_log_high_water    INTEGER,
+          definition_hashes       TEXT
+        );
+      `);
+    } finally {
+      process.umask(previousUmask);
+    }
+
+    // Cached rather than a fresh COUNT(*) on every enqueue: a busy instance
+    // queuing rapidly during an outage turned every single insert into an
+    // O(depth) scan, so throughput degraded exactly when the outbox mattered
+    // most. Maintained incrementally from here on; seeded once from the table
+    // because a restart finds rows already on disk from the previous run.
+    const { depth } = this.#db.prepare('SELECT COUNT(*) AS depth FROM outbox').get() as {
+      depth: number;
+    };
+    this.#depth = depth;
   }
 
   enqueue(kind: OutboxKind, instanceName: string, payload: unknown): void {
@@ -86,23 +117,23 @@ export class Outbox {
         'INSERT INTO outbox (kind, instance_name, payload, created_at) VALUES (?, ?, ?, ?)',
       )
       .run(kind, instanceName, JSON.stringify(payload), Date.now());
+    this.#depth += 1;
     this.#evictIfNeeded();
   }
 
   #evictIfNeeded(): void {
-    const { depth } = this.#db.prepare('SELECT COUNT(*) AS depth FROM outbox').get() as {
-      depth: number;
-    };
-    if (depth <= this.#maxRows) return;
+    if (this.#depth <= this.#maxRows) return;
 
-    const excess = depth - this.#maxRows;
+    const excess = this.#depth - this.#maxRows;
     const result = this.#db
       .prepare('DELETE FROM outbox WHERE id IN (SELECT id FROM outbox ORDER BY id ASC LIMIT ?)')
       .run(excess);
     // node:sqlite types changes as number | bigint — it hands back a number
     // until the count exceeds 2^53, which an outbox capped at maxRows never
     // will. Narrowed rather than asserted so the arithmetic stays honest.
-    this.#evicted += Number(result.changes);
+    const removed = Number(result.changes);
+    this.#evicted += removed;
+    this.#depth -= removed;
   }
 
   /** Read a batch without removing it; rows are only deleted once acknowledged. */
@@ -140,20 +171,22 @@ export class Outbox {
     // would drop rows the control plane never confirmed, which is the one
     // failure this whole table exists to prevent.
     this.#db.exec('BEGIN');
+    let removed = 0;
     try {
-      for (const id of ids) del.run(id);
+      // Counted rather than assumed as ids.length: an id already gone —
+      // evicted between this batch being peeked and acknowledged — must not
+      // be double-subtracted from #depth on top of #evictIfNeeded's own count.
+      for (const id of ids) removed += Number(del.run(id).changes);
       this.#db.exec('COMMIT');
     } catch (error) {
       this.#db.exec('ROLLBACK');
       throw error;
     }
+    this.#depth -= removed;
   }
 
   stats(): OutboxStats {
-    const { depth } = this.#db.prepare('SELECT COUNT(*) AS depth FROM outbox').get() as {
-      depth: number;
-    };
-    return { depth, evicted: this.#evicted };
+    return { depth: this.#depth, evicted: this.#evicted };
   }
 
   // -------------------------------------------------------------------------
@@ -257,6 +290,24 @@ export class Outbox {
          ON CONFLICT (command_id) DO NOTHING`,
       )
       .run(commandId, Date.now(), success ? 1 : 0, result);
+  }
+
+  /**
+   * Drop idempotency records old enough that no redelivery could still need
+   * them. A command's signature is only valid for MAX_COMMAND_AGE_MS (15
+   * minutes) and the control plane's own dispatch TTL is the same order, so
+   * nothing older than that can still arrive expecting this row to be here.
+   * Without this, applied_commands grows for the life of the process — and a
+   * worker is meant to run for months.
+   *
+   * Rate-limited internally so it is cheap to call on every heartbeat tick:
+   * there is no reason to scan the table more than once an hour.
+   */
+  pruneAppliedCommands(maxAgeMs = APPLIED_COMMAND_RETENTION_MS): void {
+    const now = Date.now();
+    if (now - this.#lastAppliedCommandPruneAt < APPLIED_COMMAND_PRUNE_INTERVAL_MS) return;
+    this.#lastAppliedCommandPruneAt = now;
+    this.#db.prepare('DELETE FROM applied_commands WHERE applied_at < ?').run(now - maxAgeMs);
   }
 
   close(): void {
