@@ -227,6 +227,20 @@ export const jobHistory = pgTable(
     index('job_history_job_idx').on(t.instanceId, t.jobUuid, t.runDatetime),
     index('job_history_run_datetime_idx').on(t.runDatetime),
     index('job_history_status_idx').on(t.runStatus, t.runDatetime),
+    /**
+     * The History tab (`getJobHistory`), and the two failure-context lookups
+     * that run *inside* ingestion on every new failure (`#failureContext` in
+     * notifications/service.ts, and `getCurrentRun` in stats.ts) all filter on
+     * `(instance_id, job_uuid)` and order by `sql_instance_id` — msdb's own
+     * ordering key, and the one that correctly interleaves step rows with the
+     * job-level outcome row that closes each run. `job_history_job_idx` above
+     * sorts by `run_datetime` instead, which cannot serve an
+     * `ORDER BY sql_instance_id` scan, so every one of those queries fell back
+     * to a full filter-then-sort. The failure-context ones matter most: they
+     * run synchronously while a new failure is being ingested, so a slow scan
+     * there is latency on the write path, not just a slow page load.
+     */
+    index('job_history_instance_job_sqlid_idx').on(t.instanceId, t.jobUuid, t.sqlInstanceId),
   ],
 );
 
@@ -284,6 +298,14 @@ export const commandState = [
   'rejected',
 ] as const;
 export type CommandState = (typeof commandState)[number];
+
+/** States `completedAt` is set on, and therefore safe for retention to reach. */
+export const TERMINAL_COMMAND_STATES: readonly CommandState[] = [
+  'succeeded',
+  'failed',
+  'expired',
+  'rejected',
+];
 
 export const commands = pgTable(
   'commands',
