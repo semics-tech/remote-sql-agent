@@ -1,13 +1,17 @@
 import { createHash } from 'node:crypto';
-import { and, desc, eq, lt, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, lt, sql } from 'drizzle-orm';
 import type { Database } from '../db/client.js';
 import {
   agentLogEntries,
+  auditExportQueue,
+  commands,
   instances,
   jobActivity,
   jobHistory,
   jobs,
+  notificationEvents,
   syncState,
+  TERMINAL_COMMAND_STATES,
   workers,
 } from '../db/schema.js';
 import type { ActivityRow, AgentLogRow, HistoryRow, InstanceInfo } from '@remote-sql-agent/protocol';
@@ -385,9 +389,41 @@ export async function ingestAgentLog(
   return inserted.length;
 }
 
-/** Delete history and log rows older than the retention window (§8). */
+/**
+ * Delete history, log and operational-bookkeeping rows older than the
+ * retention window (§8).
+ *
+ * Deliberately not touching `audit_log`: that table is append-only by design
+ * (see the comment on `writeAudit`), and its own retention — if it is ever
+ * needed — belongs in an explicit archival job that exports before it removes,
+ * not here. `commands` is pruned, but only terminal rows (a command still
+ * `pending_approval`, `approved` or `dispatched` is never touched regardless of
+ * age) — the durable record of what happened lives in `audit_log.detail` and
+ * `job_versions` either way, so this only drops the dispatch bookkeeping that
+ * already served its purpose.
+ *
+ * `audit_export_queue` is the one row here that is not really about *age*: a
+ * healthy queue drains within minutes (delivered or given up on past
+ * `maxAttempts`, both of which delete the row immediately — see
+ * audit-export.ts), so this is normally a no-op for it. It stops being a no-op
+ * when OTLP export is disabled, which is the default: `writeAudit` enqueues a
+ * row here unconditionally on every audited action, and nothing ever drains
+ * the queue while export is off, so left alone it grows for the entire
+ * lifetime of the deployment. Bounding it by age here — rather than
+ * special-casing "export is disabled" — means the same one rule ("nothing
+ * outlives the retention window") covers both the healthy and the
+ * never-going-to-be-exported case without `pruneRetention` needing to know
+ * which one it is.
+ */
 export async function pruneRetention(db: Database, retentionDays: number): Promise<void> {
   const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
   await db.delete(jobHistory).where(lt(jobHistory.runDatetime, cutoff));
   await db.delete(agentLogEntries).where(lt(agentLogEntries.loggedAt, cutoff));
+  // Deliveries cascade from the event they belong to (onDelete: 'cascade'),
+  // so removing old events is enough to keep both tables bounded.
+  await db.delete(notificationEvents).where(lt(notificationEvents.occurredAt, cutoff));
+  await db
+    .delete(commands)
+    .where(and(inArray(commands.state, TERMINAL_COMMAND_STATES), lt(commands.completedAt, cutoff)));
+  await db.delete(auditExportQueue).where(lt(auditExportQueue.createdAt, cutoff));
 }

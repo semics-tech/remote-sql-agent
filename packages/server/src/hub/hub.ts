@@ -52,10 +52,23 @@ import {
 
 const SERVER_VERSION = '0.1.0';
 
-interface PendingSnapshot {
+export interface PendingSnapshot {
   instanceName: string;
   jobs: JobDefinitionBlob[];
+  /** When the first chunk of this snapshot arrived, for the abandonment sweep below. */
+  startedAt: number;
 }
+
+/**
+ * How long a chunked snapshot may sit incomplete before it is discarded.
+ *
+ * Generous relative to how long assembling one actually takes — `moreChunks`
+ * batches are ~25 jobs each and land within a poll cycle — because the cost of
+ * being wrong in the "too short" direction is a legitimate slow snapshot losing
+ * its accumulated chunks and having to restart, while the cost in the "too
+ * long" direction is bounded to this one duration regardless.
+ */
+const SNAPSHOT_ABANDON_MS = 10 * 60 * 1000;
 
 export interface HubDeps {
   db: Database;
@@ -587,8 +600,14 @@ async function handleSnapshotChunk(
   pending: Map<string, PendingSnapshot>,
   log: Logger,
 ): Promise<void> {
+  sweepAbandonedSnapshots(pending, log);
+
   const key = `${snapshot.instanceName}:${snapshot.snapshotId}`;
-  const acc = pending.get(key) ?? { instanceName: snapshot.instanceName, jobs: [] };
+  const acc = pending.get(key) ?? {
+    instanceName: snapshot.instanceName,
+    jobs: [],
+    startedAt: Date.now(),
+  };
   acc.jobs.push(...snapshot.jobs);
   pending.set(key, acc);
 
@@ -619,6 +638,31 @@ async function handleSnapshotChunk(
     { instanceName: snapshot.instanceName, jobs: acc.jobs.length, softDeleted: removed },
     'Snapshot applied',
   );
+}
+
+/**
+ * Drop chunked snapshots that stopped arriving.
+ *
+ * `pendingSnapshots` is scoped to one session (see `handleSession`), so it
+ * clears on reconnect regardless — but a session can stay open for days, and
+ * every accumulated chunk holds full T-SQL step bodies, which routinely
+ * contain connection strings (CLAUDE.md). A worker that starts a snapshot and
+ * never finishes it — crashes mid-send, or an instance is detached while a
+ * chunk is in flight — would otherwise leave that memory held for as long as
+ * the connection lasts. Checked on every chunk rather than on a separate
+ * timer: chunks are the only thing that grows this map, so there is nothing to
+ * sweep between them.
+ */
+export function sweepAbandonedSnapshots(pending: Map<string, PendingSnapshot>, log: Logger): void {
+  const cutoff = Date.now() - SNAPSHOT_ABANDON_MS;
+  for (const [key, acc] of pending) {
+    if (acc.startedAt > cutoff) continue;
+    log.warn(
+      { instanceName: acc.instanceName, jobs: acc.jobs.length, ageMs: Date.now() - acc.startedAt },
+      'Discarding a chunked snapshot that stopped arriving before it completed',
+    );
+    pending.delete(key);
+  }
 }
 
 /**

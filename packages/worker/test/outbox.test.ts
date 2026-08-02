@@ -1,7 +1,8 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { platform } from 'node:os';
 import { Outbox } from '../src/outbox.js';
 
 let dir: string;
@@ -110,6 +111,80 @@ describe('bounded size', () => {
     } finally {
       small.close();
     }
+  });
+});
+
+describe('depth is tracked incrementally, not recounted', () => {
+  it('stays correct across enqueue, acknowledge and a reopen', () => {
+    outbox.enqueue('history', 'INST1', { n: 1 });
+    outbox.enqueue('history', 'INST1', { n: 2 });
+    outbox.enqueue('history', 'INST1', { n: 3 });
+    expect(outbox.stats().depth).toBe(3);
+
+    const [first] = outbox.peek(1);
+    outbox.acknowledge([first!.id]);
+    expect(outbox.stats().depth).toBe(2);
+
+    // A restart finds rows already on disk from the previous run — depth has
+    // to be seeded from what is actually there, not assumed to start at zero.
+    // Reassigned rather than a second variable, so the top-level afterEach
+    // closes the handle that is actually still open.
+    outbox.close();
+    outbox = new Outbox(join(dir, 'outbox.sqlite'), 100);
+    expect(outbox.stats().depth).toBe(2);
+  });
+
+  it('does not double-subtract when acknowledging ids eviction already removed', () => {
+    const small = new Outbox(join(dir, 'race.sqlite'), 3);
+    try {
+      for (let i = 0; i < 3; i++) small.enqueue('history', 'INST1', { i });
+      const stale = small.peek(3); // the 3 oldest ids, in the order eviction removes them
+
+      // Push all three of them out via eviction — each enqueue past the bound
+      // evicts exactly one, oldest-first, so this clears every id in `stale`.
+      small.enqueue('history', 'INST1', { i: 3 });
+      small.enqueue('history', 'INST1', { i: 4 });
+      small.enqueue('history', 'INST1', { i: 5 });
+      expect(small.stats().depth).toBe(3);
+
+      // Acknowledging ids eviction already deleted must be a no-op, not a
+      // further decrement — DELETE affects 0 rows for an id already gone.
+      small.acknowledge(stale.map((r) => r.id));
+      expect(small.stats().depth).toBe(3);
+    } finally {
+      small.close();
+    }
+  });
+});
+
+describe.skipIf(platform() === 'win32')('file permissions', () => {
+  it('creates outbox.sqlite readable only by its owner', () => {
+    const path = join(dir, 'outbox.sqlite');
+    const mode = statSync(path).mode & 0o777;
+    expect(mode).toBe(0o600);
+  });
+});
+
+describe('applied command idempotency records are pruned', () => {
+  it('drops records older than the retention window, once the prune interval has passed', async () => {
+    const now = Date.now();
+    outbox.recordAppliedCommand('cmd-old', true, null);
+    outbox.recordAppliedCommand('cmd-recent', true, null);
+
+    // Back-date the "old" row directly — recordAppliedCommand always stamps
+    // now(), and there is deliberately no public API to write anything else.
+    // A second connection to the same file is the only way in.
+    const { DatabaseSync } = await import('node:sqlite');
+    const direct = new DatabaseSync(join(dir, 'outbox.sqlite'));
+    direct
+      .prepare('UPDATE applied_commands SET applied_at = ? WHERE command_id = ?')
+      .run(now - 25 * 60 * 60 * 1000, 'cmd-old');
+    direct.close();
+
+    outbox.pruneAppliedCommands();
+
+    expect(outbox.hasAppliedCommand('cmd-old')).toBe(false);
+    expect(outbox.hasAppliedCommand('cmd-recent')).toBe(true);
   });
 });
 

@@ -1,0 +1,1 @@
+CREATE INDEX "job_history_instance_job_sqlid_idx" ON "job_history" USING btree ("instance_id","job_uuid","sql_instance_id");

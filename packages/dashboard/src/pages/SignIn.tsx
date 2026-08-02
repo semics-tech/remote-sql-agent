@@ -1,14 +1,30 @@
 import { useState, type FormEvent } from 'react';
 import { useAuth } from '../auth.jsx';
 
+/**
+ * `?error=` on this page comes only from this control plane's own redirect
+ * after a failed Entra sign-in, and the server only ever puts one of a small
+ * set of fixed phrases there — never Entra's own free-text error description
+ * or an exception message, both of which used to be reflected here verbatim.
+ * The length cap is a second line of defence against a future redirect that
+ * forgets that discipline: React already escapes this as text, so nothing
+ * here executes, but a page-filling wall of attacker-chosen text styled as a
+ * genuine system message is a phishing primitive on the real domain, on its
+ * own, without needing a script to run.
+ */
+const MAX_SIGNIN_ERROR_LENGTH = 200;
+
+function signInErrorFromUrl(): string | null {
+  const raw = new URLSearchParams(window.location.search).get('error');
+  return raw ? raw.slice(0, MAX_SIGNIN_ERROR_LENGTH) : null;
+}
+
 /** Sign-in. Offers whichever methods the deployment has configured. */
 export function SignIn() {
   const { config, signIn } = useAuth();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState<string | null>(
-    new URLSearchParams(window.location.search).get('error'),
-  );
+  const [error, setError] = useState<string | null>(signInErrorFromUrl());
   const [busy, setBusy] = useState(false);
 
   /**

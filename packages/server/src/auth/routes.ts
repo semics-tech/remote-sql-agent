@@ -161,17 +161,21 @@ export async function registerAuthRoutes(
         .parse(request.query);
 
       if (query.error) {
+        // query.error_description is Entra's free text, and query.error alone
+        // reaches this branch with no code/state check at all — this route
+        // requires no prior OAuth interaction, so both are reachable by
+        // anyone crafting a link, not only by a real failed sign-in. Keeping
+        // it in the audit log but never in the redirect is what stops that
+        // link from putting attacker-chosen text on the real sign-in page,
+        // styled exactly like a genuine system message.
         await writeAudit(db, {
           actorType: 'user',
           actor: 'unknown',
           action: 'auth.login.failed',
-          detail: { provider: 'entra', error: query.error },
+          detail: { provider: 'entra', error: query.error, description: query.error_description ?? null },
           remoteAddress: request.ip,
         });
-        return reply.redirect(
-          `/signin?error=${encodeURIComponent(query.error_description ?? query.error)}`,
-          302,
-        );
+        return reply.redirect('/signin?error=Microsoft+sign-in+failed+or+was+cancelled.', 302);
       }
 
       if (!query.code || !query.state) {
@@ -209,7 +213,13 @@ export async function registerAuthRoutes(
           detail: { provider: 'entra', reason: message },
           remoteAddress: request.ip,
         });
-        return reply.redirect(`/signin?error=${encodeURIComponent(message)}`, 302);
+        // Fixed message rather than `message` itself, for the same reason as
+        // the query.error branch above: nothing reaching the browser here
+        // should be text this route did not author itself.
+        return reply.redirect(
+          '/signin?error=Microsoft+sign-in+failed.+Try+again+or+contact+your+administrator.',
+          302,
+        );
       }
     });
   }
