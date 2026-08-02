@@ -50,9 +50,24 @@ export function InstanceConfigPanel({
   const [editing, setEditing] = useState<InstanceConfigView | 'new' | null>(null);
   const admin = useWorkerAdmin();
   const rows = configs.data?.configs ?? [];
+  const [removingId, setRemovingId] = useState<string | null>(null);
+  const [removeError, setRemoveError] = useState<string | null>(null);
+
+  async function remove(configId: string): Promise<void> {
+    setRemovingId(configId);
+    setRemoveError(null);
+    try {
+      await admin.removeInstanceConfig(workerId, configId);
+    } catch (err) {
+      setRemoveError(err instanceof Error ? err.message : 'Could not remove the instance.');
+    } finally {
+      setRemovingId(null);
+    }
+  }
 
   return (
     <div className="instance-config">
+      {removeError ? <div className="error">{removeError}</div> : null}
       <QueryState isLoading={configs.isLoading} error={configs.error}>
         {rows.length === 0 ? (
           <Empty
@@ -109,9 +124,10 @@ export function InstanceConfigPanel({
                         </button>
                         <button
                           className="action danger"
-                          onClick={() => void admin.removeInstanceConfig(workerId, config.id)}
+                          disabled={removingId === config.id}
+                          onClick={() => void remove(config.id)}
                         >
-                          Remove
+                          {removingId === config.id ? 'Removing…' : 'Remove'}
                         </button>
                       </td>
                     </tr>
