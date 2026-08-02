@@ -11,6 +11,7 @@ import { createGrpcServer, createServerCredentials } from './hub/hub.js';
 import { WorkerRegistry } from './hub/registry.js';
 import { pruneRetention } from './domain/ingest.js';
 import { AuditExporter } from './domain/audit-export.js';
+import { startTracing, stopTracing } from './tracing.js';
 import { NotificationService } from './domain/notifications/service.js';
 import { EventBroker } from './api/events.js';
 import { WorkerAuthenticator } from './worker-auth/authenticate.js';
@@ -113,6 +114,12 @@ async function resolveHubTls(
 async function main(): Promise<void> {
   const config = loadConfig();
   const logger = createLogger(config.logLevel);
+
+  // Before anything else starts, so nothing built below — the Fastify app's
+  // request hooks, the hub's command spans — can run even one span through
+  // the OpenTelemetry API's no-op default before the real provider (or the
+  // deliberate no-op, when trace export is off) is the one registered.
+  startTracing(config, logger);
 
   logger.info('Applying database migrations...');
   await runMigrations(config.databaseUrl);
@@ -257,6 +264,7 @@ async function main(): Promise<void> {
       void app
         .close()
         .then(() => auditExporter.stop())
+        .then(() => stopTracing())
         .then(() => close())
         .then(() => process.exit(0))
         .catch(() => process.exit(1));

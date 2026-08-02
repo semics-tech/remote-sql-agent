@@ -19,6 +19,8 @@ import type { ServerConfig } from '../config.js';
 import type { WorkerRegistry } from '../hub/registry.js';
 import { writeAudit } from './audit.js';
 import type { Logger } from 'pino';
+import { SpanStatusCode, type Span } from '@opentelemetry/api';
+import { getTracer } from '../tracing.js';
 
 /**
  * The command pipeline (§6.4).
@@ -72,6 +74,18 @@ export interface CreateCommandResult {
 }
 
 export class CommandService {
+  /**
+   * One span per in-flight command, from `dispatch()` to whichever of
+   * `recordResult()` / `#markExpired()` / `expireStale()` closes it out.
+   *
+   * In-memory, not persisted: a command's full lifecycle can span minutes, and
+   * nothing here survives this process restarting mid-flight — the span for
+   * that command is simply never emitted, which is an acceptable gap for a
+   * single-replica architecture (see deploy/k8s/control-plane.yaml) that
+   * already loses its live worker registry on restart for the same reason.
+   */
+  #commandSpans = new Map<string, Span>();
+
   constructor(
     private readonly db: Database,
     private readonly config: ServerConfig,
@@ -79,6 +93,15 @@ export class CommandService {
     private readonly signingPrivateKeyPem: string,
     private readonly logger: Logger,
   ) {}
+
+  /** End and forget a command's span, whatever the outcome. */
+  #endSpan(commandId: string, status: { code: SpanStatusCode; message?: string }): void {
+    const span = this.#commandSpans.get(commandId);
+    if (!span) return;
+    span.setStatus(status);
+    span.end();
+    this.#commandSpans.delete(commandId);
+  }
 
   /**
    * Resolve the worker behind an instance and the capabilities that would
@@ -303,6 +326,17 @@ export class CommandService {
     );
     command.signature = signCommand(command, this.signingPrivateKeyPem);
 
+    // Started here, not on approval or creation: this is the point a command
+    // actually starts costing time on the worker's side, which is the
+    // duration worth seeing. Closed by recordResult(), #markExpired() or
+    // expireStale() — whichever settles it.
+    const span = getTracer().startSpan(`command ${row.command.type}`);
+    span.setAttribute('rsagent.command.id', commandId);
+    span.setAttribute('rsagent.command.type', row.command.type);
+    span.setAttribute('rsagent.instance.name', row.instanceName);
+    span.setAttribute('rsagent.worker.id', row.command.workerId);
+    this.#commandSpans.set(commandId, span);
+
     live.send({ msg: { $case: 'command', command } });
 
     await this.db
@@ -383,6 +417,18 @@ export class CommandService {
       })
       .where(and(eq(commands.id, params.commandId), eq(commands.workerId, params.workerId)));
 
+    const span = this.#commandSpans.get(params.commandId);
+    if (span) {
+      span.setAttribute('rsagent.command.success', params.success);
+      if (!params.success) span.setAttribute('rsagent.command.error_code', params.errorCode);
+    }
+    this.#endSpan(
+      params.commandId,
+      params.success
+        ? { code: SpanStatusCode.OK }
+        : { code: SpanStatusCode.ERROR, message: params.errorCode || 'Command failed' },
+    );
+
     await writeAudit(this.db, {
       actorType: 'worker',
       actor: params.hostName,
@@ -438,6 +484,13 @@ export class CommandService {
         ),
       )
       .returning({ id: commands.id });
+
+    // Only 'dispatched' rows can have a span open (dispatch() is where one
+    // starts); ending it for the other two states is just a harmless no-op in
+    // #endSpan.
+    for (const { id } of expired) {
+      this.#endSpan(id, { code: SpanStatusCode.ERROR, message: 'Expired' });
+    }
 
     if (expired.length > 0) {
       this.logger.info({ count: expired.length }, 'Expired stale commands');
