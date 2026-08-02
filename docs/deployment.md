@@ -116,7 +116,7 @@ curl -fsSL  $BASE/.env.example -o .env
 ### 3. Fill in `.env`
 
 ```bash
-RSAGENT_VERSION=0.1.1                              # pin it
+RSAGENT_VERSION=0.2.0                              # pin it
 RSAGENT_PUBLIC_URL=https://rsagent.corp.example.com
 RSAGENT_DOMAIN=rsagent.corp.example.com
 POSTGRES_PASSWORD=<40 random characters>
