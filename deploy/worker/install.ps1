@@ -138,7 +138,10 @@ if ($AuthMode -ne 'entra') {
         Write-Host "      better option where it works. Mint the enrolment token for 'entra'"
         Write-Host '      mode in the dashboard to use it.'
     } catch {
-        # No IMDS here, or it did not answer in time. Not an error.
+        # No IMDS here, or it did not answer in time. Not an error — logged at
+        # Verbose only, since PSScriptAnalyzer (rightly) treats a truly empty
+        # catch block as a sign a real failure is being swallowed silently.
+        Write-Verbose "No Azure instance metadata service responded: $_"
     }
 }
 
