@@ -395,8 +395,15 @@ plane outage costs visibility, not execution.
 connection strings, so put the volume on encrypted storage and encrypt the
 backups — see [security.md](security.md).
 
-**Monitoring.** `/health` and `/metrics` are unauthenticated and expose counts
-only, never job content. `/metrics` is Prometheus text format.
+**Monitoring.** `/health` reports the process is alive with no database call —
+point a liveness or startup probe at it. `/readyz` additionally checks Postgres
+is reachable and is what a readiness probe or load balancer health check
+should use instead; a pod or instance that cannot reach the database is taken
+out of rotation rather than continuing to receive traffic it cannot serve.
+Both, and `/metrics`, are unauthenticated by default and expose counts only,
+never job content. `/metrics` is Prometheus text format; set
+`RSAGENT_METRICS_TOKEN` to require `Authorization: Bearer <token>` on it where
+the scrape network is not otherwise trusted.
 
 **Audit export.** The database always holds the audit trail;
 `RSAGENT_AUDIT_OTLP_ENDPOINT` forwards it somewhere off this host, which is the
