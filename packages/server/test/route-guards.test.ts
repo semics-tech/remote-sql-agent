@@ -273,6 +273,68 @@ describe('estate-wide routes stay on the base role', () => {
   });
 });
 
+describe('history-scrubbing config stays on the base role', () => {
+  it('refuses an environment-Admin grant', async () => {
+    const app = await buildApp();
+    try {
+      const { workerId } = await seedInstance(db);
+      const userId = await seedUser('Viewer', [membershipKey('entra_group', PROD_GROUP)]);
+      await db.insert(environmentGrants).values({
+        subjectKind: 'entra_group',
+        subjectKey: PROD_GROUP,
+        environmentTag: '*',
+        role: 'Admin',
+      });
+      const auth = await signIn(userId);
+
+      const getResponse = await app.inject({
+        method: 'GET',
+        url: `/api/workers/${workerId}/history-scrubbing`,
+        headers: { cookie: auth.cookie, [CSRF_HEADER]: auth.csrf },
+      });
+      expect(getResponse.statusCode).toBe(403);
+
+      const putResponse = await app.inject({
+        method: 'PUT',
+        url: `/api/workers/${workerId}/history-scrubbing`,
+        headers: { cookie: auth.cookie, [CSRF_HEADER]: auth.csrf },
+        payload: { rules: [] },
+      });
+      expect(putResponse.statusCode).toBe(403);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('admits a base-role Admin and persists the config', async () => {
+    const app = await buildApp();
+    try {
+      const { workerId } = await seedInstance(db);
+      const auth = await signIn(await seedUser('Admin'));
+
+      const putResponse = await app.inject({
+        method: 'PUT',
+        url: `/api/workers/${workerId}/history-scrubbing`,
+        headers: { cookie: auth.cookie, [CSRF_HEADER]: auth.csrf },
+        payload: { rules: [{ id: 'r1', description: 'no passwords', pattern: 'Password=\\S+' }] },
+      });
+      expect(putResponse.statusCode).toBe(200);
+
+      const getResponse = await app.inject({
+        method: 'GET',
+        url: `/api/workers/${workerId}/history-scrubbing`,
+        headers: { cookie: auth.cookie, [CSRF_HEADER]: auth.csrf },
+      });
+      expect(getResponse.statusCode).toBe(200);
+      expect(getResponse.json()).toEqual({
+        rules: [{ id: 'r1', description: 'no passwords', pattern: 'Password=\\S+' }],
+      });
+    } finally {
+      await app.close();
+    }
+  });
+});
+
 describe('reads stay estate-wide', () => {
   it('lets a Viewer read a job in an environment they hold no grant for', async () => {
     const app = await buildApp();

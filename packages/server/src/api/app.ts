@@ -80,6 +80,7 @@ import {
   type JobFacet,
 } from '../domain/overview.js';
 import { getJobStats } from '../domain/stats.js';
+import { getHistoryScrubConfig, setHistoryScrubConfig } from '../domain/history-scrubbing.js';
 import {
   WorkerConfigError,
   deleteInstanceConfig,
@@ -1076,6 +1077,42 @@ export async function createApp(deps: AppDeps) {
       note: 'Takes effect on the worker\'s next session, capped by its local maxCapability.',
     };
   });
+
+  /**
+   * Redaction rules applied to a job history row's `message` before it is
+   * stored (§5.2, domain/history-scrubbing.ts). Enforced at ingestion, in
+   * hub.ts — redact-only, since `runStatus`/`stepId`/timing feed stats and
+   * live-step derivation elsewhere and must never be silently incomplete.
+   */
+  app.get(
+    '/api/workers/:workerId/history-scrubbing',
+    { preHandler: guard('worker.admin') },
+    async (request) => {
+      const { workerId } = z.object({ workerId: z.string().uuid() }).parse(request.params);
+      return getHistoryScrubConfig(db, workerId);
+    },
+  );
+
+  app.put(
+    '/api/workers/:workerId/history-scrubbing',
+    { preHandler: guard('worker.admin') },
+    async (request) => {
+      const { workerId } = z.object({ workerId: z.string().uuid() }).parse(request.params);
+      const config = await setHistoryScrubConfig(db, workerId, request.body, request.user?.id ?? null);
+
+      await writeAudit(db, {
+        actorType: 'user',
+        actor: actorOf(request),
+        action: 'worker.history_scrubbing.changed',
+        target: workerId,
+        // Rule shape and count only — never row content.
+        detail: { ruleCount: config.rules.length },
+        remoteAddress: request.ip,
+      });
+
+      return config;
+    },
+  );
 
   // --- Worker onboarding (§9.7 extended) -----------------------------------
 

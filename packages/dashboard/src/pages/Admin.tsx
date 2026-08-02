@@ -1,8 +1,17 @@
 import { Fragment, useEffect, useState } from 'react';
 import { Link } from 'react-router';
-import { CAPABILITIES, MAX_CAPABILITY_TIERS, effectiveCapabilities } from '@remote-sql-agent/protocol/browser';
-import type { MaxCapabilityTier } from '@remote-sql-agent/protocol/browser';
-import { useAudit, useWorkerAdmin, useWorkers, type WorkerRow } from '../api.js';
+import {
+  CAPABILITIES,
+  MAX_CAPABILITY_TIERS,
+  compileHistoryScrubPattern,
+  effectiveCapabilities,
+} from '@remote-sql-agent/protocol/browser';
+import type {
+  HistoryScrubConfigInput,
+  HistoryScrubRule,
+  MaxCapabilityTier,
+} from '@remote-sql-agent/protocol/browser';
+import { useAudit, useHistoryScrubbing, useWorkerAdmin, useWorkers, type WorkerRow } from '../api.js';
 import { Panel, QueryState, Empty } from '../components.jsx';
 import { formatDateTime, formatRelative } from '../format.js';
 import { InstanceConfigPanel } from './InstanceConfig.jsx';
@@ -167,6 +176,7 @@ function WorkerDetail({ worker }: { worker: WorkerRow }) {
         hostName={worker.hostName}
         liveInstanceCount={worker.instanceCount}
       />
+      <HistoryScrubbingEditor worker={worker} />
     </div>
   );
 }
@@ -272,6 +282,178 @@ function CapabilityEditor({ worker }: { worker: WorkerRow }) {
           </button>
         </div>
       ) : null}
+    </>
+  );
+}
+
+function emptyHistoryScrubRule(): HistoryScrubRule {
+  return { id: crypto.randomUUID(), description: '', pattern: '' };
+}
+
+function historyScrubPatternError(pattern: string): string | null {
+  if (!pattern) return 'Required.';
+  try {
+    compileHistoryScrubPattern(pattern);
+    return null;
+  } catch {
+    return 'Not a valid regular expression.';
+  }
+}
+
+/**
+ * Redacts text inside a job history row's message before it reaches the
+ * dashboard (§5.2). Redact-only, deliberately: run status, step and timing
+ * data feed failure-rate stats and live-step derivation elsewhere, so this
+ * never drops or hides a whole run — only text inside the message can change.
+ */
+function HistoryScrubbingEditor({ worker }: { worker: WorkerRow }) {
+  const admin = useWorkerAdmin();
+  const { data, isLoading, error: loadError } = useHistoryScrubbing(worker.id);
+
+  const [config, setConfig] = useState<HistoryScrubConfigInput | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // Only takes its initial value from the fetched config, same reasoning as
+  // CapabilityEditor above: an admin mid-edit should not have that edit
+  // clobbered by a background refetch.
+  useEffect(() => {
+    if (config || !data) return;
+    setConfig(data);
+  }, [data, config]);
+
+  if (isLoading || !config) {
+    return (
+      <>
+        <div className="editor-label" style={{ marginTop: 14 }}>
+          Job history — redact text from a step's output
+        </div>
+        {loadError ? (
+          <div className="error">Could not load scrubbing rules.</div>
+        ) : (
+          <p className="faint">Loading…</p>
+        )}
+      </>
+    );
+  }
+
+  const dirty = JSON.stringify(config) !== JSON.stringify(data);
+  const patternErrors = new Map(
+    config.rules.map((rule) => [rule.id, historyScrubPatternError(rule.pattern)] as const),
+  );
+  const hasInvalidRule = [...patternErrors.values()].some((message) => message !== null);
+
+  function updateRule(id: string, patch: Partial<HistoryScrubRule>): void {
+    setConfig((prev) =>
+      prev ? { ...prev, rules: prev.rules.map((r) => (r.id === id ? { ...r, ...patch } : r)) } : prev,
+    );
+  }
+
+  function removeRule(id: string): void {
+    setConfig((prev) => (prev ? { ...prev, rules: prev.rules.filter((r) => r.id !== id) } : prev));
+  }
+
+  async function save(): Promise<void> {
+    if (!config) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const saved = await admin.setHistoryScrubbing(worker.id, config);
+      setConfig(saved);
+      setNote('Saved.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not save the scrubbing rules.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <div className="editor-label" style={{ marginTop: 14 }}>
+        Job history — redact text from a step's output
+      </div>
+      {error ? <div className="error">{error}</div> : null}
+      {note ? <div className="notice">{note}</div> : null}
+      <p className="faint" style={{ margin: '0 0 8px' }}>
+        A match is replaced with <span className="mono">[redacted]</span> in the run's message
+        before it is stored — run status, step and timing are never affected, so stats and
+        live-step tracking stay complete.
+      </p>
+
+      <div className="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Description</th>
+              <th>Pattern (matched against the run's message)</th>
+              <th style={{ width: 40 }} />
+            </tr>
+          </thead>
+          <tbody>
+            {config.rules.map((rule) => (
+              <tr key={rule.id}>
+                <td>
+                  <input
+                    type="text"
+                    value={rule.description}
+                    placeholder="what this rule is for"
+                    onChange={(e) => updateRule(rule.id, { description: e.target.value })}
+                    style={{ width: '100%' }}
+                  />
+                </td>
+                <td>
+                  <input
+                    type="text"
+                    className="mono"
+                    value={rule.pattern}
+                    placeholder={String.raw`Password=\S+`}
+                    onChange={(e) => updateRule(rule.id, { pattern: e.target.value })}
+                    style={{ width: '100%' }}
+                  />
+                  {patternErrors.get(rule.id) ? (
+                    <div className="error" style={{ marginTop: 2 }}>
+                      {patternErrors.get(rule.id)}
+                    </div>
+                  ) : null}
+                </td>
+                <td>
+                  <button className="action" onClick={() => removeRule(rule.id)}>
+                    Remove
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="action-bar">
+        <button
+          className="action"
+          disabled={busy}
+          onClick={() =>
+            setConfig((prev) => (prev ? { ...prev, rules: [...prev.rules, emptyHistoryScrubRule()] } : prev))
+          }
+        >
+          Add a rule
+        </button>
+        {dirty ? (
+          <>
+            <button
+              className="action primary"
+              disabled={busy || hasInvalidRule}
+              onClick={() => void save()}
+            >
+              {busy ? 'Saving…' : 'Save scrubbing rules'}
+            </button>
+            <button className="action" disabled={busy} onClick={() => setConfig(data ?? null)}>
+              Discard
+            </button>
+          </>
+        ) : null}
+      </div>
     </>
   );
 }
