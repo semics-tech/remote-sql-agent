@@ -108,20 +108,33 @@ these events.** It has no ingestion path for third-party application events, so
 cover authentication and need no configuration from us; everything else lives in
 this product's audit log.
 
-### Worker authentication defaults to an API key, not mTLS
+### Worker authentication defaults to mTLS, not an API key
 
-**Decided: `token` mode is the default; mTLS and Entra workload identity are
-available.**
+**Decided: `mtls` is the installers' default; `entra` is better where hosts have
+a managed identity, and `token` remains available.**
 
-mTLS is the stronger control, but CA custody, rotation and revocation are real
-operational load, and making PKI the price of entry would keep this out of the
-estates that need it most. An argon2id-hashed API key over TLS, revocable and
-rotatable from the dashboard, is a defensible default.
+This reverses the original decision, which was that mTLS cost too much to run:
+"CA custody, rotation and revocation are real operational load, and making PKI
+the price of entry would keep this out of the estates that need it most."
 
-**Consequence:** the key is a bearer secret, so the hub refuses to start without
-TLS unless explicitly overridden. Sites that already run PKI should choose
-`mtls`; sites on Azure should prefer `entra`, which stores no secret on the SQL
-host at all.
+The premise turned out to be wrong for *this* product. There is no CA custody —
+the control plane runs its own, created on demand, and a site never sees it.
+There was no rotation either, which was not a saving but the actual defect: 90-day
+certificates and no renewal path made expiry an outage timer. Only the operational
+load was real, and it was load this codebase had imposed on itself.
+
+With renewal automatic, the ranking inverts. `mtls` costs an operator nothing
+beyond `--auth-mode mtls` at install and proves possession of a key that never
+crosses the wire. `token` is a bearer secret: anything that reads it — including
+a TLS-terminating proxy — can replay it from anywhere.
+
+**Consequence:** `token` still works and is still the right answer on a host that
+can reach neither Azure nor a certificate of its own, but it is no longer the
+path of least resistance. The hub refuses to start without TLS regardless. The
+control plane warns at startup when a real deployment still has workers on API
+keys, and `RSAGENT_WORKER_AUTH_MODES` should list only the modes actually in use
+— the hub accepts any listed mode from any worker, so a migration is not finished
+until the mode being migrated away from is removed.
 
 ### Steps are replaced wholesale on a job save
 
@@ -150,7 +163,8 @@ Ordered by how likely they are to matter.
 | Gap | Impact | Effort |
 |---|---|---|
 | No control-plane HA | A control-plane outage costs visibility, not job execution. Jobs keep running; workers queue to their local outbox and drain on reconnect. | Large |
-| Worker certificate auto-rotation | `mtls` mode issues 90-day certificates but does not rotate them at 2/3 lifetime. Rotation is manual today. Token-mode keys rotate from the dashboard. | Medium |
+| Worker certificate expiry alerting | Certificates now renew themselves at half lifetime, so expiry should not arrive — but nothing watches for a worker that has stopped renewing, and `certExpiresAt` is plumbed to the dashboard without being shown. Until it is, the signal is a `worker.certificate.renewed` audit row per worker per half-lifetime. | Small |
+| Bring-your-own CA for worker certificates | `RSAGENT_GRPC_TLS_CLIENT_CA` makes the TLS layer accept an operator-issued client certificate, but authentication then rejects it: identity is a fingerprint row in `worker_credentials`, and only enrolment and renewal create one. Needs a way to register an externally-issued fingerprint. Cheap, because identity is the fingerprint rather than the chain — but until then the setting promises something it does not deliver, and should fail at startup rather than per connection. | Small |
 | No MSI | The worker ships as a zip plus `install.ps1`. Fine for hand or script installation; awkward for SCCM/Intune, which want an MSI. | Medium |
 | Deleting an operator | Explicitly refused. The command carries an instance-local operator id, which is not a safe identifier to delete by — the same id means different operators on different instances. Needs a protocol change to carry the name. | Small |
 | Non-TSQL subsystem fidelity | Steps using a subsystem this version does not model are mirrored as `CmdExec` with a warning. Reading is safe; writing such a job back would change it. | Small |

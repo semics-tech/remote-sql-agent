@@ -133,9 +133,9 @@ RSAGENT_HTTP_BIND=127.0.0.1                        # only Caddy may reach 8080
 
 ### 4. Give the hub a certificate
 
-It refuses to start without one, because in token mode TLS is the only thing
-keeping worker API keys off the wire. Put `server.crt` and `server.key` for
-`RSAGENT_DOMAIN` in `./tls`.
+It refuses to start without one: mTLS needs TLS to exist at all, and in token
+mode TLS is the only thing keeping worker API keys off the wire. Put
+`server.crt` and `server.key` for `RSAGENT_DOMAIN` in `./tls`.
 
 Use your estate's CA if you have one. Otherwise self-signed is a legitimate
 posture here rather than a shortcut — workers pin it with `--ca-cert`, which is
