@@ -1,17 +1,31 @@
 import { Fragment, useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import {
+  AGENT_LOG_SEVERITIES,
   CAPABILITIES,
   MAX_CAPABILITY_TIERS,
+  SCRUB_RULE_ACTIONS,
   compileHistoryScrubPattern,
+  compileScrubPattern,
   effectiveCapabilities,
 } from '@remote-sql-agent/protocol/browser';
 import type {
+  AgentLogScrubConfigInput,
+  AgentLogSeverity,
   HistoryScrubConfigInput,
   HistoryScrubRule,
   MaxCapabilityTier,
+  ScrubRule,
+  ScrubRuleAction,
 } from '@remote-sql-agent/protocol/browser';
-import { useAudit, useHistoryScrubbing, useWorkerAdmin, useWorkers, type WorkerRow } from '../api.js';
+import {
+  useAudit,
+  useHistoryScrubbing,
+  useLogScrubbing,
+  useWorkerAdmin,
+  useWorkers,
+  type WorkerRow,
+} from '../api.js';
 import { Panel, QueryState, Empty } from '../components.jsx';
 import { formatDateTime, formatRelative } from '../format.js';
 import { InstanceConfigPanel } from './InstanceConfig.jsx';
@@ -177,6 +191,7 @@ function WorkerDetail({ worker }: { worker: WorkerRow }) {
         liveInstanceCount={worker.instanceCount}
       />
       <HistoryScrubbingEditor worker={worker} />
+      <LogScrubbingEditor worker={worker} />
     </div>
   );
 }
@@ -436,6 +451,214 @@ function HistoryScrubbingEditor({ worker }: { worker: WorkerRow }) {
           onClick={() =>
             setConfig((prev) => (prev ? { ...prev, rules: [...prev.rules, emptyHistoryScrubRule()] } : prev))
           }
+        >
+          Add a rule
+        </button>
+        {dirty ? (
+          <>
+            <button
+              className="action primary"
+              disabled={busy || hasInvalidRule}
+              onClick={() => void save()}
+            >
+              {busy ? 'Saving…' : 'Save scrubbing rules'}
+            </button>
+            <button className="action" disabled={busy} onClick={() => setConfig(data ?? null)}>
+              Discard
+            </button>
+          </>
+        ) : null}
+      </div>
+    </>
+  );
+}
+
+function emptyScrubRule(): ScrubRule {
+  return { id: crypto.randomUUID(), description: '', pattern: '', action: 'redact' };
+}
+
+function scrubPatternError(pattern: string): string | null {
+  if (!pattern) return 'Required.';
+  try {
+    compileScrubPattern(pattern);
+    return null;
+  } catch {
+    return 'Not a valid regular expression.';
+  }
+}
+
+/**
+ * What the Agent error log is allowed to carry off this worker and into the
+ * dashboard (§5.2). Enforced server-side at ingestion — a row this rejects
+ * is never stored, so it can never show up here or anywhere else.
+ */
+function LogScrubbingEditor({ worker }: { worker: WorkerRow }) {
+  const admin = useWorkerAdmin();
+  const { data, isLoading, error: loadError } = useLogScrubbing(worker.id);
+
+  const [config, setConfig] = useState<AgentLogScrubConfigInput | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // Only takes its initial value from the fetched config, same reasoning as
+  // CapabilityEditor above: an admin mid-edit should not have that edit
+  // clobbered by a background refetch.
+  useEffect(() => {
+    if (config || !data) return;
+    setConfig(data);
+  }, [data, config]);
+
+  if (isLoading || !config) {
+    return (
+      <>
+        <div className="editor-label" style={{ marginTop: 14 }}>
+          Agent error log — what reaches the dashboard
+        </div>
+        {loadError ? (
+          <div className="error">Could not load scrubbing rules.</div>
+        ) : (
+          <p className="faint">Loading…</p>
+        )}
+      </>
+    );
+  }
+
+  const dirty = JSON.stringify(config) !== JSON.stringify(data);
+  const patternErrors = new Map(
+    config.rules.map((rule) => [rule.id, scrubPatternError(rule.pattern)] as const),
+  );
+  const hasInvalidRule = [...patternErrors.values()].some((message) => message !== null);
+
+  function toggleSeverity(severity: AgentLogSeverity): void {
+    setConfig((prev) =>
+      prev
+        ? {
+            ...prev,
+            allowedSeverities: prev.allowedSeverities.includes(severity)
+              ? prev.allowedSeverities.filter((s) => s !== severity)
+              : [...prev.allowedSeverities, severity],
+          }
+        : prev,
+    );
+  }
+
+  function updateRule(id: string, patch: Partial<ScrubRule>): void {
+    setConfig((prev) =>
+      prev ? { ...prev, rules: prev.rules.map((r) => (r.id === id ? { ...r, ...patch } : r)) } : prev,
+    );
+  }
+
+  function removeRule(id: string): void {
+    setConfig((prev) => (prev ? { ...prev, rules: prev.rules.filter((r) => r.id !== id) } : prev));
+  }
+
+  async function save(): Promise<void> {
+    if (!config) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const saved = await admin.setLogScrubbing(worker.id, config);
+      setConfig(saved);
+      setNote('Saved.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not save the scrubbing rules.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <div className="editor-label" style={{ marginTop: 14 }}>
+        Agent error log — what reaches the dashboard
+      </div>
+      {error ? <div className="error">{error}</div> : null}
+      {note ? <div className="notice">{note}</div> : null}
+
+      <div className="capability-grid">
+        {AGENT_LOG_SEVERITIES.map((severity) => (
+          <label key={severity} className="inline-check">
+            <input
+              type="checkbox"
+              checked={config.allowedSeverities.includes(severity)}
+              onChange={() => toggleSeverity(severity)}
+            />
+            <span className="mono">{severity}</span>
+          </label>
+        ))}
+      </div>
+      <p className="faint" style={{ margin: '8px 0 0' }}>
+        {config.allowedSeverities.length === 0
+          ? `Nothing from ${worker.hostName}'s Agent error log will reach the dashboard.`
+          : 'Rows at an unchecked severity are dropped before storage, whatever the rules below say.'}
+      </p>
+
+      <div className="table-scroll" style={{ marginTop: 10 }}>
+        <table>
+          <thead>
+            <tr>
+              <th>Description</th>
+              <th>Pattern (matched against the message and process info)</th>
+              <th>Action</th>
+              <th style={{ width: 40 }} />
+            </tr>
+          </thead>
+          <tbody>
+            {config.rules.map((rule) => (
+              <tr key={rule.id}>
+                <td>
+                  <input
+                    type="text"
+                    value={rule.description}
+                    placeholder="what this rule is for"
+                    onChange={(e) => updateRule(rule.id, { description: e.target.value })}
+                    style={{ width: '100%' }}
+                  />
+                </td>
+                <td>
+                  <input
+                    type="text"
+                    className="mono"
+                    value={rule.pattern}
+                    placeholder={String.raw`password\s*=\s*\S+`}
+                    onChange={(e) => updateRule(rule.id, { pattern: e.target.value })}
+                    style={{ width: '100%' }}
+                  />
+                  {patternErrors.get(rule.id) ? (
+                    <div className="error" style={{ marginTop: 2 }}>
+                      {patternErrors.get(rule.id)}
+                    </div>
+                  ) : null}
+                </td>
+                <td>
+                  <select
+                    value={rule.action}
+                    onChange={(e) => updateRule(rule.id, { action: e.target.value as ScrubRuleAction })}
+                  >
+                    {SCRUB_RULE_ACTIONS.map((action) => (
+                      <option key={action} value={action}>
+                        {action === 'redact' ? 'Redact the match' : 'Drop the whole row'}
+                      </option>
+                    ))}
+                  </select>
+                </td>
+                <td>
+                  <button className="action" onClick={() => removeRule(rule.id)}>
+                    Remove
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="action-bar">
+        <button
+          className="action"
+          disabled={busy}
+          onClick={() => setConfig((prev) => (prev ? { ...prev, rules: [...prev.rules, emptyScrubRule()] } : prev))}
         >
           Add a rule
         </button>

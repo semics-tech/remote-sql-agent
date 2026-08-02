@@ -12,7 +12,13 @@ import {
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
-import type { Role, HistoryScrubRule } from '@remote-sql-agent/protocol';
+import {
+  AGENT_LOG_SEVERITIES,
+  type Role,
+  type AgentLogSeverity,
+  type ScrubRule,
+  type HistoryScrubRule,
+} from '@remote-sql-agent/protocol';
 
 /**
  * Control plane schema (§8).
@@ -300,6 +306,25 @@ export const agentLogEntries = pgTable(
     index('agent_log_time_idx').on(t.instanceId, t.loggedAt),
   ],
 );
+
+/**
+ * Per-worker admin control over what an `AgentLogBatch` is allowed to carry
+ * past ingestion (§5.2, domain/log-scrubbing.ts). No row for a worker means
+ * unfiltered — this is additive over the existing behaviour, not a change to
+ * it, so a deployment that never touches this feature sees nothing different.
+ */
+export const agentLogScrubConfigs = pgTable('agent_log_scrub_configs', {
+  workerId: uuid('worker_id')
+    .primaryKey()
+    .references(() => workers.id, { onDelete: 'cascade' }),
+  allowedSeverities: jsonb('allowed_severities')
+    .$type<AgentLogSeverity[]>()
+    .notNull()
+    .default([...AGENT_LOG_SEVERITIES]),
+  rules: jsonb('rules').$type<ScrubRule[]>().notNull().default([]),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
+});
 
 // ---------------------------------------------------------------------------
 // Commands, audit, identity

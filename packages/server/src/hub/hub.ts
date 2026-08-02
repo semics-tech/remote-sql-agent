@@ -38,6 +38,7 @@ import {
 } from '../domain/versioning.js';
 import { writeAudit } from '../domain/audit.js';
 import { applyHistoryScrubRules, getHistoryScrubConfig } from '../domain/history-scrubbing.js';
+import { applyScrubRules, getScrubConfig } from '../domain/log-scrubbing.js';
 import type { NotificationService } from '../domain/notifications/service.js';
 import type { EventBroker } from '../api/events.js';
 import {
@@ -453,10 +454,21 @@ async function handleSession(
         }
 
         case 'agentLog': {
+          if (!workerId) break;
           const batch = msg.agentLog;
           const instanceId = instanceIds.get(batch.instanceName);
           if (!instanceId) break;
-          await ingestAgentLog(db, instanceId, batch.rows);
+
+          const scrubConfig = await getScrubConfig(db, workerId);
+          const { kept, droppedCount, redactedCount } = applyScrubRules(scrubConfig, batch.rows);
+          if (droppedCount > 0 || redactedCount > 0) {
+            log.debug(
+              { hostName, instanceName: batch.instanceName, droppedCount, redactedCount },
+              'Agent log rows scrubbed before storage',
+            );
+          }
+
+          await ingestAgentLog(db, instanceId, kept);
           break;
         }
 
