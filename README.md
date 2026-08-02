@@ -126,7 +126,8 @@ docker pull ghcr.io/semics-tech/remote-sql-agent/control-plane:latest
 ```
 
 Put a TLS certificate for the hub in `./tls`. The control plane refuses to start
-without one, because worker API keys are bearer secrets. From a checkout,
+without one: mTLS needs it to exist at all, and in token mode it is the only
+thing keeping a worker's API key off the wire in clear. From a checkout,
 `pnpm dev:cert <hostname>` writes a self-signed one for a lab.
 
 On first boot it creates an administrator and prints a generated password
@@ -142,6 +143,14 @@ Generate a single-use enrolment token in the dashboard
               -EnrolmentToken rsen_xxxxxxxxxxxx `
               -CaCertPath C:\certs\corp-ca.pem
 ```
+
+Workers authenticate with an mTLS client certificate by default. There is no
+certificate authority to set up — the control plane runs its own — and no
+rotation to schedule: the worker renews its own certificate at half its
+lifetime. On Azure or Arc-enabled hosts, `-AuthMode entra` stores no credential
+on the host at all. Pick the mode when you mint the token; the dashboard's
+install command carries the matching flag. See
+[docs/authentication.md](docs/authentication.md).
 
 SQL Server on Linux, or a host with nothing installed on it — download the
 executable for the platform from

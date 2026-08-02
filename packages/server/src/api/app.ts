@@ -1043,6 +1043,7 @@ export async function createApp(deps: AppDeps) {
         hostName: body.hostName,
         hubAddress: hubAddress(config),
         publicUrl: config.publicUrl,
+        credentialMode: body.credentialMode,
       }),
     };
   });
@@ -1594,6 +1595,7 @@ function installerCanFindPackages(hubAddress: string, publicUrl: string): boolea
  * fifty boxes.
  */
 export function installCommands(params: {
+  credentialMode: 'token' | 'mtls' | 'entra';
   token: string;
   hostName: string;
   hubAddress: string;
@@ -1611,14 +1613,26 @@ export function installCommands(params: {
     ? ''
     : ` --package-url '${base}/downloads/rsagent-worker-linux.tar.gz'`;
 
+  // The auth mode is fixed when the token is minted, and the installer writes a
+  // worker.yaml declaring it. Emitting it here means the two cannot disagree —
+  // an operator who mints an `entra` token and pastes a command that installs
+  // for mTLS gets a certificate request the token will not satisfy, and finds
+  // out from an enrolment failure. Spelled out even when it matches the
+  // installer's own default, because the default is not visible in the command.
+  const mode = params.credentialMode;
+  const windowsAuth = ` -AuthMode ${mode}`;
+  const linuxAuth = ` --auth-mode ${mode}`;
+
   return {
     windows:
       `iwr ${base}/install.ps1 -UseBasicParsing | iex; ` +
       `Install-RsAgentWorker -ControlPlane '${params.hubAddress}' -Token '${params.token}'` +
+      windowsAuth +
       windowsPackage,
     linux:
       `curl -fsSL ${base}/install.sh | sudo bash -s -- ` +
       `--control-plane '${params.hubAddress}' --token '${params.token}'` +
+      linuxAuth +
       linuxPackage,
     manual:
       `rsagent enrol --control-plane ${params.hubAddress} ` +

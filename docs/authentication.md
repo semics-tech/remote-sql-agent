@@ -112,16 +112,34 @@ require a double-submit CSRF token.
 
 ## 2. Worker authentication
 
+### Which one to use
+
+| Your SQL hosts | Use | Setup | Ongoing work |
+|---|---|---|---|
+| Azure VMs, VMSS, or Arc-enabled | **`entra`** | Enrol, plus two control-plane env vars | None. No credential exists on the host |
+| Anything else | **`mtls`** | Enrol. That is all | None. The certificate renews itself |
+| Development, or a stopgap | `token` | Enrol | Rotate the key yourself |
+
+`mtls` is the default the installers write, and it needs no PKI of your own: the control plane runs
+its own small CA, created automatically the first time it is needed. `entra` is better still where
+it works, because there is nothing on the host to steal. `token` is the weakest of the three and the
+control plane says so at startup if a real deployment is still using it.
+
 Set which modes the hub accepts:
 
 ```bash
-RSAGENT_WORKER_AUTH_MODES=token          # default
-RSAGENT_WORKER_AUTH_MODES=token,mtls     # e.g. during a migration
+RSAGENT_WORKER_AUTH_MODES=mtls           # recommended
+RSAGENT_WORKER_AUTH_MODES=mtls,token     # e.g. during a migration
 ```
 
-All three modes share one enrolment flow. An administrator mints a single-use, host-bound token
-(dashboard → Administration → Workers, or `POST /api/enrolment-tokens`); the installer passes it to
-the worker once; the worker exchanges it for a durable credential.
+The hub accepts **any** listed mode from **any** worker, so the estate is only as strong as the
+weakest entry. Migrating every worker to `mtls` buys nothing until `token` comes off this list.
+
+### The enrolment flow, shared by all three
+
+An administrator mints a single-use, host-bound token (dashboard → Administration → Workers, or
+`POST /api/enrolment-tokens`); the installer passes it to the worker once; the worker exchanges it
+for a durable credential.
 
 ```bash
 rsagent enrol --token rsen_... /etc/rsagent/worker.yaml
@@ -131,42 +149,56 @@ The enrolment token expires in an hour by default, is bound to a host name, and 
 the same transaction that creates the credential — two installers racing with the same token cannot
 both succeed.
 
-### token — an API key (default)
+**The auth mode is chosen when the token is minted, and `worker.yaml` must agree.** The install
+command shown in the dashboard already carries the matching `--auth-mode` / `-AuthMode`; if the two
+disagree, enrolment fails with a message saying so rather than half-configuring the host.
+
+### mtls — client certificates (default)
 
 ```yaml
 controlPlane:
-  address: rsagent.example.com:443
+  address: rsagent.example.com:8443
   auth:
-    mode: token
-    keyFile: C:\ProgramData\rsagent\worker.key
+    mode: mtls
+  tls:
+    enabled: true
+    clientCertPath: /var/lib/rsagent/worker.crt
+    clientKeyPath:  /var/lib/rsagent/worker.key
+    caCertPath:     /var/lib/rsagent/ca.crt
 ```
 
-Simplest to operate and works anywhere. The key is stored only as an argon2id hash on the control
-plane and is shown exactly once; it can be rotated and revoked from the dashboard. Rotation issues a
-new key while leaving the old one valid until you explicitly revoke it, so a rotation cannot lock out
-a worker that has not picked up the new key yet.
+Nothing else to set up. The installer writes those paths, `rsagent enrol` fills them, and there is
+no certificate authority to stand up: `RSAGENT_WORKER_AUTH_MODES=mtls` is the whole server-side
+configuration.
 
-**This is a bearer secret: it requires TLS.** Anyone who can read it can impersonate that worker. The
-worker warns loudly if TLS is disabled, and the control plane refuses to start without hub TLS unless
-`RSAGENT_GRPC_REQUIRE_TLS=false`.
+The worker generates its keypair locally and sends only a CSR, so the private key never leaves the
+host. The control plane's embedded CA issues the certificate.
 
-### mtls — client certificates
+**Renewal is automatic.** The worker re-requests a certificate at half its lifetime, over the session
+its current certificate already authenticated — the same pattern kubelet and EST `simplereenroll`
+(RFC 7030) use. Nothing needs to be scheduled, and no second credential exists for the purpose:
 
-```yaml
-auth:
-  mode: mtls
-tls:
-  caCertPath:     /etc/rsagent/ca.pem
-  clientCertPath: /etc/rsagent/worker.pem
-  clientKeyPath:  /etc/rsagent/worker.key
-```
+- The new certificate is issued while the old one is still valid, and the worker reconnects
+  immediately to prove the new one works while there is still time to intervene.
+- Failures are retried hourly against roughly 45 days of runway, so a control plane that is down for
+  a weekend costs nothing.
+- Superseded certificates are revoked automatically; only the current and previous ones stay live.
+- Every renewal writes an audit row (`worker.certificate.renewed`).
 
-The worker generates its keypair locally and sends only a CSR; the private key never leaves the host.
-The control plane's embedded CA issues a 90-day certificate. Revocation is checked against the
-database on every connection rather than via a published CRL, so revoking takes effect immediately.
+Tune the lifetime with `RSAGENT_WORKER_CERT_VALIDITY_DAYS` (default 90). Shorter is fine now that
+renewal is automatic.
 
-Strongest option, but you take on CA custody, rotation and revocation as ongoing work. Choose it if
-you already run PKI; otherwise `token` over TLS is a reasonable trade.
+Identity is bound to the certificate's **SHA-256 fingerprint**, recorded at issuance — not to its CN
+or SAN, neither of which is evaluated at authentication. Renaming a host or changing its DNS does
+not break authentication, and a worker cannot name itself into another worker's identity: the CSR's
+subject is discarded and the issued certificate is named from the enrolled worker id.
+
+Revocation is checked against the database on every connection rather than via a published CRL, so
+revoking takes effect on the next connection instead of at the next CRL refresh.
+
+**A worker offline past its expiry cannot recover on its own** and must be re-enrolled with a fresh
+token. That is deliberate — recovering automatically would need a second standing credential whose
+only purpose is to be valid after the first one stopped being.
 
 ### entra — Azure managed identity
 
@@ -183,13 +215,45 @@ RSAGENT_WORKER_ENTRA_AUDIENCE=api://rsagent-control-plane
 ```
 
 No secret is stored on the SQL host at all: the worker asks the Azure instance metadata service for a
-short-lived token on every connection. Nothing to rotate, nothing to leak from disk. Best option when
-your SQL hosts are Azure VMs, VM Scale Sets, or Arc-enabled servers.
+short-lived token on every connection. Nothing to rotate, nothing to leak from disk, no expiry to
+chase. Best option when your SQL hosts are Azure VMs, VM Scale Sets, or Arc-enabled servers.
 
-Requires `@azure/identity` on the worker host (an optional dependency, loaded only in this mode).
+The trade is a runtime dependency: if Entra or the instance metadata service is unreachable, the
+worker cannot establish a session, where a certificate or key on disk would have kept working. The
+installers detect an available managed identity and say so, but never select this mode for you —
+the same command should not mean different things on different hosts.
 
 A valid Entra token proves the caller is *a* principal in your tenant, not that it is a worker you
 know — so the identity's object id is pinned at enrolment and an unpinned identity is refused.
+
+### token — an API key
+
+```yaml
+controlPlane:
+  address: rsagent.example.com:8443
+  auth:
+    mode: token
+    keyFile: C:\ProgramData\rsagent\worker.key
+```
+
+Works anywhere, including hosts that can reach neither Azure nor a certificate of their own. The key
+is stored only as an argon2id hash on the control plane and is shown exactly once; it can be rotated
+and revoked from the dashboard. Rotation issues a new key while leaving the old one valid until you
+explicitly revoke it, so a rotation cannot lock out a worker that has not picked up the new key yet.
+
+**This is a bearer secret: it requires TLS.** Anyone who can read it can impersonate that worker
+until it is revoked — including anything that terminates TLS between the worker and the hub, which
+comes away with a credential it can replay from anywhere. That is the concrete reason to prefer the
+other two: a client certificate and a managed identity both prove possession of a key that never
+crosses the wire.
+
+Set `RSAGENT_WORKER_TOKEN_TTL_DAYS` to expire keys, but note that rotation is operator-initiated —
+unlike mTLS, nothing renews them for you.
+
+**The control plane warns at startup** when a real deployment still has workers on API keys. It
+decides "real" from whether hub TLS is required and whether `RSAGENT_PUBLIC_URL` is a non-local
+host, not from `NODE_ENV` — a security warning that switches itself off when an environment variable
+is missing is not one you can rely on.
 
 ### Hub TLS
 

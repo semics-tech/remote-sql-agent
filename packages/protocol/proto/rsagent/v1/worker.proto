@@ -33,7 +33,28 @@ message WorkerMessage {
     CommandResult command_result = 7;
     Heartbeat heartbeat = 8;
     InstanceConfigStatus instance_config_status = 9;
+    CertificateRenewalRequest certificate_renewal = 10;
   }
+}
+
+// The worker asking for a fresh client certificate, in mTLS mode, over the
+// session its *current* certificate already authenticated.
+//
+// This is the renewal half of the credential lifecycle, and without it a 90-day
+// certificate is a 90-day outage timer: enrolment is the only other issuance
+// path and it needs a fresh single-use token minted by a human. Possession of a
+// working credential is what authorises the reissue, which is the same property
+// EST `simplereenroll` (RFC 7030) and kubelet client-certificate rotation rely
+// on — no new bootstrap secret has to exist for a worker to stay enrolled.
+//
+// Deliberately *not* a separate unary RPC like Enrol: routing it through the
+// authenticated stream means there is no second code path that has to work out
+// who is calling, and the hub's authenticator keeps its single answer.
+message CertificateRenewalRequest {
+  // Worker-generated, over a freshly generated keypair. As at enrolment, the
+  // private key never leaves the host and the control plane reads nothing from
+  // this beyond the public key and the self-signature.
+  string csr_pem = 1;
 }
 
 message Hello {
@@ -238,7 +259,26 @@ message ServerMessage {
     Command command = 2;
     ConfigUpdate config = 3;
     InstanceConfigSet instance_configs = 4;
+    CertificateRenewalResponse certificate_renewal = 5;
   }
+}
+
+// The outcome of a CertificateRenewalRequest.
+//
+// A failure is reported in-band rather than by ending the stream: the worker's
+// existing certificate is still valid at this point, so a renewal that cannot be
+// served is a reason to retry later, not a reason to lose the session.
+message CertificateRenewalResponse {
+  bool success = 1;
+  // Populated on failure, and written to the worker's log verbatim. Renewal
+  // failures are the kind of thing nobody looks at until the certificate has
+  // already expired, so the reason has to survive to that log.
+  string error_detail = 2;
+  string certificate_pem = 3;
+  // Re-sent on every renewal so a control plane whose CA has been replaced can
+  // hand workers the new trust anchor without a re-enrolment.
+  string ca_certificate_pem = 4;
+  google.protobuf.Timestamp not_after = 5;
 }
 
 // The full set of instances this worker should monitor, sent on connect and

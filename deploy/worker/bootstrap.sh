@@ -30,6 +30,8 @@ CONFIG_DIR="/etc/rsagent"
 STATE_DIR="/var/lib/rsagent"
 SERVICE_USER="rsagent"
 CA_CERT_PATH=""
+AUTH_MODE="mtls"
+ENTRA_AUDIENCE=""
 
 die() { printf '\nError: %s\n' "$1" >&2; exit 1; }
 
@@ -39,6 +41,15 @@ Usage: install.sh --control-plane HOST:PORT --token TOKEN [options]
 
   --control-plane HOST:PORT   Worker hub address (required)
   --token TOKEN               Single-use enrolment token (required)
+  --auth-mode MODE            mtls | entra | token (default: mtls)
+                              Must match the mode the enrolment token was minted
+                              for, which is chosen in the dashboard when you
+                              generate it.
+                                mtls  — client certificate, renewed automatically
+                                entra — Azure managed identity, no stored secret
+                                token — API key; a bearer secret, weakest option
+  --entra-audience URI        Application ID URI of the control plane. Required
+                              with --auth-mode entra
   --max-capability TIER       readOnly | operate | schedule | full (default: readOnly)
   --package-url URL           Override where the worker package is fetched from
   --package-sha256 HEX        Verify the download against this SHA-256. Take the
@@ -54,6 +65,8 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --control-plane)  CONTROL_PLANE="${2:-}"; shift 2 ;;
     --token)          TOKEN="${2:-}"; shift 2 ;;
+    --auth-mode)      AUTH_MODE="${2:-}"; shift 2 ;;
+    --entra-audience) ENTRA_AUDIENCE="${2:-}"; shift 2 ;;
     --max-capability) MAX_CAPABILITY="${2:-}"; shift 2 ;;
     --package-url)    PACKAGE_URL="${2:-}"; shift 2 ;;
     --package-sha256) PACKAGE_SHA256="${2:-}"; shift 2 ;;
@@ -72,6 +85,28 @@ case "$MAX_CAPABILITY" in
   readOnly|operate|schedule|full) ;;
   *) die "--max-capability must be one of: readOnly, operate, schedule, full" ;;
 esac
+
+case "$AUTH_MODE" in
+  mtls|token) ;;
+  entra)
+    [[ -n "$ENTRA_AUDIENCE" ]] || die "--entra-audience is required with --auth-mode entra."
+    ;;
+  *) die "--auth-mode must be one of: mtls, entra, token" ;;
+esac
+
+# Advisory only, and it stays that way on purpose: picking an authentication
+# mode by probing the host would mean the same command produced a different
+# security posture depending on where it ran, and nothing in the output said so.
+# Telling the operator what is available leaves the choice where it belongs.
+if [[ "$AUTH_MODE" != "entra" ]] && command -v curl >/dev/null; then
+  if curl -fsS --max-time 1 -H 'Metadata: true' \
+      'http://169.254.169.254/metadata/instance?api-version=2021-02-01' >/dev/null 2>&1; then
+    echo "Note: this host has an Azure managed identity available."
+    echo "      --auth-mode entra stores no credential on the host at all and is"
+    echo "      the better option where it works. Mint the enrolment token for"
+    echo "      'entra' mode in the dashboard to use it."
+  fi
+fi
 
 command -v curl >/dev/null || die "curl is required."
 command -v tar  >/dev/null || die "tar is required."
@@ -152,6 +187,42 @@ install -m 0755 "$WORKER_BUNDLE" "$INSTALL_DIR/rsagent-worker.mjs"
 # and is told what to watch from the dashboard, so nobody hand-edits YAML on
 # fifty hosts.
 
+# Built with an explicit conditional rather than inline in the block below.
+# `$( [[ -n "$X" ]] && printf ... )` reads fine and is a trap: inside a *variable
+# assignment* the substitution's non-zero status is the assignment's status, so
+# under `set -euo pipefail` an empty CA path aborts the installer silently. It is
+# safe in a heredoc, which is where this pattern came from, and not here.
+CA_LINE=""
+if [[ -n "$CA_CERT_PATH" ]]; then
+  CA_LINE=$'\n    caCertPath: '"$CA_CERT_PATH"
+fi
+
+case "$AUTH_MODE" in
+  mtls)
+    # caCertPath is always named in mTLS mode, even without --ca-cert: renewal
+    # re-sends the worker CA with every reissued certificate and this is where it
+    # is stored. --ca-cert overrides it for a privately-issued hub certificate.
+    AUTH_BLOCK="    mode: mtls
+  tls:
+    enabled: true
+    clientCertPath: ${STATE_DIR}/worker.crt
+    clientKeyPath: ${STATE_DIR}/worker.key
+    caCertPath: ${CA_CERT_PATH:-${STATE_DIR}/ca.crt}"
+    ;;
+  entra)
+    AUTH_BLOCK="    mode: entra
+    audience: ${ENTRA_AUDIENCE}
+  tls:
+    enabled: true${CA_LINE}"
+    ;;
+  token)
+    AUTH_BLOCK="    mode: token
+    keyFile: ${STATE_DIR}/worker.key
+  tls:
+    enabled: true${CA_LINE}"
+    ;;
+esac
+
 if [[ -f "$CONFIG_DIR/worker.yaml" ]]; then
   echo "Keeping the existing $CONFIG_DIR/worker.yaml"
 else
@@ -164,10 +235,7 @@ hostName: $(hostname -s)
 controlPlane:
   address: ${CONTROL_PLANE}
   auth:
-    mode: token
-    keyFile: ${STATE_DIR}/worker.key
-  tls:
-    enabled: true$( [[ -n "$CA_CERT_PATH" ]] && printf '\n    caCertPath: %s' "$CA_CERT_PATH" )
+${AUTH_BLOCK}
 
 # The local ceiling. The control plane can grant less than this, never more.
 maxCapability: ${MAX_CAPABILITY}
@@ -184,10 +252,11 @@ fi
 # Run as the service account so the credential key and worker key are written
 # with the ownership the service will later need.
 
-echo "Enrolling with $CONTROL_PLANE"
+echo "Enrolling with $CONTROL_PLANE (auth mode: $AUTH_MODE)"
 runuser -u "$SERVICE_USER" -- \
   node "$INSTALL_DIR/rsagent-worker.mjs" enrol --token "$TOKEN" "$CONFIG_DIR/worker.yaml" \
-  || die "Enrolment failed. Tokens are single-use, expire after an hour, and are bound to a host name — generate a fresh one if in doubt."
+  || die "Enrolment failed. Tokens are single-use, expire after an hour, and are bound to a host name — generate a fresh one if in doubt.
+The token must also have been minted for the same auth mode as --auth-mode ($AUTH_MODE)."
 
 # --- systemd ------------------------------------------------------------------
 
@@ -237,6 +306,7 @@ Worker installed and enrolled.
   Logs:     journalctl -u rsagent-worker -f
   Config:   ${CONFIG_DIR}/worker.yaml
   Ceiling:  ${MAX_CAPABILITY}
+  Auth:     ${AUTH_MODE}$( [[ "$AUTH_MODE" == "mtls" ]] && printf ' (certificate renews itself at half its lifetime)' )
 
 Next: open the dashboard and tell this worker which SQL instances to monitor.
 It is connected but idle until you do.

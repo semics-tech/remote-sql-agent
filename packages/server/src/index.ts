@@ -17,6 +17,7 @@ import { EventBroker } from './api/events.js';
 import { WorkerAuthenticator } from './worker-auth/authenticate.js';
 import { CommandService } from './domain/commands.js';
 import { loadOrCreateCa } from './worker-auth/ca.js';
+import { gatherAuthPostureFacts, reviewAuthPosture } from './worker-auth/posture.js';
 import { EntraClient } from './auth/entra.js';
 import { ensureBootstrapAdmin } from './auth/users.js';
 import { pruneExpiredSessions } from './auth/sessions.js';
@@ -209,6 +210,20 @@ async function main(): Promise<void> {
   });
   await app.listen({ host: config.httpHost, port: config.httpPort });
   logger.info({ port: config.httpPort, publicUrl: config.publicUrl }, 'API listening');
+
+  // Said at startup rather than per connection: an operator reads the boot log
+  // when they deploy, and a line on every worker handshake would be noise that
+  // trains people to skip it.
+  await gatherAuthPostureFacts(db, config)
+    .then((facts) => {
+      for (const finding of reviewAuthPosture(facts)) {
+        if (finding.level === 'warn') logger.warn(finding.message);
+        else logger.info(finding.message);
+      }
+    })
+    .catch((err: unknown) => {
+      logger.debug({ err }, 'Could not review worker authentication posture');
+    });
 
   // ---- Background maintenance ----------------------------------------------
   const retentionTimer = setInterval(

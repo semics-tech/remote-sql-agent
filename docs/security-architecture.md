@@ -74,7 +74,9 @@ segmented network where the SQL estate cannot be reached from outside.
 | Port | 8443 |
 | Direction | **Worker dials the control plane. The control plane never opens a connection toward a worker or the SQL host it runs on.** This is what lets the SQL estate sit in a network segment the control plane cannot reach into |
 | Transport encryption | TLS, required by default (`RSAGENT_GRPC_REQUIRE_TLS`, refuses to start in plaintext unless explicitly overridden — see the fail-open fix in `security-audit.md`) |
-| Worker authentication (pick one, per worker) | **token** — a bearer API key obtained once at enrolment, presented as call metadata; simplest to operate, requires TLS since it's a bearer secret. **mtls** — a client certificate issued by the control plane's own embedded CA (`packages/server/src/worker-auth/ca.ts`), verified by the gRPC server against that CA on every connection. **entra** — an Azure managed identity token (workload identity), verified against Entra; no secret stored on the SQL host at all |
+| Worker authentication (pick one, per worker) | **mtls** *(installer default)* — a client certificate issued by the control plane's own embedded CA (`packages/server/src/worker-auth/ca.ts`), verified by the gRPC server against that CA on every connection, and **renewed automatically at half its lifetime** over the authenticated session (`worker-auth/renewal.ts`, `packages/worker/src/cert-renewal.ts`). No PKI of your own and no rotation work. **entra** — an Azure managed identity token (workload identity), verified against Entra; no session credential stored on the SQL host at all. **token** — a bearer API key obtained once at enrolment, presented as call metadata; the weakest of the three, since anything that reads it — including a TLS-terminating proxy — can replay it from anywhere |
+| Worker identity binding (mtls) | The certificate's **SHA-256 fingerprint**, recorded in `worker_credentials` at issuance. CN and SAN are set for legibility but are *not* evaluated at authentication, so host renames and DNS changes cannot break it, and the CSR's own subject is discarded so a worker cannot name itself into another worker's identity |
+| Credential lifetime | mtls: `RSAGENT_WORKER_CERT_VALIDITY_DAYS` (default 90), self-renewing; a worker offline past expiry must be re-enrolled. token: `RSAGENT_WORKER_TOKEN_TTL_DAYS` (default none), rotated by an operator. entra: minutes, issued per connection by Azure |
 | Command integrity | Every command the control plane sends is individually signed (`packages/protocol/src/signing.ts`, RSA-SHA256) and the worker verifies the signature before acting. The signing key arrives in the session handshake (`HelloAck`); pin its fingerprint in `worker.yaml` (`commandSigningKeyFingerprint`) to defend against a compromised TLS-terminating proxy substituting its own key — unpinned, the guarantee is weaker ("whoever sent `HelloAck` also signed this"), and the worker logs that fact once per session |
 | Authorization ceiling | `maxCapability` in the worker's own `worker.yaml` (`readOnly`\|`operate`\|`schedule`\|`full`), enforced **locally by the worker** as the intersection with whatever the control plane grants. The control plane's side of that arithmetic is advisory only and cannot raise it — this is the property designed to survive a full control-plane compromise |
 
@@ -169,7 +171,7 @@ default.
 |---|---|---|
 | DBA / operator | Control plane (dashboard) | Local password (argon2id) or Entra ID OIDC |
 | Control plane | Entra ID | OIDC client credentials (client secret or cert), as a registered app |
-| Worker | Control plane (hub) | API key (bearer token) **or** mTLS client certificate (control-plane-issued CA) **or** Entra managed-identity token |
+| Worker | Control plane (hub) | mTLS client certificate, control-plane-issued and self-renewing (default) **or** Entra managed-identity token **or** an API key (bearer token) |
 | Worker | Entra ID | Azure managed identity (system- or user-assigned) |
 | Worker | SQL Server | Integrated auth (host service account) **or** SQL auth (password, end-to-end encrypted from browser to worker) |
 | Control plane | Postgres | Username/password (`RSAGENT_DATABASE_URL`) |
@@ -180,7 +182,9 @@ default.
 Things worth confirming for a specific deployment, not just the product:
 
 - [ ] `RSAGENT_GRPC_REQUIRE_TLS` is not overridden to allow plaintext, and a real certificate (not the dev self-signed one) is configured
-- [ ] Worker auth mode matches the network's actual trust model — prefer `mtls` or `entra` over `token` where the enrolment process allows it
+- [ ] Worker auth mode is `entra` on Azure/Arc hosts and `mtls` elsewhere. `token` is a bearer secret and needs a reason; the control plane warns at startup if a real deployment is still using it
+- [ ] `RSAGENT_WORKER_AUTH_MODES` lists only the modes actually in use. The hub accepts any listed mode from any worker, so a migration is not finished until the mode being migrated *away from* is removed
+- [ ] mTLS workers are renewing: `worker.certificate.renewed` audit rows should appear at roughly half `RSAGENT_WORKER_CERT_VALIDITY_DAYS` per worker. A worker that goes quiet here will stop connecting at its expiry
 - [ ] `commandSigningKeyFingerprint` is pinned in `worker.yaml` for any worker where the threat model includes a compromised TLS-terminating proxy
 - [ ] `maxCapability` is set to the minimum each host actually needs (default `readOnly`)
 - [ ] Postgres is on an encrypted volume with encrypted backups (job definitions are unencrypted `jsonb` by design — see connection 5)

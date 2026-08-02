@@ -1,6 +1,6 @@
 import * as grpc from '@grpc/grpc-js';
 import { writeSecretFile } from './secret-file.js';
-import { generateKeyPairSync, createSign } from 'node:crypto';
+import { generateCsr } from './csr.js';
 import { EnrolmentClient, type EnrolResponse } from '@remote-sql-agent/protocol';
 import { loadWorkerConfig, type WorkerConfig } from './config.js';
 import { buildChannelCredentials, writeWorkerKey, acquireEntraToken } from './credentials.js';
@@ -84,6 +84,20 @@ export async function enrol(options: EnrolOptions): Promise<void> {
       if (!clientCertPath || !clientKeyPath) {
         throw new Error('controlPlane.tls.clientCertPath and clientKeyPath must be set for mTLS.');
       }
+      // The mode is chosen twice — once when an administrator mints the token,
+      // once in worker.yaml — and nothing until here compares them. A token
+      // minted for `token` mode makes the server ignore the CSR and return a
+      // worker key, so without this the installer wrote an empty file to
+      // clientCertPath and the mismatch surfaced later as an unexplained
+      // authentication failure against a certificate that was never issued.
+      if (!response.certificatePem) {
+        throw new Error(
+          'This worker is configured for mTLS but the control plane issued no certificate, ' +
+            'which means the enrolment token was minted for a different auth mode.\n' +
+            'Either mint a new token with mode "mtls" (Administration > Workers), or set ' +
+            'controlPlane.auth.mode in worker.yaml to the mode the token was issued for.',
+        );
+      }
       writeSecret(clientKeyPath, privateKeyPem);
       writeSecret(clientCertPath, response.certificatePem);
       if (caCertPath && response.caCertificatePem) {
@@ -122,79 +136,5 @@ function writeSecret(path: string, contents: string, mode = 0o600): void {
   // See secret-file.ts. This writes the mTLS private key, among other things.
   writeSecretFile(path, contents, mode);
 }
-
-/**
- * Generate a keypair and a PKCS#10 CSR.
- *
- * Hand-built rather than pulled from a library: the worker package should not
- * take a certificate-authoring dependency just to make one request, and the
- * control plane ignores everything in the CSR except the public key and the
- * self-signature anyway.
- */
-function generateCsr(commonName: string): { csrPem: string; privateKeyPem: string } {
-  const { privateKey, publicKey } = generateKeyPairSync('rsa', {
-    modulusLength: 3072,
-    publicKeyEncoding: { type: 'spki', format: 'der' },
-    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
-  });
-
-  const subject = derSequence(
-    derSet(
-      derSequence(
-        Buffer.concat([Buffer.from([0x06, 0x03, 0x55, 0x04, 0x03]), derUtf8(commonName)]),
-      ),
-    ),
-  );
-
-  const certificationRequestInfo = derSequence(
-    Buffer.concat([
-      Buffer.from([0x02, 0x01, 0x00]), // version 0
-      subject,
-      publicKey as unknown as Buffer,
-      Buffer.from([0xa0, 0x00]), // empty attributes
-    ]),
-  );
-
-  const signer = createSign('RSA-SHA256');
-  signer.update(certificationRequestInfo);
-  signer.end();
-  const signature = signer.sign(privateKey);
-
-  // sha256WithRSAEncryption
-  const algorithm = Buffer.from([
-    0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x05, 0x00,
-  ]);
-
-  const csr = derSequence(
-    Buffer.concat([certificationRequestInfo, algorithm, derBitString(signature)]),
-  );
-
-  const base64 = csr.toString('base64').replace(/(.{64})/gu, '$1\n');
-  return {
-    csrPem: `-----BEGIN CERTIFICATE REQUEST-----\n${base64}\n-----END CERTIFICATE REQUEST-----\n`,
-    privateKeyPem: privateKey as unknown as string,
-  };
-}
-
-function derLength(length: number): Buffer {
-  if (length < 0x80) return Buffer.from([length]);
-  const bytes: number[] = [];
-  let remaining = length;
-  while (remaining > 0) {
-    bytes.unshift(remaining & 0xff);
-    remaining >>= 8;
-  }
-  return Buffer.from([0x80 | bytes.length, ...bytes]);
-}
-
-function derWrap(tag: number, contents: Buffer): Buffer {
-  return Buffer.concat([Buffer.from([tag]), derLength(contents.length), contents]);
-}
-
-const derSequence = (contents: Buffer): Buffer => derWrap(0x30, contents);
-const derSet = (contents: Buffer): Buffer => derWrap(0x31, contents);
-const derUtf8 = (value: string): Buffer => derWrap(0x0c, Buffer.from(value, 'utf8'));
-const derBitString = (contents: Buffer): Buffer =>
-  derWrap(0x03, Buffer.concat([Buffer.from([0x00]), contents]));
 
 export type { WorkerConfig };
