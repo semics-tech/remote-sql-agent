@@ -17,7 +17,9 @@ import {
   NO_JOB_WRITE,
   ROLES,
   isCapability,
+  roleHasPermission,
   type JobWriteMode,
+  type Permission,
   type Role,
 } from '@remote-sql-agent/protocol';
 import type { Database } from '../db/client.js';
@@ -37,6 +39,7 @@ import { acknowledgeDrift, getJobVersion, getJobVersions } from '../domain/versi
 import { queryAudit, writeAudit } from '../domain/audit.js';
 import { diffJobDefinitions } from '../domain/diff.js';
 import { requirePermission, requireInstancePermission, actorOf } from '../auth/rbac.js';
+import { resolveSession, SESSION_COOKIE } from '../auth/sessions.js';
 import { registerAuthRoutes } from '../auth/routes.js';
 import type { EntraClient } from '../auth/entra.js';
 import { createLocalUser, listUsers, setUserDisabled, setUserRole } from '../auth/users.js';
@@ -300,6 +303,14 @@ export async function createApp(deps: AppDeps) {
    *
    * Carries invalidation signals only — "this changed, refetch it" — so every
    * permission decision stays on the REST routes the browser then calls.
+   *
+   * The preHandler only runs once, at connection open, and this connection
+   * can then sit open for as long as the browser tab does. Without a recheck,
+   * a session revoked mid-stream — sign-out elsewhere, an admin disabling the
+   * account, a role downgrade — keeps receiving live signals indefinitely. The
+   * keepalive tick doubles as that recheck, so the lag between revocation and
+   * the stream actually closing is bounded by SSE_KEEPALIVE_MS rather than
+   * "however long the tab stays open".
    */
   app.get('/api/events', { preHandler: guard('instance.read') }, (request, reply) => {
     const send = (chunk: string): void => {
@@ -320,7 +331,21 @@ export async function createApp(deps: AppDeps) {
     // `open` rather than sitting in `connecting` until the first real event.
     send(': connected\n\n');
 
-    const keepalive = setInterval(() => send(': keepalive\n\n'), SSE_KEEPALIVE_MS);
+    const sessionToken = request.cookies[SESSION_COOKIE];
+    const keepalive = setInterval(() => {
+      void (async () => {
+        const stillOk = await sseSessionStillAuthorised(db, sessionToken, 'instance.read');
+        if (!stillOk) {
+          // No error frame: EventSource treats any close as retryable and
+          // reconnects on its own backoff, which re-runs the preHandler and
+          // surfaces the real 401/403 there.
+          close();
+          reply.raw.end();
+          return;
+        }
+        send(': keepalive\n\n');
+      })();
+    }, SSE_KEEPALIVE_MS);
     keepalive.unref();
 
     const close = (): void => {
@@ -1461,6 +1486,16 @@ export async function createApp(deps: AppDeps) {
 
 function escapeLabel(value: string): string {
   return value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('\n', ' ');
+}
+
+/** Whether the session behind an open `/api/events` stream still holds `permission`. */
+export async function sseSessionStillAuthorised(
+  db: Database,
+  sessionToken: string | undefined,
+  permission: Permission,
+): Promise<boolean> {
+  const session = sessionToken ? await resolveSession(db, sessionToken) : null;
+  return session !== null && roleHasPermission(session.user.role, permission);
 }
 
 /**
