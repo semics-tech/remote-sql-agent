@@ -5,6 +5,7 @@ import { EnrolmentClient, type EnrolResponse } from '@remote-sql-agent/protocol'
 import { loadWorkerConfig, type WorkerConfig } from './config.js';
 import { buildChannelCredentials, writeWorkerKey, acquireEntraToken } from './credentials.js';
 import { loadOrCreateCredentialKey } from './credential-key.js';
+import { WORKER_VERSION } from './version.js';
 
 /**
  * One-time enrolment (§6.2).
@@ -55,7 +56,7 @@ export async function enrol(options: EnrolOptions): Promise<void> {
       {
         enrolmentToken: options.token,
         hostName: config.hostName,
-        workerVersion: '0.1.0',
+        workerVersion: WORKER_VERSION,
         csrPem,
       },
       metadata,

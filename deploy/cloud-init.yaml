@@ -46,7 +46,7 @@ write_files:
       # The container image. Pin it: `latest` means rebuilding this machine in
       # six months gives you whatever has shipped since, at a moment you did
       # not choose. https://github.com/semics-tech/remote-sql-agent/releases
-      RSAGENT_VERSION="0.1.1"
+      RSAGENT_VERSION="0.2.0"
 
       # Which revision to take docker-compose.yml and Caddyfile from. `main`
       # rather than a tag because the Caddy profile these use is newer than the

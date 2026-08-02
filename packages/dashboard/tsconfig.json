@@ -1,19 +1,14 @@
 {
+  "extends": "../../tsconfig.base.json",
   "compilerOptions": {
+    // Browser target and DOM libs, overriding the base's Node ES2023 — every
+    // other override below is here because it too differs from every other
+    // package, not because the base doesn't already set it.
     "target": "ES2022",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "module": "ESNext",
-    "moduleResolution": "Bundler",
     "jsx": "react-jsx",
-    "strict": true,
-    "noUncheckedIndexedAccess": true,
     "noUnusedLocals": true,
     "noEmit": true,
-    "skipLibCheck": true,
-    "isolatedModules": true,
-    "resolveJsonModule": true,
-    "allowSyntheticDefaultImports": true,
-    "esModuleInterop": true,
     "types": ["vite/client"]
   },
   // `test` and `e2e` were absent, so nothing typechecked them — the browser

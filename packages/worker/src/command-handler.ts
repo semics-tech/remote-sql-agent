@@ -160,6 +160,16 @@ async function evaluateAndApply(
   }
 
   // --- 5. Apply -----------------------------------------------------------
+  //
+  // Not atomic with the idempotency record below, and cannot be: msdb and the
+  // outbox's SQLite file are two different systems with no shared transaction
+  // to join. If the process is killed in the gap between `apply` returning
+  // and `recordAppliedCommand` running — narrow, since nothing async happens
+  // between them — a redelivery of the same command re-runs `apply`. Most
+  // operations tolerate that (toggleJob, upsertJob and friends are upserts by
+  // nature), but `runJob` genuinely runs the job again. Closing this fully
+  // would need a durable "about to apply" record written *before* the SQL
+  // call, which is more machinery than the risk currently justifies.
   try {
     const outcome = await apply(command, kind, context);
     context.outbox.recordAppliedCommand(command.id, outcome.success, outcome.errorCode || null);
@@ -240,22 +250,39 @@ async function apply(
     }
 
     case 'upsertSchedule': {
-      const parsed = scheduleDefinitionSchema.safeParse(
-        JSON.parse(payload.upsertSchedule.canonicalJson),
-      );
+      let json: unknown;
+      try {
+        json = JSON.parse(payload.upsertSchedule.canonicalJson);
+      } catch (err) {
+        return refuse(
+          'Invalid',
+          `The schedule definition was not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      const parsed = scheduleDefinitionSchema.safeParse(json);
       if (!parsed.success) return refuse('Invalid', 'The schedule definition failed validation.');
       await upsertSchedule(context.pool, parsed.data);
       return ok(undefined);
     }
 
     case 'deleteSchedule':
-      await deleteSchedule(context.pool, payload.deleteSchedule.scheduleUuid);
+      // Schedules have no msdb-native GUID — sp_delete_schedule targets a name,
+      // and this is the schedule's name for exactly the reason ScheduleBlob's
+      // comment gives: it is the only identity this command family has.
+      await deleteSchedule(context.pool, payload.deleteSchedule.scheduleName);
       return ok(undefined);
 
     case 'upsertOperator': {
-      const parsed = operatorDefinitionSchema.safeParse(
-        JSON.parse(payload.upsertOperator.canonicalJson),
-      );
+      let json: unknown;
+      try {
+        json = JSON.parse(payload.upsertOperator.canonicalJson);
+      } catch (err) {
+        return refuse(
+          'Invalid',
+          `The operator definition was not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      const parsed = operatorDefinitionSchema.safeParse(json);
       if (!parsed.success) return refuse('Invalid', 'The operator definition failed validation.');
       await upsertOperator(context.pool, parsed.data);
       return ok(undefined);

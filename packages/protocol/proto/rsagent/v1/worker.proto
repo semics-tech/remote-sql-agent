@@ -127,8 +127,12 @@ message JobDefinitionBlob {
   google.protobuf.Timestamp date_modified = 4;
 }
 
+// Named, not job_uuid-style: unlike a job, msdb never assigns a schedule a
+// GUID — sysschedules.schedule_id is a plain int, local to one instance. The
+// schedule's name is the only identity the worker and the definition here
+// agree on, so it is the identity used throughout this command family.
 message ScheduleBlob {
-  string schedule_uuid = 1;
+  string schedule_name = 1;
   string canonical_json = 2;
   string definition_hash = 3;
 }
@@ -352,13 +356,13 @@ message DeleteJob {
 }
 
 message UpsertSchedule {
-  string schedule_uuid = 1;
+  string schedule_name = 1;
   string canonical_json = 2;
   string base_definition_hash = 3;
 }
 
 message DeleteSchedule {
-  string schedule_uuid = 1;
+  string schedule_name = 1;
   string base_definition_hash = 2;
 }
 

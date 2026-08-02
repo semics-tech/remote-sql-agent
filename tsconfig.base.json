@@ -14,6 +14,17 @@
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
     "noFallthroughCasesInSwitch": true,
+
+    // Explicitly off, not just defaulted: turning it on was tried. It fails on
+    // the pattern this codebase uses everywhere an HTTP query param or a
+    // partial-update body flows into a typed call — `{ limit: req.query.limit }`
+    // where `limit` is `string | undefined` and the target's `limit?: number`
+    // does not itself say `| undefined`. That is a call site correctly passing
+    // "not provided", not a bug, and there are enough of them across
+    // packages/server/src/api/app.ts, audit-export.ts and worker-auth/enrolment.ts
+    // that fixing it means widening every affected optional field to
+    // `T | undefined` first — real work, with no bug behind it, not something to
+    // fold into an unrelated change.
     "exactOptionalPropertyTypes": false,
 
     "declaration": true,
