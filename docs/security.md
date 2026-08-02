@@ -106,10 +106,19 @@ the guard read `NULL` for every instance in the estate.
 `user.admin`, `worker.admin` and `audit.read` sit behind routes that consult the
 base role only. An `Admin` grant on `production` does not become the ability to
 create users, enrol workers or write more grants — a grant that could grant
-would be self-extending. The separation is which guard each route uses
+would be self-extending. The primary separation is which guard each route uses
 (`requirePermission` versus `requireInstancePermission` in
 `packages/server/src/auth/rbac.ts`), and there is a test that fails if an
 `Admin` grant on `*` ever reaches an estate-wide route.
+
+That is reinforced at the resolver itself: `canInEnvironment` and
+`permissionsInEnvironment` (`packages/server/src/auth/environments.ts`) refuse
+these three permissions from a grant regardless of which guard calls them, so
+the invariant does not depend solely on every future route being wired
+correctly. `command.approve` is the deliberate exception — a grant *can* raise
+someone to it, so an Editor scoped to production can be approved by someone
+whose own privilege is also scoped to production, with neither holding
+estate-wide Admin.
 
 ### Group membership is a snapshot taken at sign-in
 

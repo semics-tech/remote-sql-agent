@@ -266,9 +266,11 @@ describe('the boundary between the two guards', () => {
 
       const scoped = await post(server, `/scoped/${instanceId}`, auth);
       expect(scoped.statusCode).toBe(200);
-      // The base role short-circuited, so no grant lookup ran and nothing was
-      // recorded about which environment authorised it.
-      expect(scoped.json().environmentTag).toBeNull();
+      // The base role short-circuited the *permission* check, so no grant
+      // lookup ran — but the environment tag is still resolved and recorded,
+      // because the audit trail should say which environment a write happened
+      // in whether or not a grant was what allowed it.
+      expect(scoped.json().environmentTag).toBe('production');
     } finally {
       await server.close();
     }

@@ -466,6 +466,7 @@ export async function createApp(deps: AppDeps) {
         actor: actorOf(request),
         action: 'drift.acknowledged',
         target: `${instanceId}/${jobUuid}`,
+        detail: { environmentTag: request.environmentTag ?? null },
         remoteAddress: request.ip,
       });
       return { acknowledged: true };
@@ -525,7 +526,7 @@ export async function createApp(deps: AppDeps) {
     request: FastifyRequest,
     input: Omit<
       Parameters<CommandService['create']>[0],
-      'issuedBy' | 'issuedByUsername' | 'issuedByRole' | 'remoteAddress'
+      'issuedBy' | 'issuedByUsername' | 'issuedByRole' | 'remoteAddress' | 'environmentTag'
     >,
   ) =>
     deps.commands.create({
@@ -534,6 +535,9 @@ export async function createApp(deps: AppDeps) {
       issuedByUsername: request.user!.username,
       issuedByRole: request.user!.role,
       remoteAddress: request.ip,
+      // Set on the request by `requireInstancePermission`, whichever guard let
+      // the write through. Every route that calls `issue` is behind that guard.
+      environmentTag: request.environmentTag ?? null,
     });
 
   /**
