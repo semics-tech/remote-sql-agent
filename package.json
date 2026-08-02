@@ -55,6 +55,7 @@
     "@types/node": "^24.13.3",
     "@vitest/coverage-v8": "^4.1.10",
     "eslint": "^10.8.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
     "ts-proto": "^2.6.1",
     "tsx": "^4.19.2",
     "turbo": "^2.3.3",

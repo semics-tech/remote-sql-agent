@@ -16,7 +16,7 @@ The build in this repository implements milestones M0–M3 of the architecture s
 | Command signing + replay window | §6.4 | **Implemented in the contracts package**, not yet exercised (no write path). |
 | Append-only audit log | §6.1.4 | **Implemented** for authentication, administration and worker session events. No update or delete path exists. |
 | Audit export to a SIEM | backlog | **Implemented** via OTLP, queued with retry. See `authentication.md` §3. |
-| Parameterised SQL everywhere | §5.2 | **Implemented**, enforced by an eslint rule. |
+| Parameterised SQL everywhere | §5.2 | **Implemented**, enforced by review and partially by an eslint rule — see "SQL injection" below for what the rule does and does not catch. |
 | Worker authentication | §6.2 | **Implemented**: enrolment tokens plus API key, mTLS, or Entra workload identity. |
 | Embedded CA, cert issuance/revocation | §6.2 | **Implemented** for mTLS mode. Revocation checked per connection. |
 | TLS on the worker hub | §6.2 | **Implemented**; the control plane refuses to start without it unless explicitly overridden. |
@@ -286,9 +286,14 @@ and have no credential to protect.
 No SQL statement anywhere in the worker or control plane is built by string concatenation or
 template interpolation. Every value is bound as a parameter. This is enforced two ways:
 
-- an eslint rule (`no-restricted-syntax` in `eslint.config.js`) that fails the build on
-  interpolated or concatenated arguments to `.query()`, `.batch()` and `.execute()`, and
-- code review.
+- an eslint rule (`no-restricted-syntax` in `eslint.config.js`) that fails the build when an
+  interpolated template literal or a `+` concatenation is passed **directly** as the argument to
+  `.query()`, `.batch()` or `.execute()`. It is a syntactic check, not a data-flow one: it does not
+  see through a variable, so `const sql = \`SELECT ... ${x}\`; conn.query(sql)` passes the rule while
+  building exactly the statement it exists to catch. The direct-argument form is what a reviewer
+  would otherwise have to check for by hand, so the rule is worth having — but it narrows the
+  reviewer's job rather than replacing it, and
+- code review, which is what actually covers the hoisted case above.
 
 The one place that legitimately builds a statement dynamically — creating the test database, where
 `CREATE DATABASE` cannot take a parameter — is in test-only code and quotes the identifier.

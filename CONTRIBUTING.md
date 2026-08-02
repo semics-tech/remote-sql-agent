@@ -40,8 +40,11 @@ CI runs all of these plus a generated-protobuf staleness check.
 ### No SQL string building, ever
 
 Every SQL statement is a static string literal with values bound as parameters.
-This is enforced by an eslint rule as well as by review. If you find yourself
-wanting to interpolate, you want a parameter.
+An eslint rule catches an interpolated or concatenated string passed directly
+to `.query()`/`.batch()`/`.execute()`, but it is a syntactic check: hoisting
+the built string into a variable first defeats it. Review is what actually
+covers that case — see "SQL injection" in `docs/security.md` for the exact
+limit. If you find yourself wanting to interpolate, you want a parameter.
 
 ### The worker never trusts the control plane
 
