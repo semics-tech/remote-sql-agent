@@ -1,0 +1,39 @@
+# Every mutating route in packages/server/src/api/app.ts is meant to go
+# through a preHandler (guard/instanceGuard/approvalGuard) that funnels into
+# rbac.ts's authenticate() — session check plus the CSRF double-submit
+# check. That invariant has already been violated twice by omission, not by
+# design: the login route before a CSRF cookie exists (fixed, and now the
+# deliberate exception this rule allow-lists), and /api/auth/logout, which
+# shipped with no CSRF check at all until a security audit found it (see
+# docs/security-audit.md). Both bugs were "one route quietly doesn't call the
+# same helper every other route calls" — exactly the shape no per-file
+# dataflow query catches, and exactly the shape worth encoding once so it
+# can't recur a third time silently.
+rules:
+  - id: fastify-mutating-route-missing-guard
+    languages: [typescript]
+    severity: ERROR
+    message: >
+      This route makes a state change (POST/PUT/PATCH/DELETE) with no
+      preHandler, so it skips both authentication and the CSRF check every
+      other mutating route gets through rbac.ts's authenticate() (called from
+      guard()/instanceGuard()/approvalGuard). Two routes legitimately need
+      their own inline CSRF check instead of a preHandler --
+      /api/auth/login and /api/auth/logout, both of which run before or
+      around session state rather than requiring an existing session. If this
+      is a third one, add the same inline check those use and suppress this
+      finding with a comment explaining why, right above the route
+      registration.
+    patterns:
+      - pattern-either:
+          - pattern: $APP.post($ROUTE, ...)
+          - pattern: $APP.put($ROUTE, ...)
+          - pattern: $APP.patch($ROUTE, ...)
+          - pattern: $APP.delete($ROUTE, ...)
+      - metavariable-regex:
+          metavariable: $APP
+          regex: ^app$
+      - pattern-not: '$APP.post($ROUTE, {..., preHandler: $X, ...}, ...)'
+      - pattern-not: '$APP.put($ROUTE, {..., preHandler: $X, ...}, ...)'
+      - pattern-not: '$APP.patch($ROUTE, {..., preHandler: $X, ...}, ...)'
+      - pattern-not: '$APP.delete($ROUTE, {..., preHandler: $X, ...}, ...)'
