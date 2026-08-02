@@ -213,21 +213,71 @@ describe('explaining a refusal', () => {
 });
 
 describe('permissions that stay estate-wide', () => {
-  it('is not what confers user or worker administration', () => {
-    // A grant is consulted only by the instance guard, and no route behind
-    // these permissions uses it. Pinned here as well because the boundary is
-    // easy to erode: an Admin grant on production reads like "Admin", and it
-    // must not become the ability to create users or enrol workers.
+  it('is not what a grant confers, even one that raises the role to Admin', () => {
+    // No route ever consults a grant for these — `user.admin`, `worker.admin`
+    // and `audit.read` are guarded by `requirePermission`, base role only — so
+    // relying on route wiring alone to keep the boundary was the gap: a grant
+    // reading "Admin" would tell a caller of `canInEnvironment` it applied,
+    // which is only safe for as long as nobody ever wires one of those three
+    // permissions to `requireInstancePermission` by mistake. This is the
+    // stronger, second line: the resolver refuses regardless of the grant.
     const productionAdmin = [grant({ role: 'Admin' })];
     const holder = principal({ role: 'Viewer' });
 
     for (const permission of ['user.admin', 'worker.admin', 'audit.read'] as Permission[]) {
-      // The resolver *would* grant it inside production — that is what Admin
-      // means — so the separation lives in which guard each route uses. This
-      // asserts the resolver's half honestly rather than pretending otherwise.
-      expect(canInEnvironment(holder, productionAdmin, permission, 'production')).toBe(true);
+      expect(canInEnvironment(holder, productionAdmin, permission, 'production')).toBe(false);
       expect(canInEnvironment(holder, productionAdmin, permission, 'uat')).toBe(false);
     }
+  });
+
+  it('is still available when the base role itself carries it, with no environment involved', () => {
+    // The refusal above is specifically about what a *grant* can add. A base
+    // role of Admin already has estate-wide administration on its own, and
+    // that must keep working — this is not a blanket ban on the permission.
+    const holder = principal({ role: 'Admin' });
+    for (const permission of ['user.admin', 'worker.admin', 'audit.read'] as Permission[]) {
+      expect(canInEnvironment(holder, [], permission, 'production')).toBe(true);
+      expect(canInEnvironment(holder, [], permission, null)).toBe(true);
+    }
+  });
+
+  it('is never reported to the dashboard as available in an environment from a grant', () => {
+    // The consequence the review named directly: `permissionsInEnvironment`
+    // feeds the SPA's "what can I do here" response. Reporting `user.admin`
+    // because a grant raised the effective role to Admin would offer
+    // Administration to someone who gets 403 the instant they click it, since
+    // no route honours a grant for it.
+    const productionAdmin = [grant({ role: 'Admin' })];
+    const viewer = principal({ role: 'Viewer' });
+
+    const inProduction = permissionsInEnvironment(viewer, productionAdmin, 'production');
+    expect(inProduction).toContain('job.write'); // the grant's real effect
+    expect(inProduction).not.toContain('user.admin');
+    expect(inProduction).not.toContain('worker.admin');
+    expect(inProduction).not.toContain('audit.read');
+  });
+
+  it('is still reported when the base role carries it on its own', () => {
+    const admin = principal({ role: 'Admin' });
+    const inProduction = permissionsInEnvironment(admin, [], 'production');
+    expect(inProduction).toContain('user.admin');
+    expect(inProduction).toContain('worker.admin');
+    expect(inProduction).toContain('audit.read');
+  });
+
+  it('does not sweep up command.approve, which a grant may confer on purpose', () => {
+    // The one deliberate exception: `command.approve` is routed through
+    // `requireInstancePermission` (see `approvalGuard` in app.ts), so an
+    // Editor-scoped-to-production can be approved by someone whose only
+    // privilege is also scoped to production — neither needs estate-wide
+    // Admin. Pinned so the estate-only list is never widened to include it by
+    // reflex.
+    const productionAdmin = [grant({ role: 'Admin' })];
+    const viewer = principal({ role: 'Viewer' });
+    expect(canInEnvironment(viewer, productionAdmin, 'command.approve', 'production')).toBe(true);
+    expect(permissionsInEnvironment(viewer, productionAdmin, 'production')).toContain(
+      'command.approve',
+    );
   });
 });
 

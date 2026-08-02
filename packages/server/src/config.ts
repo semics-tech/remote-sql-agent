@@ -90,6 +90,16 @@ const configSchema = z.object({
    */
   trustedProxyHops: z.coerce.number().int().min(0).max(8),
 
+  /**
+   * Bearer token required on `/metrics`. Unset leaves it open, which is the
+   * right default for a scrape target with no other network exposure (the
+   * original intent of the route) — but an operator putting the control
+   * plane on a network Prometheus does not fully control now has a lever.
+   * Estate job counts and failure rates are not secret in the way step
+   * bodies are, so this is defence in depth rather than the primary control.
+   */
+  metricsToken: z.string().optional(),
+
   // --- Dashboard identity ---------------------------------------------------
   auth: z.object({
     /** 'local' | 'entra' | 'both'. 'both' keeps local sign-in available as a
@@ -313,6 +323,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     publicUrl: env.RSAGENT_PUBLIC_URL ?? 'http://localhost:8080',
     hubAdvertisedAddress: hubAdvertisedAddress(env.RSAGENT_HUB_ADVERTISED_ADDRESS),
     trustedProxyHops: env.RSAGENT_TRUSTED_PROXY_HOPS ?? 0,
+    metricsToken: env.RSAGENT_METRICS_TOKEN,
 
     auth: {
       mode: authMode,

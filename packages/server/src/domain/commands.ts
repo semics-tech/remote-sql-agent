@@ -63,6 +63,8 @@ export interface CreateCommandInput {
   /** Decides whether the four-eyes rule applies to this issuer. */
   issuedByRole: Role;
   remoteAddress?: string | null;
+  /** The instance's environment, for the audit row. Null for untagged. */
+  environmentTag?: string | null;
 }
 
 export interface CreateCommandResult {
@@ -198,6 +200,10 @@ export class CommandService {
       detail: {
         type: input.kind,
         instanceId: input.instanceId,
+        // Null and "never resolved" both read the same to an auditor — an
+        // absent key would silently vary in shape between rows, which is worse
+        // than a stated null.
+        environmentTag: input.environmentTag ?? null,
         jobUuid: input.jobUuid,
         requiresApproval,
         payload: auditablePayload(input.payload),
@@ -640,7 +646,7 @@ export function buildProtoCommand(
         payload: {
           $case: 'upsertSchedule',
           upsertSchedule: {
-            scheduleUuid: str('scheduleUuid'),
+            scheduleName: str('scheduleName'),
             canonicalJson: str('canonicalJson'),
             baseDefinitionHash: str('baseDefinitionHash'),
           },
@@ -652,7 +658,7 @@ export function buildProtoCommand(
         payload: {
           $case: 'deleteSchedule',
           deleteSchedule: {
-            scheduleUuid: str('scheduleUuid'),
+            scheduleName: str('scheduleName'),
             baseDefinitionHash: str('baseDefinitionHash'),
           },
         },

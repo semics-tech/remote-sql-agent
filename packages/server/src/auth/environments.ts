@@ -88,6 +88,29 @@ function higher(a: Role, b: Role): Role {
 }
 
 /**
+ * Permissions no grant may ever confer, matching docs/security.md: "`user.admin`,
+ * `worker.admin` and `audit.read` sit behind routes that consult the base role
+ * only." `command.approve` is deliberately absent — an environment grant *can*
+ * confer it, so an Editor-scoped-to-production can be approved by someone whose
+ * only privilege is also scoped to production, without either holding estate-wide
+ * Admin.
+ *
+ * Today this list is redundant with which permission string each route happens
+ * to guard with (`requirePermission` vs `requireInstancePermission`), which is
+ * also enforced by `route-guards.test.ts`. It is checked here too so the
+ * invariant lives in the one place that decides what a grant *means*, rather
+ * than depending on every future route being wired correctly on its own —
+ * `canInEnvironment` and `permissionsInEnvironment` are general-purpose
+ * functions, and nothing about their signature stops them being called with an
+ * estate-wide permission.
+ */
+const ESTATE_ONLY_PERMISSIONS: ReadonlySet<Permission> = new Set([
+  'worker.admin',
+  'user.admin',
+  'audit.read',
+]);
+
+/**
  * The role this principal holds against an instance in `environmentTag`.
  *
  * Never lower than the base role. Somebody holding two grants that both reach
@@ -120,6 +143,11 @@ export function canInEnvironment(
   // Admin, or any read by a Viewer — costs nothing and does not depend on the
   // grant table being loaded at all.
   if (roleHasPermission(principal.role, permission)) return true;
+  // No grant may raise a principal to an estate-wide-only permission. Without
+  // this, a grant that raised the effective role to Admin — entirely legitimate
+  // for job.write in one environment — would also pass a `user.admin` check if
+  // one were ever wired to this guard by mistake.
+  if (ESTATE_ONLY_PERMISSIONS.has(permission)) return false;
   return roleHasPermission(effectiveRole(principal, grants, environmentTag), permission);
 }
 
@@ -129,9 +157,18 @@ export function permissionsInEnvironment(
   grants: readonly EnvironmentGrant[],
   environmentTag: string | null,
 ): readonly Permission[] {
-  // Read from the role table rather than recomputed, so there is one source of
-  // truth for what a role means.
-  return ROLE_PERMISSIONS[effectiveRole(principal, grants, environmentTag)];
+  // Base role's permissions always apply — that part needs no environment.
+  // Layered with whatever a grant adds, *excluding* anything estate-wide-only:
+  // reporting `user.admin` here because a grant raised the effective role to
+  // Admin would tell the SPA to offer Administration to someone who gets 403
+  // the moment they click it, since no route honours a grant for that
+  // permission. Read from the role table rather than recomputed, so there is
+  // one source of truth for what a role means.
+  const base = ROLE_PERMISSIONS[principal.role];
+  const fromGrant = ROLE_PERMISSIONS[effectiveRole(principal, grants, environmentTag)].filter(
+    (permission) => !ESTATE_ONLY_PERMISSIONS.has(permission),
+  );
+  return [...new Set([...base, ...fromGrant])];
 }
 
 /**

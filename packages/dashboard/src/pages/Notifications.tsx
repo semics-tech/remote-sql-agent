@@ -111,6 +111,7 @@ function Channels() {
   const admin = useNotificationAdmin();
   const [editing, setEditing] = useState<NotificationChannel | 'new' | null>(null);
   const [testing, setTesting] = useState<string | null>(null);
+  const [removing, setRemoving] = useState<string | null>(null);
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
 
   const channels = data?.channels ?? [];
@@ -128,6 +129,21 @@ function Channels() {
       });
     } finally {
       setTesting(null);
+    }
+  }
+
+  async function remove(channel: NotificationChannel): Promise<void> {
+    setRemoving(channel.id);
+    setResult(null);
+    try {
+      await admin.removeChannel(channel.id);
+    } catch (err) {
+      setResult({
+        ok: false,
+        message: err instanceof Error ? err.message : `Could not remove ${channel.name}.`,
+      });
+    } finally {
+      setRemoving(null);
     }
   }
 
@@ -201,9 +217,10 @@ function Channels() {
                       </button>
                       <button
                         className="action danger"
-                        onClick={() => void admin.removeChannel(c.id)}
+                        disabled={removing === c.id}
+                        onClick={() => void remove(c)}
                       >
-                        Remove
+                        {removing === c.id ? 'Removing…' : 'Remove'}
                       </button>
                     </td>
                   </tr>
@@ -436,13 +453,28 @@ function Rules() {
   const channels = useNotificationChannels();
   const admin = useNotificationAdmin();
   const [editing, setEditing] = useState<NotificationRule | 'new' | null>(null);
+  const [removing, setRemoving] = useState<string | null>(null);
+  const [removeError, setRemoveError] = useState<string | null>(null);
 
   const list = rules.data?.rules ?? [];
   const channelName = (id: string): string =>
     channels.data?.channels.find((c) => c.id === id)?.name ?? 'removed channel';
 
+  async function remove(rule: NotificationRule): Promise<void> {
+    setRemoving(rule.id);
+    setRemoveError(null);
+    try {
+      await admin.removeRule(rule.id);
+    } catch (err) {
+      setRemoveError(err instanceof Error ? err.message : `Could not remove ${rule.name}.`);
+    } finally {
+      setRemoving(null);
+    }
+  }
+
   return (
     <QueryState isLoading={rules.isLoading} error={rules.error}>
+      {removeError ? <div className="error">{removeError}</div> : null}
       <Panel
         title={`Rules (${list.length})`}
         actions={
@@ -504,8 +536,12 @@ function Rules() {
                       <button className="action" onClick={() => setEditing(r)}>
                         Edit
                       </button>
-                      <button className="action danger" onClick={() => void admin.removeRule(r.id)}>
-                        Remove
+                      <button
+                        className="action danger"
+                        disabled={removing === r.id}
+                        onClick={() => void remove(r)}
+                      >
+                        {removing === r.id ? 'Removing…' : 'Remove'}
                       </button>
                     </td>
                   </tr>

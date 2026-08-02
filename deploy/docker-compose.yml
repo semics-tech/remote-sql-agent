@@ -70,6 +70,8 @@ services:
       # on 8443 — including when RSAGENT_GRPC_PORT below remaps the published
       # port, which the container never sees.
       RSAGENT_HUB_ADVERTISED_ADDRESS: ${RSAGENT_HUB_ADVERTISED_ADDRESS:-}
+      # Unset leaves /metrics open. See .env.example.
+      RSAGENT_METRICS_TOKEN: ${RSAGENT_METRICS_TOKEN:-}
 
       # --- Dashboard identity (docs/authentication.md §1) ---
       RSAGENT_AUTH_MODE: ${RSAGENT_AUTH_MODE:-local}
