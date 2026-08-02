@@ -6,6 +6,7 @@ import type { EntraClient } from './entra.js';
 import { authenticateLocal, upsertEntraUser } from './users.js';
 import {
   createSession,
+  resolveSession,
   revokeSession,
   CSRF_COOKIE,
   CSRF_HEADER,
@@ -167,7 +168,24 @@ export async function registerAuthRoutes(
 
   app.post('/api/auth/logout', async (request, reply) => {
     const token = request.cookies[SESSION_COOKIE];
-    const session = token ? await requireSessionUser(db, token) : null;
+    const session = token ? await resolveSession(db, token) : null;
+
+    // Every other mutating route enforces the double-submit CSRF check via
+    // rbac.ts's authenticate() once a session is confirmed; this route reads
+    // the cookie itself instead of going through a guard, so it has to repeat
+    // the same check rather than skip it — a signed-in victim's session cookie
+    // is exactly what SameSite=Lax does not fully guarantee will never be sent
+    // cross-site (older or non-conforming clients), and a forced sign-out is
+    // still an attacker-triggered state change on an account that isn't theirs.
+    if (session) {
+      const providedCsrf = request.headers[CSRF_HEADER];
+      const csrfHeader = Array.isArray(providedCsrf) ? providedCsrf[0] : providedCsrf;
+      if (!csrfHeader || !safeEqualHex(hashToken(csrfHeader), session.csrfTokenHash)) {
+        return reply
+          .status(403)
+          .send({ error: 'CsrfFailed', detail: 'Missing or invalid CSRF token. Reload and retry.' });
+      }
+    }
 
     await revokeSession(db, token);
     reply.clearCookie(SESSION_COOKIE, cookieOptions);
@@ -176,7 +194,7 @@ export async function registerAuthRoutes(
     if (session) {
       await writeAudit(db, {
         actorType: 'user',
-        actor: session,
+        actor: session.user.username,
         action: 'auth.logout',
         remoteAddress: request.ip,
       });
@@ -265,11 +283,4 @@ export async function registerAuthRoutes(
       }
     });
   }
-}
-
-/** Resolve just the username for audit purposes, tolerating an expired session. */
-async function requireSessionUser(db: Database, token: string): Promise<string | null> {
-  const { resolveSession } = await import('./sessions.js');
-  const session = await resolveSession(db, token);
-  return session?.user.username ?? null;
 }

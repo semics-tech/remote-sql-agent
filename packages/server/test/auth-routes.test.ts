@@ -149,6 +149,92 @@ describe('login CSRF', () => {
   });
 });
 
+describe('logout CSRF', () => {
+  it('refuses to sign out a session with no CSRF header at all', async () => {
+    const server = await buildApp();
+    try {
+      const [row] = await db
+        .insert(users)
+        .values({ username: 'dba2', role: 'Admin' })
+        .returning({ id: users.id });
+      const session = await createSession(db, row!.id, 1, null);
+
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/auth/logout',
+        headers: { cookie: `rsagent_session=${session.token}` },
+      });
+      expect(response.statusCode).toBe(403);
+      expect(response.json().error).toBe('CsrfFailed');
+
+      // The session must still be usable — logout did not go through.
+      expect(await sseSessionStillAuthorised(db, session.token, 'instance.read')).toBe(true);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('refuses to sign out with a header that does not match the session CSRF token', async () => {
+    const server = await buildApp();
+    try {
+      const [row] = await db
+        .insert(users)
+        .values({ username: 'dba3', role: 'Admin' })
+        .returning({ id: users.id });
+      const session = await createSession(db, row!.id, 1, null);
+
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/auth/logout',
+        headers: {
+          cookie: `rsagent_session=${session.token}`,
+          'x-rsagent-csrf': 'not-the-real-token',
+        },
+      });
+      expect(response.statusCode).toBe(403);
+      expect(response.json().error).toBe('CsrfFailed');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('signs out a session whose CSRF header matches', async () => {
+    const server = await buildApp();
+    try {
+      const [row] = await db
+        .insert(users)
+        .values({ username: 'dba4', role: 'Admin' })
+        .returning({ id: users.id });
+      const session = await createSession(db, row!.id, 1, null);
+
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/auth/logout',
+        headers: {
+          cookie: `rsagent_session=${session.token}`,
+          'x-rsagent-csrf': session.csrfToken,
+        },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ signedOut: true });
+      expect(await sseSessionStillAuthorised(db, session.token, 'instance.read')).toBe(false);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('signs out cleanly with no session cookie at all (already-signed-out client)', async () => {
+    const server = await buildApp();
+    try {
+      const response = await server.inject({ method: 'POST', url: '/api/auth/logout' });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ signedOut: true });
+    } finally {
+      await server.close();
+    }
+  });
+});
+
 describe('SSE stream re-authorisation', () => {
   it('stays authorised for a live session with the permission', async () => {
     const [row] = await db
