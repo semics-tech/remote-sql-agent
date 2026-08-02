@@ -108,6 +108,10 @@ export async function registerAuthRoutes(
 
   // --- Local sign-in --------------------------------------------------------
 
+  // No preHandler: no session exists yet for authenticate() to check a CSRF
+  // token against, so this does its own — the anonymous double-submit cookie
+  // minted by ensurePreAuthCsrfCookie above.
+  // nosemgrep: fastify-mutating-route-missing-guard
   app.post(
     '/api/auth/login',
     {
@@ -166,6 +170,10 @@ export async function registerAuthRoutes(
     },
   );
 
+  // No preHandler: this route has to work even for a session that's already
+  // partway invalid, so it checks CSRF itself below rather than through a
+  // guard that would 401 first.
+  // nosemgrep: fastify-mutating-route-missing-guard
   app.post('/api/auth/logout', async (request, reply) => {
     const token = request.cookies[SESSION_COOKIE];
     const session = token ? await resolveSession(db, token) : null;
