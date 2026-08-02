@@ -37,6 +37,7 @@ import {
   recordJobVersion,
 } from '../domain/versioning.js';
 import { writeAudit } from '../domain/audit.js';
+import { applyHistoryScrubRules, getHistoryScrubConfig } from '../domain/history-scrubbing.js';
 import type { NotificationService } from '../domain/notifications/service.js';
 import type { EventBroker } from '../api/events.js';
 import {
@@ -408,10 +409,21 @@ async function handleSession(
         }
 
         case 'history': {
+          if (!workerId) break;
           const batch = msg.history;
           const instanceId = instanceIds.get(batch.instanceName);
           if (!instanceId) break;
-          const result = await ingestHistory(db, instanceId, batch.rows);
+
+          const scrubConfig = await getHistoryScrubConfig(db, workerId);
+          const { rows, redactedCount } = applyHistoryScrubRules(scrubConfig, batch.rows);
+          if (redactedCount > 0) {
+            log.debug(
+              { hostName, instanceName: batch.instanceName, redactedCount },
+              'History row messages redacted before storage',
+            );
+          }
+
+          const result = await ingestHistory(db, instanceId, rows);
           if (result.inserted > 0) {
             log.debug(
               { hostName, instanceName: batch.instanceName, inserted: result.inserted },

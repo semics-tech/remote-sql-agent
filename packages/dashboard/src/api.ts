@@ -1,5 +1,10 @@
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { JobDefinition, JobWriteMode, Role } from '@remote-sql-agent/protocol/browser';
+import type {
+  HistoryScrubConfigInput,
+  JobDefinition,
+  JobWriteMode,
+  Role,
+} from '@remote-sql-agent/protocol/browser';
 import { apiFetch } from './auth.jsx';
 
 /** Typed client for the control plane read API. */
@@ -872,6 +877,14 @@ export function useInstanceConfigs(workerId: string | undefined) {
   });
 }
 
+export function useHistoryScrubbing(workerId: string | undefined) {
+  return useQuery({
+    queryKey: ['history-scrubbing', workerId],
+    queryFn: () => get<HistoryScrubConfigInput>(`/api/workers/${workerId}/history-scrubbing`),
+    enabled: Boolean(workerId),
+  });
+}
+
 export function useWorkerAdmin() {
   const queryClient = useQueryClient();
   const refresh = () => queryClient.invalidateQueries();
@@ -899,6 +912,16 @@ export function useWorkerAdmin() {
         `/api/workers/${workerId}/credential-key`,
         'GET',
       ),
+
+    setHistoryScrubbing: async (workerId: string, config: HistoryScrubConfigInput) => {
+      const result = await send<HistoryScrubConfigInput>(
+        `/api/workers/${workerId}/history-scrubbing`,
+        'PUT',
+        config,
+      );
+      await refresh();
+      return result;
+    },
 
     saveInstanceConfig: async (
       workerId: string,

@@ -12,7 +12,7 @@ import {
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
-import type { Role } from '@remote-sql-agent/protocol';
+import type { Role, HistoryScrubRule } from '@remote-sql-agent/protocol';
 
 /**
  * Control plane schema (§8).
@@ -243,6 +243,23 @@ export const jobHistory = pgTable(
     index('job_history_instance_job_sqlid_idx').on(t.instanceId, t.jobUuid, t.sqlInstanceId),
   ],
 );
+
+/**
+ * Per-worker admin control over the free-text `message` on incoming history
+ * rows (§5.2 note above, domain/history-scrubbing.ts). Redact-only: unlike
+ * `agentLogScrubConfigs`, there is no severity/status filter and no drop
+ * action, because `run_status`/`step_id`/timing here feed stats and live-step
+ * derivation elsewhere and must never be silently incomplete. No row for a
+ * worker means unfiltered — additive over existing behaviour, not a change.
+ */
+export const jobHistoryScrubConfigs = pgTable('job_history_scrub_configs', {
+  workerId: uuid('worker_id')
+    .primaryKey()
+    .references(() => workers.id, { onDelete: 'cascade' }),
+  rules: jsonb('rules').$type<HistoryScrubRule[]>().notNull().default([]),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
+});
 
 export const jobActivity = pgTable(
   'job_activity',
