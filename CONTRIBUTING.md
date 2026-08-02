@@ -23,9 +23,10 @@ pnpm dev:up      # Postgres + SQL Server 2022 with Agent enabled
 pnpm dev:seed    # ~10 varied fixture jobs
 ```
 
-The SQL Server image is amd64 and runs under emulation on Apple Silicon — allow
-60–90s before it is healthy. It needs about 3 GB; the dev compose file caps its
-buffer pool because it is otherwise OOM-killed.
+> The SQL Server image is amd64 and runs under emulation on Apple Silicon. Allow
+> 60–90s for it to become healthy, and give Docker at least 6 GB. Below that it
+> is the container the kernel picks first: `docker ps -a` shows `Exited (137)`,
+> and everything downstream looks like a connection bug instead.
 
 ```bash
 pnpm test          # unit + integration
@@ -34,6 +35,103 @@ pnpm typecheck
 ```
 
 CI runs all of these plus a generated-protobuf staleness check.
+
+### Running the full stack
+
+**Three long-running processes**, one terminal each. All three are needed: the
+control plane serves the API, the worker is what actually talks to SQL Server,
+and without it the dashboard is an empty estate.
+
+```bash
+# 1. Control plane — API on :8080, worker hub on :8443
+pnpm dev:server
+
+# 2. Dashboard — http://localhost:5173, proxies /api to :8080
+pnpm dev:dashboard
+
+# 3. Worker — listens on nothing; dials out to the hub
+pnpm dev:worker
+```
+
+**Signing in.** The dashboard asks for credentials in development too — there
+is deliberately no local bypass, because every RBAC path in the product hangs
+off having a real signed-in user with a real role. `pnpm dev:server` fixes the
+bootstrap password to something you already know, by setting
+`RSAGENT_BOOTSTRAP_ADMIN_PASSWORD`:
+
+```
+username: admin
+password: rsagent-dev
+```
+
+That only applies on first boot, when the database has no users yet. If you
+have an older dev database, or forgot a changed password:
+
+```bash
+pnpm dev:reset-admin
+```
+
+It refuses to touch anything but a database on `localhost`. In a real
+deployment neither of these exists: the control plane generates a password on
+first boot and prints it once.
+
+**Enrolling the dev worker.** Needed before step 3 above works. Sign in, then
+**Estate → Add a worker** for a token:
+
+```bash
+pnpm dev:enrol --token rsen_xxxxxxxxxxxx
+```
+
+That writes `packages/worker/run/worker.key` (the credential) and
+`credential.key` (the key SQL credentials are encrypted to). Delete either and
+the worker cannot reconnect — rotate a new one from **Administration →
+Workers**.
+
+**Letting the dev worker make changes.** Two gates, and **both** must allow it
+— see [docs/capabilities.md](docs/capabilities.md):
+
+1. **Administration → Workers → Manage** — tick the capabilities to grant.
+2. `deploy/worker.dev.yaml` — raise `maxCapability` from `readOnly`.
+
+`maxCapability` is read **once at startup**, so restart the worker afterwards;
+reconnecting re-sends the old value. Confirm it took by looking for
+`capabilities` in the worker's `Worker ready` log line, or the "Can actually
+do" column in Administration.
+
+> Two worker processes sharing one credential supersede each other in a loop —
+> each connect kicks the other off. If capability changes appear to be
+> ignored, or the estate flickers, check for a stray worker before anything
+> else.
+
+**Seeing drift detection work.** Edit a job the way a DBA would, directly in
+SQL:
+
+```bash
+docker exec rsagent-dev-sqlserver-1 /opt/mssql-tools18/bin/sqlcmd \
+  -S localhost -U sa -P 'RsAgent_Dev_Pass123' -C -Q "
+EXEC msdb.dbo.sp_update_jobstep
+    @job_name = N'RSAgent Fixture - Heartbeat Log', @step_id = 1,
+    @command = N'EXEC dbo.usp_LogMaintenance @Source = N''Heartbeat'', @Message = N''Edited in SSMS'';';"
+```
+
+Within the poll interval the job shows a **drift** badge, and its Versions tab
+has a new `on-premise edit` version with a diff of the changed step body.
+
+### Project layout
+
+```
+packages/protocol     .proto contracts, JobDefinition.v1 schema, canonical
+                      hashing, schedule codec, capability model  [published]
+packages/worker       Node daemon: msdb reader/writer, outbox, gRPC   [published]
+packages/server       Control plane: gRPC hub, Postgres, REST API      [container]
+packages/dashboard    React SPA                          [built into container]
+deploy/               Dockerfile, Compose, installers, dev stack
+docs/                 everything above
+```
+
+The `.proto` files are the single source of truth for the wire contract.
+Generated output is checked in so no contributor needs a protoc toolchain, and
+CI fails if it drifts.
 
 ## The rules that matter
 

@@ -91,6 +91,14 @@ free *year*, not free forever, and B1s is 1 GB — below the floor below.
 
 No checkout. Three files and a published image.
 
+**Fastest path, once DNS points here (step 1 below):**
+[`deploy/setup.sh`](../deploy/setup.sh) — fetches the compose files, issues the
+hub's self-signed certificate, writes `.env` with a generated Postgres
+password, and starts the stack. See [quick-start.md](quick-start.md). The
+steps below are what it does, spelled out — read them if you want to pin a
+specific version, use your own CA instead of a self-signed cert, or just
+understand what you are running before you run it.
+
 ### 1. Point DNS at the machine first
 
 Caddy asks Let's Encrypt for a certificate on startup and the check fails if the

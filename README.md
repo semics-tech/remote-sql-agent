@@ -97,109 +97,20 @@ worker write.
 
 ## Install
 
-Full walkthrough: **[docs/quick-start.md](docs/quick-start.md)** — about 30
-minutes, most of it waiting for containers. Where to run it, what it costs, and
-the two constraints that decide both: **[docs/deployment.md](docs/deployment.md)**.
-
-### Control plane
-
-No checkout needed — it ships as an image. On any host with Docker:
-
 ```bash
 mkdir -p rsagent && cd rsagent
-BASE=https://raw.githubusercontent.com/semics-tech/remote-sql-agent/main/deploy
-curl -fsSLO $BASE/docker-compose.yml
-curl -fsSLO $BASE/Caddyfile
-curl -fsSL  $BASE/.env.example -o .env    # then edit it
-
-docker compose --profile tls up -d        # with automatic HTTPS
+curl -fsSLO https://raw.githubusercontent.com/semics-tech/remote-sql-agent/main/deploy/setup.sh
+chmod +x setup.sh && ./setup.sh          # asks for your domain, brings up the control plane
 ```
 
-Or hand [`deploy/cloud-init.yaml`](deploy/cloud-init.yaml) to a fresh VM as
-user-data and it does all of the above on first boot.
+Then in the dashboard: **Administration → Workers → Add a worker**, and run the
+one-line command it gives you on each SQL Server host. That's it — no PKI to
+set up, no SQL credentials asked for at install.
 
-The image is published to both registries, same digest:
-
-```bash
-docker pull techsemics/remote-sql-agent:latest
-docker pull ghcr.io/semics-tech/remote-sql-agent/control-plane:latest
-```
-
-Put a TLS certificate for the hub in `./tls`. The control plane refuses to start
-without one: mTLS needs it to exist at all, and in token mode it is the only
-thing keeping a worker's API key off the wire in clear. From a checkout,
-`pnpm dev:cert <hostname>` writes a self-signed one for a lab.
-
-On first boot it creates an administrator and prints a generated password
-**once** — copy it from the log.
-
-### Worker
-
-Generate a single-use enrolment token in the dashboard
-(**Administration → Workers**), then on the SQL Server host:
-
-```powershell
-.\install.ps1 -ControlPlane rsagent.corp.example.com:8443 `
-              -EnrolmentToken rsen_xxxxxxxxxxxx `
-              -CaCertPath C:\certs\corp-ca.pem
-```
-
-Workers authenticate with an mTLS client certificate by default. There is no
-certificate authority to set up — the control plane runs its own — and no
-rotation to schedule: the worker renews its own certificate at half its
-lifetime. On Azure or Arc-enabled hosts, `-AuthMode entra` stores no credential
-on the host at all. Pick the mode when you mint the token; the dashboard's
-install command carries the matching flag. See
-[docs/authentication.md](docs/authentication.md).
-
-SQL Server on Linux, or a host with nothing installed on it — download the
-executable for the platform from
-[Releases](https://github.com/semics-tech/remote-sql-agent/releases). One file,
-no Node, no dependencies:
-
-```bash
-curl -fsSLO https://github.com/semics-tech/remote-sql-agent/releases/latest/download/rsagent-worker-linux-x64
-chmod +x rsagent-worker-linux-x64
-./rsagent-worker-linux-x64 enrol --token rsen_xxxxxxxxxxxx /etc/rsagent/worker.yaml
-./rsagent-worker-linux-x64 /etc/rsagent/worker.yaml
-```
-
-Or, on a host that already has Node 24:
-
-```bash
-npm install -g @remote-sql-agent/worker
-rsagent enrol --token rsen_xxxxxxxxxxxx /etc/rsagent/worker.yaml
-rsagent /etc/rsagent/worker.yaml
-```
-
-Every release asset is listed in `SHA256SUMS` and carries a build attestation,
-so a download can be traced back to the workflow run that produced it:
-
-```bash
-gh attestation verify rsagent-worker-linux-x64 --repo semics-tech/remote-sql-agent
-```
-
-### SQL Server permissions
-
-Read-only mirroring needs one role and a set of table grants:
-
-```sql
-USE [msdb];
-CREATE USER [CORP\SQLAGENT-SVC] FOR LOGIN [CORP\SQLAGENT-SVC];
-ALTER ROLE [SQLAgentReaderRole] ADD MEMBER [CORP\SQLAGENT-SVC];
-```
-
-```bash
-sqlcmd -S localhost -E -i deploy/sql/worker-permissions.sql
-```
-
-The role grants EXECUTE on the `sp_help_*` procedures, not SELECT on the tables
-under them — and the worker reads those directly. Skip the second step and the
-login browses jobs happily in SSMS, then fails in the worker with a permission
-error on `sysjobhistory`.
-
-Add `SQLAgentOperatorRole` only when you want the worker to make changes; that
-one really is just the role. **Never grant `sysadmin`.**
+**Full walkthrough:** [docs/quick-start.md](docs/quick-start.md) — about 15
+minutes, most of it waiting for containers. Also covers a deployment with no
+public DNS, Kubernetes, and Azure Container Apps. Where to run the control
+plane and what it costs: [docs/deployment.md](docs/deployment.md).
 
 ---
 
@@ -274,138 +185,17 @@ read back from `msdb`.
 
 Version `0.x`: breaking changes may land in minor versions until `1.0`.
 
-Known gaps — no control-plane HA, manual certificate rotation, no MSI — are
-tracked with impact and effort in [docs/migration.md](docs/migration.md).
+Known gaps — no control-plane HA, no MSI packaging, no alerting on a worker
+that stops renewing its own certificate — are tracked with impact and effort in
+[docs/migration.md](docs/migration.md).
 
 ---
 
-## Development
+## Contributing
 
-Requires Node.js 24+, pnpm 10+ and Docker.
-
-```bash
-pnpm install
-pnpm dev:up          # Postgres + SQL Server 2022 with Agent enabled
-pnpm dev:seed        # ~10 varied fixture jobs
-```
-
-> The SQL Server image is amd64 and runs under emulation on Apple Silicon.
-> Allow 60–90s for it to become healthy, and give Docker at least 6 GB. Below
-> that it is the container the kernel picks first: `docker ps -a` shows
-> `Exited (137)`, and everything downstream looks like a connection bug instead.
-
-**Three long-running processes**, one terminal each. All three are needed: the
-control plane serves the API, the worker is what actually talks to SQL Server,
-and without it the dashboard is an empty estate.
-
-```bash
-# 1. Control plane — API on :8080, worker hub on :8443
-pnpm dev:server
-
-# 2. Dashboard — http://localhost:5173, proxies /api to :8080
-pnpm dev:dashboard
-
-# 3. Worker — listens on nothing; dials out to the hub
-pnpm dev:worker
-```
-
-### Signing in
-
-The dashboard asks for credentials in development too. There is deliberately no
-local bypass: an authentication switch that can be turned off is one that
-eventually ships turned off, and every RBAC path in the product hangs off having
-a real signed-in user with a real role.
-
-`pnpm dev:server` instead fixes the bootstrap password to something you already
-know, by setting `RSAGENT_BOOTSTRAP_ADMIN_PASSWORD`:
-
-```
-username: admin
-password: rsagent-dev
-```
-
-That only applies on first boot, when the database has no users yet. If you have
-an older dev database — or you changed the password and forgot it:
-
-```bash
-pnpm dev:reset-admin
-```
-
-It refuses to touch anything but a database on `localhost`.
-
-In a real deployment neither exists: the control plane generates a password on
-first boot and prints it **once**.
-
-### Enrolling the dev worker
-
-The worker needs enrolling before step 3 works. Sign in, then **Estate → Add a
-worker** for a token:
-
-```bash
-pnpm dev:enrol --token rsen_xxxxxxxxxxxx
-```
-
-That writes `packages/worker/run/worker.key` (the credential) and
-`credential.key` (the key SQL credentials are encrypted to). Delete either and
-the worker cannot reconnect — rotate a new one from **Administration → Workers**.
-
-### Letting the dev worker make changes
-
-Two gates, and **both** must allow it — see [capabilities.md](docs/capabilities.md):
-
-1. **Administration → Workers → Manage** — tick the capabilities to grant.
-2. `deploy/worker.dev.yaml` — raise `maxCapability` from `readOnly`.
-
-`maxCapability` is read **once at startup**, so restart the worker afterwards;
-reconnecting re-sends the old value. Confirm it took by looking for
-`capabilities` in the worker's `Worker ready` log line, or the "Can actually do"
-column in Administration.
-
-> Two worker processes sharing one credential supersede each other in a loop —
-> each connect kicks the other off. If capability changes appear to be ignored,
-> or the estate flickers, check for a stray worker before anything else.
-
-```bash
-pnpm test              # unit + integration
-pnpm test:unit         # no containers needed beyond Postgres
-pnpm lint
-pnpm typecheck
-pnpm proto:check       # fails if generated protobuf has drifted
-```
-
-### See drift detection work
-
-Edit a job the way a DBA would, directly in SQL:
-
-```bash
-docker exec rsagent-dev-sqlserver-1 /opt/mssql-tools18/bin/sqlcmd \
-  -S localhost -U sa -P 'RsAgent_Dev_Pass123' -C -Q "
-EXEC msdb.dbo.sp_update_jobstep
-    @job_name = N'RSAgent Fixture - Heartbeat Log', @step_id = 1,
-    @command = N'EXEC dbo.usp_LogMaintenance @Source = N''Heartbeat'', @Message = N''Edited in SSMS'';';"
-```
-
-Within the poll interval the job shows a **drift** badge, and its Versions tab
-has a new `on-premise edit` version with a diff of the changed step body.
-
-### Layout
-
-```
-packages/protocol     .proto contracts, JobDefinition.v1 schema, canonical
-                      hashing, schedule codec, capability model  [published]
-packages/worker       Node daemon: msdb reader/writer, outbox, gRPC   [published]
-packages/server       Control plane: gRPC hub, Postgres, REST API      [container]
-packages/dashboard    React SPA                          [built into container]
-deploy/               Dockerfile, Compose, installers, dev stack
-docs/                 everything above
-```
-
-The `.proto` files are the single source of truth for the wire contract.
-Generated output is checked in so no contributor needs a protoc toolchain, and
-CI fails if it drifts.
-
-Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Security issues:
-[SECURITY.md](SECURITY.md), please do not open a public issue.
+Local dev setup (three processes: control plane, dashboard, worker), tests, and
+the rules that matter for this codebase specifically: **[CONTRIBUTING.md](CONTRIBUTING.md)**.
+Security issues: [SECURITY.md](SECURITY.md), please do not open a public issue.
 
 ---
 

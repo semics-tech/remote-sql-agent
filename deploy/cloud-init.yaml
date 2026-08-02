@@ -48,10 +48,11 @@ write_files:
       # not choose. https://github.com/semics-tech/remote-sql-agent/releases
       RSAGENT_VERSION="0.2.0"
 
-      # Which revision to take docker-compose.yml and Caddyfile from. `main`
-      # rather than a tag because the Caddy profile these use is newer than the
-      # last release; move this to the tag matching RSAGENT_VERSION once one
-      # contains them, so a rebuild is reproducible.
+      # Which revision to take deploy/setup.sh, docker-compose.yml and the
+      # Caddyfile from. `main` rather than a tag because the Caddy profile
+      # these use is newer than the last release; move this to the tag
+      # matching RSAGENT_VERSION once one contains them, so a rebuild is
+      # reproducible.
       RSAGENT_REF="main"
       # ------------------------------------------------------------------
 
@@ -63,83 +64,16 @@ write_files:
       mkdir -p /opt/rsagent/deploy
       cd /opt/rsagent/deploy
 
-      # Three small files, not a checkout. The control plane ships as a
-      # published image; cloning the repository onto a production host would
-      # put a build toolchain and the whole source tree somewhere neither is
-      # wanted, to run a container that is already built.
-      RAW="https://raw.githubusercontent.com/semics-tech/remote-sql-agent/${RSAGENT_REF}/deploy"
-      for f in docker-compose.yml Caddyfile .env.example; do
-        [[ -f "$f" ]] || curl -fsSL "${RAW}/${f}" -o "$f"
-      done
-
-      # A self-signed certificate for the worker hub, valid for the same name.
-      #
-      # Caddy's certificate cannot be reused for this: the hub reads PEM files
-      # once at startup and grpc-js cannot swap credentials on a bound server,
-      # so it would serve an expired certificate from roughly day 60 of every
-      # 90-day cycle, and the failure is total and silent — every worker at
-      # once, a month after the dashboard visibly renewed.
-      #
-      # Self-signed is a real posture here, not a placeholder: workers pin it
-      # with --ca-cert, which is stronger than trusting any public CA. Replace
-      # it with your estate's own CA if you have one.
-      if [[ ! -f tls/server.crt ]]; then
-        mkdir -p tls
-        openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-          -keyout tls/server.key -out tls/server.crt \
-          -subj "/CN=${RSAGENT_DOMAIN}" \
-          -addext "subjectAltName=DNS:${RSAGENT_DOMAIN}"
-        chmod 640 tls/server.key
-      fi
-
-      if [[ ! -f .env ]]; then
-        # Appended rather than edited in place: Compose takes the last
-        # definition of a key, so these override the placeholders in the
-        # example file and the example stays readable as documentation.
-        cp .env.example .env
-        # Generated, never defaulted: a fixed password in a file everyone can
-        # copy is the same as no password.
-        #
-        # Alphanumeric only, because this is interpolated into a postgres:// URL
-        # in docker-compose.yml — a '/' or '@' from base64 would truncate it and
-        # the failure would look like wrong credentials. Drawing 48 bytes leaves
-        # enough after filtering to always reach 40 characters.
-        POSTGRES_PASSWORD="$(openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c 40)"
-        {
-          echo ""
-          echo "# --- written by cloud-init ---"
-          echo "RSAGENT_PUBLIC_URL=https://${RSAGENT_DOMAIN}"
-          echo "RSAGENT_DOMAIN=${RSAGENT_DOMAIN}"
-          echo "POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"
-          # Caddy is the one proxy in front of the API. Without this the client
-          # IP on every audit row would be Caddy's own container address.
-          echo "RSAGENT_TRUSTED_PROXY_HOPS=1"
-          # Reachable only through Caddy, so the dashboard is never also served
-          # over plain HTTP — where the browser refuses to encrypt credentials.
-          echo "RSAGENT_HTTP_BIND=127.0.0.1"
-          echo "RSAGENT_VERSION=${RSAGENT_VERSION}"
-        } >> .env
-        # It holds the database password.
-        chmod 600 .env
-      fi
-
-      docker compose --profile tls up -d
-
-      cat <<BANNER
-
-      Control plane starting on https://${RSAGENT_DOMAIN}
-
-        Bootstrap password (printed once, in the log):
-          cd /opt/rsagent/deploy && docker compose logs server | grep -i password
-
-        Workers need this certificate, because it is self-signed:
-          /opt/rsagent/deploy/tls/server.crt
-          install.sh --ca-cert ... / install.ps1 -CaCertPath ...
-
-        Still to do: back up the Postgres volume, and set up audit export.
-        See docs/deployment.md and docs/security.md.
-
-      BANNER
+      # The one shared implementation of "fetch the compose files, generate a
+      # self-signed hub certificate, write .env, start the stack" — also what
+      # someone bringing up their own Docker host runs by hand. Two copies of
+      # this logic drift; this VM path exists only to supply the domain
+      # non-interactively and get the OS packages in place first.
+      curl -fsSL \
+        "https://raw.githubusercontent.com/semics-tech/remote-sql-agent/${RSAGENT_REF}/deploy/setup.sh" \
+        -o setup.sh
+      chmod +x setup.sh
+      ./setup.sh --domain "$RSAGENT_DOMAIN" --version "$RSAGENT_VERSION" --ref "$RSAGENT_REF"
 
 package_update: true
 packages:

@@ -1,84 +1,46 @@
 # Quick start
 
-From nothing to one SQL Server instance visible in the dashboard. Budget 30
+From nothing to one SQL Server instance visible in the dashboard. Budget 15
 minutes, most of which is waiting for containers.
 
-You need a Linux host with Docker for the control plane, and one Windows SQL
-Server host to put a worker on.
-
-For where that Linux host should live and what it costs, see
-[deployment.md](deployment.md). This page assumes you have one.
+You need a Linux host with Docker and a public DNS name pointed at it for the
+control plane, and one Windows SQL Server host to put a worker on. For where
+that Linux host should live and what it costs, see [deployment.md](deployment.md).
+This page assumes you have one. No public DNS available — a corp-internal
+estate with no route to Let's Encrypt? See
+[deployment.md's Route A](deployment.md#route-a--a-vm-running-compose) for the
+manual TLS steps instead of the script below.
 
 ---
 
 ## 1. Control plane
 
-The control plane ships as a published image, so there is nothing to clone or
-build — just the two files that describe how to run it:
-
 ```bash
-mkdir -p /opt/rsagent && cd /opt/rsagent
-BASE=https://raw.githubusercontent.com/semics-tech/remote-sql-agent/main/deploy
-curl -fsSLO $BASE/docker-compose.yml
-curl -fsSLO $BASE/Caddyfile
-curl -fsSL  $BASE/.env.example -o .env
+mkdir -p rsagent && cd rsagent
+curl -fsSLO https://raw.githubusercontent.com/semics-tech/remote-sql-agent/main/deploy/setup.sh
+chmod +x setup.sh
+./setup.sh   # asks for your domain if you don't pass --domain
 ```
 
-Edit `.env`. Two values must be right before anything works:
+This fetches the two files that describe how to run the control plane (no
+checkout needed — it ships as an image), writes `.env`, issues a self-signed
+certificate for the worker hub, and starts the stack with Caddy handling
+Let's Encrypt HTTPS for the dashboard automatically. Safe to re-run — it never
+overwrites a file it already wrote.
 
-```bash
-RSAGENT_PUBLIC_URL=https://rsagent.corp.example.com   # how browsers and workers reach this host
-POSTGRES_PASSWORD=<something long and random>
-```
+Two things worth knowing about what it just did:
 
-Workers are told to dial that host on port 8443. If the hub is reachable
-somewhere else — behind a load balancer of its own, or on a platform that
-remaps ports — set `RSAGENT_HUB_ADVERTISED_ADDRESS` to the real `host:port` as
-well, or every install command the dashboard prints will point at the wrong
-place.
-
-### TLS for the worker hub
-
-Workers authenticate with a bearer API key by default, so the hub **requires**
-TLS — the control plane refuses to start without it. Put a certificate and key
-for `RSAGENT_PUBLIC_URL`'s host name in `./tls`:
-
-```
-tls/server.crt
-tls/server.key
-```
-
-Use your internal CA, or a public one. If you use a private CA, keep a copy of
-its certificate: workers need it (`-CaCertPath` at install). To generate a
-self-signed pair for a lab:
-
-```bash
-mkdir -p tls && openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-  -keyout tls/server.key -out tls/server.crt \
-  -subj "/CN=rsagent.corp.example.com" \
-  -addext "subjectAltName=DNS:rsagent.corp.example.com"
-```
-
-For a lab on a trusted network you can skip TLS by adding
-`RSAGENT_GRPC_REQUIRE_TLS=false` — worker keys then travel in clear text, so do
-not do this anywhere real.
-
-### HTTPS for the dashboard
-
-Set `RSAGENT_DOMAIN` and `RSAGENT_HTTP_BIND=127.0.0.1` in `.env`, and start with
-the `tls` profile below. Caddy then gets and renews a certificate on its own.
-
-This matters beyond good practice: the dashboard encrypts SQL credentials in the
-browser to the target worker's public key, and browsers do not expose the
-necessary API over plain HTTP. Without HTTPS the credential field is disabled
-and you cannot complete step 4.
-
-### Start it
-
-```bash
-docker compose --profile tls up -d     # or `docker compose up -d` without HTTPS
-docker compose logs -f server
-```
+- **The worker hub gets its own, separate, self-signed certificate** — not
+  Caddy's. The hub reads its certificate once at startup and cannot swap it
+  later, so it needs one long-lived enough that a restart isn't required every
+  renewal cycle; Caddy's 90-day Let's Encrypt certificate is the wrong shape for
+  that. Workers pin this certificate with `--ca-cert` at install, which is a
+  stronger position than trusting any public CA.
+- **Workers authenticate with an mTLS client certificate by default.** There is
+  no certificate authority to run — the control plane holds its own, created on
+  demand — and no rotation to schedule: the worker renews its own certificate
+  automatically at half its lifetime. The hub requires TLS regardless of which
+  worker auth mode is in use; it refuses to start without a certificate.
 
 On first boot the control plane creates an administrator and prints its
 generated password **once**:
@@ -89,12 +51,16 @@ Created the bootstrap administrator.
   password: TfzAzSKAHzTlDYqwWAGzxzfw
 ```
 
-Copy it now — it is not recoverable. Sign in at `RSAGENT_PUBLIC_URL` and change
-it.
+Copy it now — it is not recoverable. Sign in at `https://<your domain>` and
+change it.
 
 > Prefer Microsoft Entra sign-in? Set it up now rather than later — see
 > [authentication.md](authentication.md) §1. Keep `RSAGENT_AUTH_MODE=both` so a
 > local administrator still works if Entra is unreachable.
+
+> Prefer to run it by hand, on a platform `setup.sh` doesn't fit — Kubernetes,
+> Azure Container Apps, or a host with no public DNS at all? See
+> [deployment.md](deployment.md) for every route and what each one costs.
 
 ---
 
