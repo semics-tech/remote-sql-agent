@@ -17,3 +17,4 @@ export * from './schedule.js';
 export * from './capabilities.js';
 export * from './roles.js';
 export * from './history-scrub.js';
+export * from './log-scrub.js';

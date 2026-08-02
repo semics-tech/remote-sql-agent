@@ -7,6 +7,7 @@ export * from './canonical.js';
 export * from './capabilities.js';
 export * from './roles.js';
 export * from './history-scrub.js';
+export * from './log-scrub.js';
 export * from './timestamp.js';
 export * from './signing.js';
 export * from './gen/rsagent/v1/worker.js';

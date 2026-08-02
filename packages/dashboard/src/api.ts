@@ -1,6 +1,7 @@
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   HistoryScrubConfigInput,
+  AgentLogScrubConfigInput,
   JobDefinition,
   JobWriteMode,
   Role,
@@ -885,6 +886,14 @@ export function useHistoryScrubbing(workerId: string | undefined) {
   });
 }
 
+export function useLogScrubbing(workerId: string | undefined) {
+  return useQuery({
+    queryKey: ['log-scrubbing', workerId],
+    queryFn: () => get<AgentLogScrubConfigInput>(`/api/workers/${workerId}/log-scrubbing`),
+    enabled: Boolean(workerId),
+  });
+}
+
 export function useWorkerAdmin() {
   const queryClient = useQueryClient();
   const refresh = () => queryClient.invalidateQueries();
@@ -916,6 +925,16 @@ export function useWorkerAdmin() {
     setHistoryScrubbing: async (workerId: string, config: HistoryScrubConfigInput) => {
       const result = await send<HistoryScrubConfigInput>(
         `/api/workers/${workerId}/history-scrubbing`,
+        'PUT',
+        config,
+      );
+      await refresh();
+      return result;
+    },
+
+    setLogScrubbing: async (workerId: string, config: AgentLogScrubConfigInput) => {
+      const result = await send<AgentLogScrubConfigInput>(
+        `/api/workers/${workerId}/log-scrubbing`,
         'PUT',
         config,
       );

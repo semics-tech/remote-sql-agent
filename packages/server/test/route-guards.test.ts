@@ -335,6 +335,72 @@ describe('history-scrubbing config stays on the base role', () => {
   });
 });
 
+describe('log-scrubbing config stays on the base role', () => {
+  it('refuses an environment-Admin grant', async () => {
+    const app = await buildApp();
+    try {
+      const { workerId } = await seedInstance(db);
+      const userId = await seedUser('Viewer', [membershipKey('entra_group', PROD_GROUP)]);
+      await db.insert(environmentGrants).values({
+        subjectKind: 'entra_group',
+        subjectKey: PROD_GROUP,
+        environmentTag: '*',
+        role: 'Admin',
+      });
+      const auth = await signIn(userId);
+
+      const getResponse = await app.inject({
+        method: 'GET',
+        url: `/api/workers/${workerId}/log-scrubbing`,
+        headers: { cookie: auth.cookie, [CSRF_HEADER]: auth.csrf },
+      });
+      expect(getResponse.statusCode).toBe(403);
+
+      const putResponse = await app.inject({
+        method: 'PUT',
+        url: `/api/workers/${workerId}/log-scrubbing`,
+        headers: { cookie: auth.cookie, [CSRF_HEADER]: auth.csrf },
+        payload: { allowedSeverities: [], rules: [] },
+      });
+      expect(putResponse.statusCode).toBe(403);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('admits a base-role Admin and persists the config', async () => {
+    const app = await buildApp();
+    try {
+      const { workerId } = await seedInstance(db);
+      const auth = await signIn(await seedUser('Admin'));
+
+      const putResponse = await app.inject({
+        method: 'PUT',
+        url: `/api/workers/${workerId}/log-scrubbing`,
+        headers: { cookie: auth.cookie, [CSRF_HEADER]: auth.csrf },
+        payload: {
+          allowedSeverities: ['error'],
+          rules: [{ id: 'r1', description: 'no backups', pattern: 'backup', action: 'drop' }],
+        },
+      });
+      expect(putResponse.statusCode).toBe(200);
+
+      const getResponse = await app.inject({
+        method: 'GET',
+        url: `/api/workers/${workerId}/log-scrubbing`,
+        headers: { cookie: auth.cookie, [CSRF_HEADER]: auth.csrf },
+      });
+      expect(getResponse.statusCode).toBe(200);
+      expect(getResponse.json()).toEqual({
+        allowedSeverities: ['error'],
+        rules: [{ id: 'r1', description: 'no backups', pattern: 'backup', action: 'drop' }],
+      });
+    } finally {
+      await app.close();
+    }
+  });
+});
+
 describe('reads stay estate-wide', () => {
   it('lets a Viewer read a job in an environment they hold no grant for', async () => {
     const app = await buildApp();

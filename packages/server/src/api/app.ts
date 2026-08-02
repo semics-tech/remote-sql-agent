@@ -81,6 +81,7 @@ import {
 } from '../domain/overview.js';
 import { getJobStats } from '../domain/stats.js';
 import { getHistoryScrubConfig, setHistoryScrubConfig } from '../domain/history-scrubbing.js';
+import { getScrubConfig, setScrubConfig } from '../domain/log-scrubbing.js';
 import {
   WorkerConfigError,
   deleteInstanceConfig,
@@ -1113,6 +1114,36 @@ export async function createApp(deps: AppDeps) {
       return config;
     },
   );
+
+  /**
+   * What the Agent error log is allowed to carry into the control plane for
+   * this worker (§5.2, domain/log-scrubbing.ts). Enforced at ingestion, in
+   * hub.ts — a row that does not pass is never stored, so it never reaches
+   * this dashboard or an export.
+   */
+  app.get('/api/workers/:workerId/log-scrubbing', { preHandler: guard('worker.admin') }, async (request) => {
+    const { workerId } = z.object({ workerId: z.string().uuid() }).parse(request.params);
+    return getScrubConfig(db, workerId);
+  });
+
+  app.put('/api/workers/:workerId/log-scrubbing', { preHandler: guard('worker.admin') }, async (request) => {
+    const { workerId } = z.object({ workerId: z.string().uuid() }).parse(request.params);
+    const config = await setScrubConfig(db, workerId, request.body, request.user?.id ?? null);
+
+    await writeAudit(db, {
+      actorType: 'user',
+      actor: actorOf(request),
+      action: 'worker.log_scrubbing.changed',
+      target: workerId,
+      // Rule shape and counts only — never row content, which this route
+      // never sees in the first place (it configures scrubbing, it doesn't
+      // apply it to anything here).
+      detail: { allowedSeverities: config.allowedSeverities, ruleCount: config.rules.length },
+      remoteAddress: request.ip,
+    });
+
+    return config;
+  });
 
   // --- Worker onboarding (§9.7 extended) -----------------------------------
 
