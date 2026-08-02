@@ -173,7 +173,17 @@ export class ControlPlaneSession {
     const stream = this.#client.session(metadata);
     this.#stream = stream;
 
+    // Every listener below checks this before acting. A reconnect can replace
+    // `this.#stream` with a new, live stream while this one — now abandoned —
+    // still has queued events to deliver; grpc-js does not guarantee 'error'
+    // and 'end' both land before a caller reacts to the first one. Without
+    // this check, a stale stream's late event tears down the session that
+    // superseded it: #handleDisconnect nulls `this.#stream` and closes
+    // `this.#client`, which by then belong to the *new*, healthy connection.
+    const isCurrent = (): boolean => this.#stream === stream;
+
     stream.on('data', (message: ServerMessage) => {
+      if (!isCurrent()) return;
       const msg = message.msg;
       if (!msg) return;
 
@@ -247,10 +257,12 @@ export class ControlPlaneSession {
     });
 
     stream.on('error', (err: Error) => {
+      if (!isCurrent()) return;
       this.#handleDisconnect(`stream error: ${err.message}`);
     });
 
     stream.on('end', () => {
+      if (!isCurrent()) return;
       this.#handleDisconnect('server closed the stream');
     });
 

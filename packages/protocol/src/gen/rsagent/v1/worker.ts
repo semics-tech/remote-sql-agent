@@ -154,8 +154,14 @@ export interface JobDefinitionBlob {
   dateModified?: Timestamp | undefined;
 }
 
+/**
+ * Named, not job_uuid-style: unlike a job, msdb never assigns a schedule a
+ * GUID — sysschedules.schedule_id is a plain int, local to one instance. The
+ * schedule's name is the only identity the worker and the definition here
+ * agree on, so it is the identity used throughout this command family.
+ */
 export interface ScheduleBlob {
-  scheduleUuid: string;
+  scheduleName: string;
   canonicalJson: string;
   definitionHash: string;
 }
@@ -400,13 +406,13 @@ export interface DeleteJob {
 }
 
 export interface UpsertSchedule {
-  scheduleUuid: string;
+  scheduleName: string;
   canonicalJson: string;
   baseDefinitionHash: string;
 }
 
 export interface DeleteSchedule {
-  scheduleUuid: string;
+  scheduleName: string;
   baseDefinitionHash: string;
 }
 
@@ -1618,13 +1624,13 @@ export const JobDefinitionBlob: MessageFns<JobDefinitionBlob> = {
 };
 
 function createBaseScheduleBlob(): ScheduleBlob {
-  return { scheduleUuid: "", canonicalJson: "", definitionHash: "" };
+  return { scheduleName: "", canonicalJson: "", definitionHash: "" };
 }
 
 export const ScheduleBlob: MessageFns<ScheduleBlob> = {
   encode(message: ScheduleBlob, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.scheduleUuid !== "") {
-      writer.uint32(10).string(message.scheduleUuid);
+    if (message.scheduleName !== "") {
+      writer.uint32(10).string(message.scheduleName);
     }
     if (message.canonicalJson !== "") {
       writer.uint32(18).string(message.canonicalJson);
@@ -1647,7 +1653,7 @@ export const ScheduleBlob: MessageFns<ScheduleBlob> = {
             break;
           }
 
-          message.scheduleUuid = reader.string();
+          message.scheduleName = reader.string();
           continue;
         }
         case 2: {
@@ -1677,10 +1683,10 @@ export const ScheduleBlob: MessageFns<ScheduleBlob> = {
 
   fromJSON(object: any): ScheduleBlob {
     return {
-      scheduleUuid: isSet(object.scheduleUuid)
-        ? globalThis.String(object.scheduleUuid)
-        : isSet(object.schedule_uuid)
-        ? globalThis.String(object.schedule_uuid)
+      scheduleName: isSet(object.scheduleName)
+        ? globalThis.String(object.scheduleName)
+        : isSet(object.schedule_name)
+        ? globalThis.String(object.schedule_name)
         : "",
       canonicalJson: isSet(object.canonicalJson)
         ? globalThis.String(object.canonicalJson)
@@ -1697,8 +1703,8 @@ export const ScheduleBlob: MessageFns<ScheduleBlob> = {
 
   toJSON(message: ScheduleBlob): unknown {
     const obj: any = {};
-    if (message.scheduleUuid !== "") {
-      obj.scheduleUuid = message.scheduleUuid;
+    if (message.scheduleName !== "") {
+      obj.scheduleName = message.scheduleName;
     }
     if (message.canonicalJson !== "") {
       obj.canonicalJson = message.canonicalJson;
@@ -1714,7 +1720,7 @@ export const ScheduleBlob: MessageFns<ScheduleBlob> = {
   },
   fromPartial<I extends Exact<DeepPartial<ScheduleBlob>, I>>(object: I): ScheduleBlob {
     const message = createBaseScheduleBlob();
-    message.scheduleUuid = object.scheduleUuid ?? "";
+    message.scheduleName = object.scheduleName ?? "";
     message.canonicalJson = object.canonicalJson ?? "";
     message.definitionHash = object.definitionHash ?? "";
     return message;
@@ -4907,13 +4913,13 @@ export const DeleteJob: MessageFns<DeleteJob> = {
 };
 
 function createBaseUpsertSchedule(): UpsertSchedule {
-  return { scheduleUuid: "", canonicalJson: "", baseDefinitionHash: "" };
+  return { scheduleName: "", canonicalJson: "", baseDefinitionHash: "" };
 }
 
 export const UpsertSchedule: MessageFns<UpsertSchedule> = {
   encode(message: UpsertSchedule, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.scheduleUuid !== "") {
-      writer.uint32(10).string(message.scheduleUuid);
+    if (message.scheduleName !== "") {
+      writer.uint32(10).string(message.scheduleName);
     }
     if (message.canonicalJson !== "") {
       writer.uint32(18).string(message.canonicalJson);
@@ -4936,7 +4942,7 @@ export const UpsertSchedule: MessageFns<UpsertSchedule> = {
             break;
           }
 
-          message.scheduleUuid = reader.string();
+          message.scheduleName = reader.string();
           continue;
         }
         case 2: {
@@ -4966,10 +4972,10 @@ export const UpsertSchedule: MessageFns<UpsertSchedule> = {
 
   fromJSON(object: any): UpsertSchedule {
     return {
-      scheduleUuid: isSet(object.scheduleUuid)
-        ? globalThis.String(object.scheduleUuid)
-        : isSet(object.schedule_uuid)
-        ? globalThis.String(object.schedule_uuid)
+      scheduleName: isSet(object.scheduleName)
+        ? globalThis.String(object.scheduleName)
+        : isSet(object.schedule_name)
+        ? globalThis.String(object.schedule_name)
         : "",
       canonicalJson: isSet(object.canonicalJson)
         ? globalThis.String(object.canonicalJson)
@@ -4986,8 +4992,8 @@ export const UpsertSchedule: MessageFns<UpsertSchedule> = {
 
   toJSON(message: UpsertSchedule): unknown {
     const obj: any = {};
-    if (message.scheduleUuid !== "") {
-      obj.scheduleUuid = message.scheduleUuid;
+    if (message.scheduleName !== "") {
+      obj.scheduleName = message.scheduleName;
     }
     if (message.canonicalJson !== "") {
       obj.canonicalJson = message.canonicalJson;
@@ -5003,7 +5009,7 @@ export const UpsertSchedule: MessageFns<UpsertSchedule> = {
   },
   fromPartial<I extends Exact<DeepPartial<UpsertSchedule>, I>>(object: I): UpsertSchedule {
     const message = createBaseUpsertSchedule();
-    message.scheduleUuid = object.scheduleUuid ?? "";
+    message.scheduleName = object.scheduleName ?? "";
     message.canonicalJson = object.canonicalJson ?? "";
     message.baseDefinitionHash = object.baseDefinitionHash ?? "";
     return message;
@@ -5011,13 +5017,13 @@ export const UpsertSchedule: MessageFns<UpsertSchedule> = {
 };
 
 function createBaseDeleteSchedule(): DeleteSchedule {
-  return { scheduleUuid: "", baseDefinitionHash: "" };
+  return { scheduleName: "", baseDefinitionHash: "" };
 }
 
 export const DeleteSchedule: MessageFns<DeleteSchedule> = {
   encode(message: DeleteSchedule, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.scheduleUuid !== "") {
-      writer.uint32(10).string(message.scheduleUuid);
+    if (message.scheduleName !== "") {
+      writer.uint32(10).string(message.scheduleName);
     }
     if (message.baseDefinitionHash !== "") {
       writer.uint32(18).string(message.baseDefinitionHash);
@@ -5037,7 +5043,7 @@ export const DeleteSchedule: MessageFns<DeleteSchedule> = {
             break;
           }
 
-          message.scheduleUuid = reader.string();
+          message.scheduleName = reader.string();
           continue;
         }
         case 2: {
@@ -5059,10 +5065,10 @@ export const DeleteSchedule: MessageFns<DeleteSchedule> = {
 
   fromJSON(object: any): DeleteSchedule {
     return {
-      scheduleUuid: isSet(object.scheduleUuid)
-        ? globalThis.String(object.scheduleUuid)
-        : isSet(object.schedule_uuid)
-        ? globalThis.String(object.schedule_uuid)
+      scheduleName: isSet(object.scheduleName)
+        ? globalThis.String(object.scheduleName)
+        : isSet(object.schedule_name)
+        ? globalThis.String(object.schedule_name)
         : "",
       baseDefinitionHash: isSet(object.baseDefinitionHash)
         ? globalThis.String(object.baseDefinitionHash)
@@ -5074,8 +5080,8 @@ export const DeleteSchedule: MessageFns<DeleteSchedule> = {
 
   toJSON(message: DeleteSchedule): unknown {
     const obj: any = {};
-    if (message.scheduleUuid !== "") {
-      obj.scheduleUuid = message.scheduleUuid;
+    if (message.scheduleName !== "") {
+      obj.scheduleName = message.scheduleName;
     }
     if (message.baseDefinitionHash !== "") {
       obj.baseDefinitionHash = message.baseDefinitionHash;
@@ -5088,7 +5094,7 @@ export const DeleteSchedule: MessageFns<DeleteSchedule> = {
   },
   fromPartial<I extends Exact<DeepPartial<DeleteSchedule>, I>>(object: I): DeleteSchedule {
     const message = createBaseDeleteSchedule();
-    message.scheduleUuid = object.scheduleUuid ?? "";
+    message.scheduleName = object.scheduleName ?? "";
     message.baseDefinitionHash = object.baseDefinitionHash ?? "";
     return message;
   },
