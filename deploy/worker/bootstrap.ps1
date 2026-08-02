@@ -38,6 +38,17 @@ function Install-RsAgentWorker {
         [ValidateSet('readOnly', 'operate', 'schedule', 'full')]
         [string] $MaxCapability = 'readOnly',
 
+        # How this worker proves who it is. Must match the mode the enrolment
+        # token was minted for, chosen in the dashboard when generating it.
+        #   mtls  — client certificate, renewed automatically at half its life
+        #   entra — Azure managed identity; no credential stored on this host
+        #   token — API key; a bearer secret, and the weakest of the three
+        [ValidateSet('mtls', 'entra', 'token')]
+        [string] $AuthMode = 'mtls',
+
+        # Application ID URI of the control plane. Required with -AuthMode entra.
+        [string] $EntraAudience = '',
+
         # Where to fetch the package from. Defaults to the control plane's
         # dashboard origin, derived from -ControlPlane.
         [string] $PackageUrl = '',
@@ -129,8 +140,10 @@ rather than falling back to http.
             EnrolmentToken = $Token
             MaxCapability  = $MaxCapability
             InstallDir     = $InstallDir
+            AuthMode       = $AuthMode
         }
         if ($CaCertPath) { $arguments['CaCertPath'] = $CaCertPath }
+        if ($EntraAudience) { $arguments['EntraAudience'] = $EntraAudience }
 
         & $installer.FullName @arguments
 

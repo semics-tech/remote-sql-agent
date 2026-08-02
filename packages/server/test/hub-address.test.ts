@@ -89,6 +89,7 @@ describe('installCommands', () => {
     // Hub and dashboard on the same host, dashboard on 443: exactly what
     // bootstrap.sh and bootstrap.ps1 assume, so saying it again is noise.
     const commands = installCommands({
+        credentialMode: 'mtls',
       token,
       hostName: 'SQL01',
       hubAddress: 'rsagent.example.com:8443',
@@ -103,6 +104,7 @@ describe('installCommands', () => {
     // The scripts would strip the port off --control-plane and fetch from
     // https://hub.example.com/downloads/..., which serves no packages.
     const commands = installCommands({
+        credentialMode: 'mtls',
       token,
       hostName: 'SQL01',
       hubAddress: 'hub.example.com:8443',
@@ -118,6 +120,7 @@ describe('installCommands', () => {
 
   it('spells out the package URL when the dashboard is not on 443', () => {
     const commands = installCommands({
+        credentialMode: 'mtls',
       token,
       hostName: 'SQL01',
       hubAddress: 'rsagent.example.com:8443',
@@ -132,6 +135,7 @@ describe('installCommands', () => {
     // The scripts hardcode https:// when they guess, so a lab running over
     // http would otherwise be sent to a URL that does not answer.
     const commands = installCommands({
+        credentialMode: 'mtls',
       token,
       hostName: 'SQL01',
       hubAddress: 'rsagent.example.com:8443',
@@ -142,6 +146,7 @@ describe('installCommands', () => {
 
   it('treats an explicit :443 as the default port', () => {
     const commands = installCommands({
+        credentialMode: 'mtls',
       token,
       hostName: 'SQL01',
       hubAddress: 'rsagent.example.com:8443',
@@ -152,6 +157,7 @@ describe('installCommands', () => {
 
   it('does not leave a trailing slash in the URLs it builds', () => {
     const commands = installCommands({
+        credentialMode: 'mtls',
       token,
       hostName: 'SQL01',
       hubAddress: 'hub.example.com:8443',
