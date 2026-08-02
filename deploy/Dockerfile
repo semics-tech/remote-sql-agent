@@ -58,7 +58,20 @@ RUN pnpm --filter @remote-sql-agent/worker bundle \
 # Prune to production dependencies for the runtime stage.
 # --legacy because the workspace does not use injected dependencies; without it
 # pnpm refuses rather than guessing.
-RUN pnpm --filter @remote-sql-agent/server --prod --legacy deploy /prod/server
+#
+# --config.minimum-release-age=0 because --legacy deploy re-resolves every
+# package it touches straight from the registry rather than reproducing the
+# `pnpm install --frozen-lockfile` a few lines up — it does not consult that
+# install at all. That makes pnpm-workspace.yaml's minimumReleaseAge check run
+# again here, against the wall clock at *build* time rather than once at
+# lockfile-generation time, for packages that already cleared it when the
+# lockfile was written. It broke a real build this way: jose, already pinned,
+# was rejected as "too new" on a rebuild days after the lockfile that pinned
+# it was committed, for a reason with nothing to do with the change being
+# shipped. The install above is what actually gates a newly-published,
+# potentially-malicious dependency from ever entering the lockfile; this step
+# reproduces an already-vetted one and does not need to re-run that gate.
+RUN pnpm --filter @remote-sql-agent/server --prod --legacy --config.minimum-release-age=0 deploy /prod/server
 
 
 FROM node:24-bookworm-slim AS runtime

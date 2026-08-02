@@ -16,6 +16,12 @@ packages:
 # An urgent legitimate release (a same-day CVE fix) can be pulled in early with
 # minimumReleaseAgeExclude: ['pkg-name@x.y.z'] — see
 # https://pnpm.io/settings/dependency-resolution#minimumreleaseageexclude.
+#
+# deploy/Dockerfile's `pnpm deploy --legacy` step (building the trimmed
+# production server) is deliberately exempted from this via
+# --config.minimum-release-age=0 on that one command — see the comment there
+# for why re-checking age at every image build is actively wrong, not merely
+# unnecessary.
 minimumReleaseAge: 4320
 
 # pnpm 10 blocks lifecycle scripts by default. These are the only packages that
