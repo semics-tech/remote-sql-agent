@@ -59,6 +59,28 @@ Write-Host "Installing Remote SQL Agent worker to $InstallDir"
 # --- Files --------------------------------------------------------------------
 
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+
+# worker.yaml can hold a SQL password (-SqlAuth) and run\worker.key is the
+# private key every SQL credential from the control plane is encrypted to —
+# capturing either is a full break of the "control plane never holds a usable
+# credential" invariant. $InstallDir defaults under Program Files, which
+# inherits a Users: Read & Execute ACE, so lock it to Administrators and
+# SYSTEM, with inheritance, before anything is created underneath it. The
+# per-file Set-Acl calls below still run as defense in depth, but they used
+# to be the *only* protection, applied after Set-Content/enrol had already
+# written the file into a Users-readable directory — a window any local,
+# non-administrator account could read from.
+$installAcl = Get-Acl $InstallDir
+$installAcl.SetAccessRuleProtection($true, $false)
+foreach ($principal in @('BUILTIN\Administrators', 'NT AUTHORITY\SYSTEM')) {
+    $installAcl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule(
+        $principal, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
+}
+Set-Acl -Path $InstallDir -AclObject $installAcl
+Write-Host "Restricted $InstallDir to Administrators and SYSTEM"
+
+# Created after the parent ACL above so it inherits the restriction rather
+# than the Program Files default.
 New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir 'run') | Out-Null
 
 foreach ($item in @('rsagent-worker.mjs', 'rsagent-worker.exe', 'rsagent-worker.xml', 'node')) {
@@ -150,8 +172,9 @@ $configPath = Join-Path $InstallDir 'worker.yaml'
 Set-Content -Path $configPath -Value $config -Encoding UTF8
 $sqlPassword = $null   # do not leave it in the session
 
-# The config may contain a SQL password: restrict it to Administrators and
-# SYSTEM before anything else runs.
+# Belt and suspenders: $InstallDir's ACL already restricts this file to
+# Administrators and SYSTEM by inheritance (see above), but state that
+# explicitly on the file too rather than relying on inheritance alone.
 $acl = Get-Acl $configPath
 $acl.SetAccessRuleProtection($true, $false)
 foreach ($principal in @('BUILTIN\Administrators', 'NT AUTHORITY\SYSTEM')) {
@@ -170,7 +193,8 @@ if ($LASTEXITCODE -ne 0) {
     throw "Enrolment failed. The token may have expired (they last one hour), already been used, or been issued for a different host name than $env:COMPUTERNAME."
 }
 
-# Same treatment for the issued key.
+# Same explicit belt-and-suspenders treatment for the issued key — it also
+# inherited the restriction when enrol created it inside run\.
 $keyPath = Join-Path $InstallDir 'run\worker.key'
 if (Test-Path $keyPath) {
     $keyAcl = Get-Acl $keyPath
