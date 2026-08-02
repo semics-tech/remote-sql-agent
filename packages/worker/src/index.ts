@@ -11,6 +11,7 @@ import { Outbox } from './outbox.js';
 import { type PollIntervals } from './instance-monitor.js';
 import { MonitorSet } from './monitor-set.js';
 import { loadOrCreateCredentialKey } from './credential-key.js';
+import { CertificateRenewer } from './cert-renewal.js';
 import { ControlPlaneSession } from './session.js';
 import { handleCommand } from './command-handler.js';
 import { WORKER_VERSION } from './version.js';
@@ -136,6 +137,13 @@ async function main(): Promise<void> {
     drainOutboxOnce(outbox, session, logger);
   };
 
+  // Keeps the mTLS client certificate current. A no-op in token and entra
+  // modes, which have nothing with an expiry to chase.
+  const certificateRenewer = new CertificateRenewer(config, logger, {
+    send: (message) => session?.send(message) ?? false,
+    reconnect: (reason) => session?.reconnect(reason),
+  });
+
   session = new ControlPlaneSession(
     config,
     logger,
@@ -200,12 +208,19 @@ async function main(): Promise<void> {
         }, intervals.heartbeatSeconds * 1000);
         heartbeatTimer.unref();
 
+        certificateRenewer.onSessionReady();
+
         logger.info({ capabilities }, 'Worker ready');
       },
 
       onMessage: (message) => {
         const msg = message.msg;
         if (!msg) return;
+
+        if (msg.$case === 'certificateRenewal') {
+          certificateRenewer.onResponse(msg.certificateRenewal);
+          return;
+        }
 
         if (msg.$case === 'instanceConfigs') {
           // Serialised behind the same queue as commands: reconciling while a
@@ -327,6 +342,7 @@ async function main(): Promise<void> {
           clearInterval(heartbeatTimer);
           heartbeatTimer = null;
         }
+        certificateRenewer.onDisconnect();
       },
     },
     () => ({
@@ -354,6 +370,7 @@ async function main(): Promise<void> {
     shuttingDown = true;
     logger.info({ signal }, 'Shutting down worker');
     if (heartbeatTimer) clearInterval(heartbeatTimer);
+    certificateRenewer.stop();
     session?.stop();
     await monitors.closeAll();
     outbox.close();

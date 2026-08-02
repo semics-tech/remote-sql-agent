@@ -9,6 +9,7 @@ import {
   type WorkerMessage,
   type Snapshot,
   type JobDefinitionBlob,
+  type CertificateRenewalRequest,
   effectiveCapabilities,
   isMaxCapabilityTier,
   hashCanonical,
@@ -51,6 +52,7 @@ import {
   type AuthenticatedWorker,
   type WorkerAuthenticator,
 } from '../worker-auth/authenticate.js';
+import { RenewalError, renewWorkerCertificate } from '../worker-auth/renewal.js';
 
 const SERVER_VERSION = '0.1.0';
 
@@ -499,6 +501,15 @@ async function handleSession(
           break;
         }
 
+        case 'certificateRenewal': {
+          await handleCertificateRenewal(deps, authenticated, msg.certificateRenewal, {
+            send,
+            log,
+            remoteAddress,
+          });
+          break;
+        }
+
         case 'commandResult': {
           const result = msg.commandResult;
           if (!workerId) break;
@@ -615,6 +626,124 @@ async function handleSession(
   call.on('cancelled', () => {
     teardown('cancelled');
   });
+}
+
+/**
+ * Serve a worker's request for a fresh client certificate.
+ *
+ * Split out of the session's message switch so the refusal path can be tested
+ * without standing up a gRPC stream: "an Entra-mode worker cannot talk itself
+ * into an mTLS credential" is a claim worth a test, not a code reading.
+ */
+export async function handleCertificateRenewal(
+  deps: Pick<HubDeps, 'db' | 'config' | 'events'>,
+  authenticated: AuthenticatedWorker,
+  request: CertificateRenewalRequest,
+  ctx: { send: (message: ServerMessage) => void; log: Logger; remoteAddress: string },
+): Promise<void> {
+  const { db, config } = deps;
+  const { send, log, remoteAddress } = ctx;
+
+  const refuse = (detail: string): void => {
+    // In-band, and the session stays up. The worker still holds a valid
+    // certificate at this point — it renews at half-life — so the right outcome
+    // is that it retries later, not that it loses the link over a failure to
+    // sign that may well be transient.
+    send({
+      msg: {
+        $case: 'certificateRenewal',
+        certificateRenewal: {
+          success: false,
+          errorDetail: detail,
+          certificatePem: '',
+          caCertificatePem: '',
+        },
+      },
+    });
+  };
+
+  // Refused for anything but mTLS. A token- or Entra-mode worker asking for a
+  // certificate would be issued a credential its own configuration has no way to
+  // present, and issuing one anyway would mint an mTLS identity for a worker
+  // whose enrolment never established it holds a key.
+  if (authenticated.mode !== 'mtls') {
+    log.warn(
+      { hostName: authenticated.hostName, mode: authenticated.mode },
+      'Refusing a certificate renewal from a worker that did not authenticate with mTLS',
+    );
+    await writeAudit(db, {
+      actorType: 'worker',
+      actor: authenticated.hostName,
+      action: 'worker.certificate.renewal_refused',
+      target: authenticated.workerId,
+      detail: { mode: authenticated.mode },
+      remoteAddress,
+    }).catch(() => undefined);
+    refuse(
+      `This worker authenticated with "${authenticated.mode}"; certificate renewal applies to mTLS workers only.`,
+    );
+    return;
+  }
+
+  try {
+    const renewed = await renewWorkerCertificate(db, config, {
+      workerId: authenticated.workerId,
+      hostName: authenticated.hostName,
+      currentCredentialId: authenticated.credentialId,
+      csrPem: request.csrPem,
+    });
+
+    await writeAudit(db, {
+      actorType: 'worker',
+      actor: authenticated.hostName,
+      action: 'worker.certificate.renewed',
+      target: authenticated.workerId,
+      detail: {
+        fingerprint: renewed.fingerprint,
+        notAfter: renewed.notAfter.toISOString(),
+        supersededCredentials: renewed.supersededCount,
+      },
+      remoteAddress,
+    });
+
+    log.info(
+      {
+        hostName: authenticated.hostName,
+        notAfter: renewed.notAfter,
+        superseded: renewed.supersededCount,
+      },
+      'Issued a renewed client certificate',
+    );
+
+    send({
+      msg: {
+        $case: 'certificateRenewal',
+        certificateRenewal: {
+          success: true,
+          errorDetail: '',
+          certificatePem: renewed.certificatePem,
+          caCertificatePem: renewed.caCertificatePem,
+          notAfter: toTimestamp(renewed.notAfter),
+        },
+      },
+    });
+    deps.events.publish({ type: 'worker' });
+  } catch (err) {
+    const code = err instanceof RenewalError ? err.code : 'Internal';
+    const message = err instanceof Error ? err.message : 'Certificate renewal failed';
+    log.error({ err, hostName: authenticated.hostName, code }, 'Certificate renewal failed');
+
+    await writeAudit(db, {
+      actorType: 'worker',
+      actor: authenticated.hostName,
+      action: 'worker.certificate.renewal_failed',
+      target: authenticated.workerId,
+      detail: { code, message },
+      remoteAddress,
+    }).catch(() => undefined);
+
+    refuse(message);
+  }
 }
 
 async function handleSnapshotChunk(

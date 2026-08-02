@@ -19,6 +19,7 @@ The build in this repository implements milestones M0–M3 of the architecture s
 | Parameterised SQL everywhere | §5.2 | **Implemented**, enforced by review and partially by an eslint rule — see "SQL injection" below for what the rule does and does not catch. |
 | Worker authentication | §6.2 | **Implemented**: enrolment tokens plus API key, mTLS, or Entra workload identity. |
 | Embedded CA, cert issuance/revocation | §6.2 | **Implemented** for mTLS mode. Revocation checked per connection. |
+| Automatic certificate renewal | §6.2 | **Implemented**: workers renew at half lifetime over the authenticated session, superseded certificates are revoked, and each renewal is audited. A worker offline past its expiry must be re-enrolled. |
 | TLS on the worker hub | §6.2 | **Implemented**; the control plane refuses to start without it unless explicitly overridden. |
 | Dashboard authentication | §6.5 | **Implemented**: local argon2id accounts and/or Entra OIDC with app-role mapping. |
 | Server-side RBAC on every route | §6.5 | **Implemented.** Every route declares a permission; there is no unguarded data route. |

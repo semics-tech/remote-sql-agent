@@ -120,6 +120,26 @@ export class ControlPlaneSession {
     return this.#backpressured;
   }
 
+  /**
+   * Tear the current session down and dial again, immediately.
+   *
+   * For credential changes that only take effect at the next TLS handshake — a
+   * renewed client certificate is the one that exists. Resets the backoff first:
+   * this is a deliberate reconnect onto a credential we expect to work, not a
+   * retry after a failure, and inheriting the failure delay would idle a healthy
+   * worker for up to a minute.
+   */
+  reconnect(reason: string): void {
+    if (this.#stopped) return;
+    this.#backoff.reset();
+    // Half-close first so the hub sees an orderly end and runs its teardown,
+    // rather than being left to notice a channel that stopped answering. The
+    // stream's own 'end' arrives afterwards and is ignored: #handleDisconnect
+    // has already replaced #stream, which is what isCurrent() checks.
+    this.#stream?.end();
+    this.#handleDisconnect(reason);
+  }
+
   #connect(): void {
     // Every failure has to end at #scheduleReconnect. `void`-ing this promise
     // without a catch is how a worker ended up alive, touching its health file

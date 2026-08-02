@@ -35,7 +35,32 @@ export interface WorkerMessage {
     | { $case: "commandResult"; commandResult: CommandResult }
     | { $case: "heartbeat"; heartbeat: Heartbeat }
     | { $case: "instanceConfigStatus"; instanceConfigStatus: InstanceConfigStatus }
+    | { $case: "certificateRenewal"; certificateRenewal: CertificateRenewalRequest }
     | undefined;
+}
+
+/**
+ * The worker asking for a fresh client certificate, in mTLS mode, over the
+ * session its *current* certificate already authenticated.
+ *
+ * This is the renewal half of the credential lifecycle, and without it a 90-day
+ * certificate is a 90-day outage timer: enrolment is the only other issuance
+ * path and it needs a fresh single-use token minted by a human. Possession of a
+ * working credential is what authorises the reissue, which is the same property
+ * EST `simplereenroll` (RFC 7030) and kubelet client-certificate rotation rely
+ * on — no new bootstrap secret has to exist for a worker to stay enrolled.
+ *
+ * Deliberately *not* a separate unary RPC like Enrol: routing it through the
+ * authenticated stream means there is no second code path that has to work out
+ * who is calling, and the hub's authenticator keeps its single answer.
+ */
+export interface CertificateRenewalRequest {
+  /**
+   * Worker-generated, over a freshly generated keypair. As at enrolment, the
+   * private key never leaves the host and the control plane reads nothing from
+   * this beyond the public key and the self-signature.
+   */
+  csrPem: string;
 }
 
 export interface Hello {
@@ -270,7 +295,32 @@ export interface ServerMessage {
     | { $case: "command"; command: Command }
     | { $case: "config"; config: ConfigUpdate }
     | { $case: "instanceConfigs"; instanceConfigs: InstanceConfigSet }
+    | { $case: "certificateRenewal"; certificateRenewal: CertificateRenewalResponse }
     | undefined;
+}
+
+/**
+ * The outcome of a CertificateRenewalRequest.
+ *
+ * A failure is reported in-band rather than by ending the stream: the worker's
+ * existing certificate is still valid at this point, so a renewal that cannot be
+ * served is a reason to retry later, not a reason to lose the session.
+ */
+export interface CertificateRenewalResponse {
+  success: boolean;
+  /**
+   * Populated on failure, and written to the worker's log verbatim. Renewal
+   * failures are the kind of thing nobody looks at until the certificate has
+   * already expired, so the reason has to survive to that log.
+   */
+  errorDetail: string;
+  certificatePem: string;
+  /**
+   * Re-sent on every renewal so a control plane whose CA has been replaced can
+   * hand workers the new trust anchor without a re-enrolment.
+   */
+  caCertificatePem: string;
+  notAfter?: Timestamp | undefined;
 }
 
 /**
@@ -484,6 +534,9 @@ export const WorkerMessage: MessageFns<WorkerMessage> = {
       case "instanceConfigStatus":
         InstanceConfigStatus.encode(message.msg.instanceConfigStatus, writer.uint32(74).fork()).join();
         break;
+      case "certificateRenewal":
+        CertificateRenewalRequest.encode(message.msg.certificateRenewal, writer.uint32(82).fork()).join();
+        break;
     }
     return writer;
   },
@@ -570,6 +623,17 @@ export const WorkerMessage: MessageFns<WorkerMessage> = {
           };
           continue;
         }
+        case 10: {
+          if (tag !== 82) {
+            break;
+          }
+
+          message.msg = {
+            $case: "certificateRenewal",
+            certificateRenewal: CertificateRenewalRequest.decode(reader, reader.uint32()),
+          };
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -611,6 +675,16 @@ export const WorkerMessage: MessageFns<WorkerMessage> = {
           $case: "instanceConfigStatus",
           instanceConfigStatus: InstanceConfigStatus.fromJSON(object.instance_config_status),
         }
+        : isSet(object.certificateRenewal)
+        ? {
+          $case: "certificateRenewal",
+          certificateRenewal: CertificateRenewalRequest.fromJSON(object.certificateRenewal),
+        }
+        : isSet(object.certificate_renewal)
+        ? {
+          $case: "certificateRenewal",
+          certificateRenewal: CertificateRenewalRequest.fromJSON(object.certificate_renewal),
+        }
         : undefined,
     };
   },
@@ -635,6 +709,8 @@ export const WorkerMessage: MessageFns<WorkerMessage> = {
       obj.heartbeat = Heartbeat.toJSON(message.msg.heartbeat);
     } else if (message.msg?.$case === "instanceConfigStatus") {
       obj.instanceConfigStatus = InstanceConfigStatus.toJSON(message.msg.instanceConfigStatus);
+    } else if (message.msg?.$case === "certificateRenewal") {
+      obj.certificateRenewal = CertificateRenewalRequest.toJSON(message.msg.certificateRenewal);
     }
     return obj;
   },
@@ -702,7 +778,80 @@ export const WorkerMessage: MessageFns<WorkerMessage> = {
         }
         break;
       }
+      case "certificateRenewal": {
+        if (object.msg?.certificateRenewal !== undefined && object.msg?.certificateRenewal !== null) {
+          message.msg = {
+            $case: "certificateRenewal",
+            certificateRenewal: CertificateRenewalRequest.fromPartial(object.msg.certificateRenewal),
+          };
+        }
+        break;
+      }
     }
+    return message;
+  },
+};
+
+function createBaseCertificateRenewalRequest(): CertificateRenewalRequest {
+  return { csrPem: "" };
+}
+
+export const CertificateRenewalRequest: MessageFns<CertificateRenewalRequest> = {
+  encode(message: CertificateRenewalRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.csrPem !== "") {
+      writer.uint32(10).string(message.csrPem);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): CertificateRenewalRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseCertificateRenewalRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.csrPem = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): CertificateRenewalRequest {
+    return {
+      csrPem: isSet(object.csrPem)
+        ? globalThis.String(object.csrPem)
+        : isSet(object.csr_pem)
+        ? globalThis.String(object.csr_pem)
+        : "",
+    };
+  },
+
+  toJSON(message: CertificateRenewalRequest): unknown {
+    const obj: any = {};
+    if (message.csrPem !== "") {
+      obj.csrPem = message.csrPem;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<CertificateRenewalRequest>, I>>(base?: I): CertificateRenewalRequest {
+    return CertificateRenewalRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<CertificateRenewalRequest>, I>>(object: I): CertificateRenewalRequest {
+    const message = createBaseCertificateRenewalRequest();
+    message.csrPem = object.csrPem ?? "";
     return message;
   },
 };
@@ -3252,6 +3401,9 @@ export const ServerMessage: MessageFns<ServerMessage> = {
       case "instanceConfigs":
         InstanceConfigSet.encode(message.msg.instanceConfigs, writer.uint32(34).fork()).join();
         break;
+      case "certificateRenewal":
+        CertificateRenewalResponse.encode(message.msg.certificateRenewal, writer.uint32(42).fork()).join();
+        break;
     }
     return writer;
   },
@@ -3298,6 +3450,17 @@ export const ServerMessage: MessageFns<ServerMessage> = {
           };
           continue;
         }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.msg = {
+            $case: "certificateRenewal",
+            certificateRenewal: CertificateRenewalResponse.decode(reader, reader.uint32()),
+          };
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -3321,6 +3484,16 @@ export const ServerMessage: MessageFns<ServerMessage> = {
         ? { $case: "instanceConfigs", instanceConfigs: InstanceConfigSet.fromJSON(object.instanceConfigs) }
         : isSet(object.instance_configs)
         ? { $case: "instanceConfigs", instanceConfigs: InstanceConfigSet.fromJSON(object.instance_configs) }
+        : isSet(object.certificateRenewal)
+        ? {
+          $case: "certificateRenewal",
+          certificateRenewal: CertificateRenewalResponse.fromJSON(object.certificateRenewal),
+        }
+        : isSet(object.certificate_renewal)
+        ? {
+          $case: "certificateRenewal",
+          certificateRenewal: CertificateRenewalResponse.fromJSON(object.certificate_renewal),
+        }
         : undefined,
     };
   },
@@ -3335,6 +3508,8 @@ export const ServerMessage: MessageFns<ServerMessage> = {
       obj.config = ConfigUpdate.toJSON(message.msg.config);
     } else if (message.msg?.$case === "instanceConfigs") {
       obj.instanceConfigs = InstanceConfigSet.toJSON(message.msg.instanceConfigs);
+    } else if (message.msg?.$case === "certificateRenewal") {
+      obj.certificateRenewal = CertificateRenewalResponse.toJSON(message.msg.certificateRenewal);
     }
     return obj;
   },
@@ -3372,7 +3547,158 @@ export const ServerMessage: MessageFns<ServerMessage> = {
         }
         break;
       }
+      case "certificateRenewal": {
+        if (object.msg?.certificateRenewal !== undefined && object.msg?.certificateRenewal !== null) {
+          message.msg = {
+            $case: "certificateRenewal",
+            certificateRenewal: CertificateRenewalResponse.fromPartial(object.msg.certificateRenewal),
+          };
+        }
+        break;
+      }
     }
+    return message;
+  },
+};
+
+function createBaseCertificateRenewalResponse(): CertificateRenewalResponse {
+  return { success: false, errorDetail: "", certificatePem: "", caCertificatePem: "", notAfter: undefined };
+}
+
+export const CertificateRenewalResponse: MessageFns<CertificateRenewalResponse> = {
+  encode(message: CertificateRenewalResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.success !== false) {
+      writer.uint32(8).bool(message.success);
+    }
+    if (message.errorDetail !== "") {
+      writer.uint32(18).string(message.errorDetail);
+    }
+    if (message.certificatePem !== "") {
+      writer.uint32(26).string(message.certificatePem);
+    }
+    if (message.caCertificatePem !== "") {
+      writer.uint32(34).string(message.caCertificatePem);
+    }
+    if (message.notAfter !== undefined) {
+      Timestamp.encode(message.notAfter, writer.uint32(42).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): CertificateRenewalResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseCertificateRenewalResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.success = reader.bool();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.errorDetail = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.certificatePem = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.caCertificatePem = reader.string();
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.notAfter = Timestamp.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): CertificateRenewalResponse {
+    return {
+      success: isSet(object.success) ? globalThis.Boolean(object.success) : false,
+      errorDetail: isSet(object.errorDetail)
+        ? globalThis.String(object.errorDetail)
+        : isSet(object.error_detail)
+        ? globalThis.String(object.error_detail)
+        : "",
+      certificatePem: isSet(object.certificatePem)
+        ? globalThis.String(object.certificatePem)
+        : isSet(object.certificate_pem)
+        ? globalThis.String(object.certificate_pem)
+        : "",
+      caCertificatePem: isSet(object.caCertificatePem)
+        ? globalThis.String(object.caCertificatePem)
+        : isSet(object.ca_certificate_pem)
+        ? globalThis.String(object.ca_certificate_pem)
+        : "",
+      notAfter: isSet(object.notAfter)
+        ? fromJsonTimestamp(object.notAfter)
+        : isSet(object.not_after)
+        ? fromJsonTimestamp(object.not_after)
+        : undefined,
+    };
+  },
+
+  toJSON(message: CertificateRenewalResponse): unknown {
+    const obj: any = {};
+    if (message.success !== false) {
+      obj.success = message.success;
+    }
+    if (message.errorDetail !== "") {
+      obj.errorDetail = message.errorDetail;
+    }
+    if (message.certificatePem !== "") {
+      obj.certificatePem = message.certificatePem;
+    }
+    if (message.caCertificatePem !== "") {
+      obj.caCertificatePem = message.caCertificatePem;
+    }
+    if (message.notAfter !== undefined) {
+      obj.notAfter = fromTimestamp(message.notAfter).toISOString();
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<CertificateRenewalResponse>, I>>(base?: I): CertificateRenewalResponse {
+    return CertificateRenewalResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<CertificateRenewalResponse>, I>>(object: I): CertificateRenewalResponse {
+    const message = createBaseCertificateRenewalResponse();
+    message.success = object.success ?? false;
+    message.errorDetail = object.errorDetail ?? "";
+    message.certificatePem = object.certificatePem ?? "";
+    message.caCertificatePem = object.caCertificatePem ?? "";
+    message.notAfter = (object.notAfter !== undefined && object.notAfter !== null)
+      ? Timestamp.fromPartial(object.notAfter)
+      : undefined;
     return message;
   },
 };
