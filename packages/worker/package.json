@@ -35,7 +35,7 @@
     "node-forge": "^1.4.0",
     "pino": "^10.3.1",
     "postject": "1.0.0-alpha.6",
-    "tsx": "^4.19.2",
+    "tsx": "^4.23.11",
     "typescript": "^6.0.3",
     "vitest": "^4.1.10",
     "yaml": "^2.6.1",
