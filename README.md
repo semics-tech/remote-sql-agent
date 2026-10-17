@@ -409,6 +409,15 @@ Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Security issue
 
 ---
 
+## Running it across a large estate?
+
+If you are evaluating this for a real estate — dozens of instances, a security
+review to get through, or a need for control-plane HA, an MSI installer or a
+support commitment — [start a discussion](https://github.com/semics-tech/remote-sql-agent/discussions/new?category=general)
+and say what you need. It shapes what gets built next.
+
+---
+
 ## Licence
 
 [Apache 2.0](LICENSE). Fully open source, no open-core split.
