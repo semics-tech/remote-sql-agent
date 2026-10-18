@@ -411,4 +411,11 @@ Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Security issue
 
 ## Licence
 
-[Apache 2.0](LICENSE). Fully open source, no open-core split.
+[Apache 2.0](LICENSE). Everything in this repository is open source and stays
+Apache 2.0. We may offer optional paid support or hosted/HA options in future;
+the open-source project will not be crippled to sell them.
+
+## From the same team
+
+[semics-tech/tsqltap](https://github.com/semics-tech/tsqltap) — also from the
+team behind Remote SQL Agent.

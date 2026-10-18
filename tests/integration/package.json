@@ -8,11 +8,11 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@grpc/grpc-js": "^1.12.4",
+    "@grpc/grpc-js": "^1.14.6",
     "@remote-sql-agent/protocol": "workspace:*",
     "@remote-sql-agent/server": "workspace:*",
     "@remote-sql-agent/worker": "workspace:*",
-    "drizzle-orm": "^0.45.2",
+    "drizzle-orm": "^0.45.4",
     "mssql": "^12.7.0",
     "pino": "^10.3.1",
     "postgres": "^3.4.5"
