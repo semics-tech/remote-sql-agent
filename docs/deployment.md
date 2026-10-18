@@ -127,7 +127,7 @@ RSAGENT_VERSION=0.2.0                              # pin it
 RSAGENT_PUBLIC_URL=https://rsagent.corp.example.com
 RSAGENT_DOMAIN=rsagent.corp.example.com
 POSTGRES_PASSWORD=<40 random characters>
-RSAGENT_TRUSTED_PROXY_HOPS=1                       # Caddy is one hop
+RSAGENT_TRUSTED_PROXIES=172.30.47.10              # Caddy's fixed address
 RSAGENT_HTTP_BIND=127.0.0.1                        # only Caddy may reach 8080
 ```
 
@@ -239,16 +239,25 @@ origin over plain HTTP, across the public internet. Keeping the `tls` profile
 behind Cloudflare gives you a valid origin certificate and end-to-end
 encryption.
 
-**`RSAGENT_TRUSTED_PROXY_HOPS` counts Cloudflare too:**
+**`RSAGENT_TRUSTED_PROXIES` must include Cloudflare too:**
 
 | Chain | Value |
 |---|---|
-| Cloudflare → Caddy → server | `2` |
-| Cloudflare → server directly | `1` |
+| Cloudflare → Caddy → server | Caddy's address, plus [Cloudflare's IP ranges](https://www.cloudflare.com/ips/) |
+| Cloudflare → server directly | Cloudflare's IP ranges |
 
-Cloudflare sets `X-Forwarded-For` to the real client; Caddy then appends
-Cloudflare's edge address. Count both or every audit row records an edge IP
-instead of the person.
+The server walks `X-Forwarded-For` from the right and stops at the first
+address that is not on the list. Leave Cloudflare off and every audit row
+records an edge IP instead of the person.
+
+With Caddy in the chain, Caddy also has to pass Cloudflare's header through:
+by default it replaces an incoming `X-Forwarded-For` with the address it saw,
+which is Cloudflare's edge. Add Cloudflare's ranges to Caddy's
+[`trusted_proxies`](https://caddyserver.com/docs/caddyfile/options#trusted-proxies)
+global option as well.
+
+> **Not yet verified end to end.** The Cloudflare chain has not been run against
+> a live deployment; check one audit row after setting it up.
 
 **Restrict 8080 to [Cloudflare's IP ranges](https://www.cloudflare.com/ips/).**
 Otherwise anyone who finds the origin address reaches the dashboard over plain
@@ -286,7 +295,8 @@ volumes: [{ name: 'tls', storageType: 'Secret',
 ```
 
 Also set `RSAGENT_HUB_ADVERTISED_ADDRESS` if the exposed port differs from 8443,
-and `RSAGENT_TRUSTED_PROXY_HOPS=1`.
+and `RSAGENT_TRUSTED_PROXIES` to the environment's infrastructure subnet, which
+is where its ingress connects from.
 
 > **Not yet verified.** Whether a custom domain CNAME'd to the app reaches a raw
 > TCP port is not something Microsoft's documentation states consistently — the
@@ -363,10 +373,12 @@ enable the `tls` profile, also set `RSAGENT_HTTP_BIND=127.0.0.1` — otherwise t
 same dashboard is still served over HTTP on a second origin where it silently
 does not work.
 
-**Set `RSAGENT_TRUSTED_PROXY_HOPS` to the true number of proxies.** Too high and
-a caller can choose their own client IP, which forges `remoteAddress` on every
-audit row and sidesteps rate limiting. 0 — the default — ignores the header
-entirely and is correct when nothing is in front. A CDN counts as a hop; see
+**List exactly your proxies in `RSAGENT_TRUSTED_PROXIES`.** Anything on the list
+can name any client IP it likes, so a non-proxy there lets a caller forge
+`remoteAddress` on every audit row and sidestep rate limiting. Empty — the
+default — ignores the header entirely and is correct when nothing is in front.
+A request that reaches the server without going through a listed proxy is
+always attributed to its own address. A CDN is a proxy too; see
 [Behind Cloudflare](#behind-cloudflare-or-any-cdn-proxy).
 
 **Never put an HTTP proxy in front of the hub.** Anything that terminates HTTP

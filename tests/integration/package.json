@@ -8,7 +8,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@grpc/grpc-js": "^1.12.4",
+    "@grpc/grpc-js": "^1.14.6",
     "@remote-sql-agent/protocol": "workspace:*",
     "@remote-sql-agent/server": "workspace:*",
     "@remote-sql-agent/worker": "workspace:*",

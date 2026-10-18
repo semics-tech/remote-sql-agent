@@ -79,8 +79,9 @@ services:
       RSAGENT_DATABASE_URL: postgres://${POSTGRES_USER:-rsagent}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-rsagent}
       RSAGENT_PUBLIC_URL: ${RSAGENT_PUBLIC_URL:?set RSAGENT_PUBLIC_URL in .env}
       RSAGENT_LOG_LEVEL: ${RSAGENT_LOG_LEVEL:-info}
-      # 0 unless something terminates TLS in front of this. See .env.example.
-      RSAGENT_TRUSTED_PROXY_HOPS: ${RSAGENT_TRUSTED_PROXY_HOPS:-0}
+      # Empty unless something terminates TLS in front of this; with the `tls`
+      # profile, Caddy's address below. See .env.example.
+      RSAGENT_TRUSTED_PROXIES: ${RSAGENT_TRUSTED_PROXIES:-}
       # Only needed when the hub is not reachable at RSAGENT_PUBLIC_URL's host
       # on 8443 — including when RSAGENT_GRPC_PORT below remaps the published
       # port, which the container never sees.
@@ -175,6 +176,13 @@ services:
     ports:
       - '80:80'
       - '443:443'
+    # A fixed address, so the server can trust exactly this container to report
+    # client IPs (RSAGENT_TRUSTED_PROXIES) and nothing else on the network —
+    # including Docker's gateway, which is where connections to a published
+    # port can appear to come from.
+    networks:
+      default:
+        ipv4_address: ${RSAGENT_CADDY_ADDRESS:-172.30.47.10}
     # Verified against this image: NET_BIND_SERVICE is the one capability
     # caddy needs beyond a default-non-root process, to bind 80/443. Everything
     # else it does is inside the two volumes above, so cap_drop: [ALL] plus
@@ -191,6 +199,14 @@ services:
       options:
         max-size: '10m'
         max-file: '3'
+
+# Pinned so Caddy's address above is predictable. Change both, and
+# RSAGENT_TRUSTED_PROXIES, if this range is already in use on the host.
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${RSAGENT_NETWORK_SUBNET:-172.30.47.0/24}
 
 volumes:
   pgdata:

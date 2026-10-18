@@ -111,9 +111,10 @@ write_files:
           echo "RSAGENT_PUBLIC_URL=https://${RSAGENT_DOMAIN}"
           echo "RSAGENT_DOMAIN=${RSAGENT_DOMAIN}"
           echo "POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"
-          # Caddy is the one proxy in front of the API. Without this the client
-          # IP on every audit row would be Caddy's own container address.
-          echo "RSAGENT_TRUSTED_PROXY_HOPS=1"
+          # Caddy is the one proxy in front of the API, at a fixed address on
+          # the Compose network. Without this the client IP on every audit row
+          # would be Caddy's own.
+          echo "RSAGENT_TRUSTED_PROXIES=172.30.47.10"
           # Reachable only through Caddy, so the dashboard is never also served
           # over plain HTTP — where the browser refuses to encrypt credentials.
           echo "RSAGENT_HTTP_BIND=127.0.0.1"
