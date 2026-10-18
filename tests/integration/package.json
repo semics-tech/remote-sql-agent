@@ -12,14 +12,14 @@
     "@remote-sql-agent/protocol": "workspace:*",
     "@remote-sql-agent/server": "workspace:*",
     "@remote-sql-agent/worker": "workspace:*",
-    "drizzle-orm": "^0.45.2",
-    "mssql": "^12.7.0",
-    "pino": "^10.3.1",
+    "drizzle-orm": "^0.45.4",
+    "mssql": "^12.7.9",
+    "pino": "^10.4.0",
     "postgres": "^3.4.5"
   },
   "devDependencies": {
     "@types/mssql": "^12.3.0",
-    "@types/node": "^24.13.3",
+    "@types/node": "^24.19.2",
     "typescript": "^6.0.3",
     "vitest": "^4.1.10"
   },
