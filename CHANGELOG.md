@@ -8,6 +8,28 @@ While at `0.x`, breaking changes may land in minor versions.
 
 ## [Unreleased]
 
+### Upgrading
+
+- **`RSAGENT_TRUSTED_PROXY_HOPS` is replaced by `RSAGENT_TRUSTED_PROXIES`**, a
+  comma-separated list of the proxy addresses or CIDR ranges allowed to set
+  `X-Forwarded-For`. The server refuses to start if the old variable is still
+  set. With the Compose `tls` profile, Caddy now has a fixed address
+  (`172.30.47.10` on a pinned `172.30.47.0/24` network); set
+  `RSAGENT_TRUSTED_PROXIES=172.30.47.10`. Fastify 5.12.2 stopped honouring a hop
+  count, because a count cannot tell a request that came through the proxy from
+  one that bypassed it. An allowlist can. See
+  [docs/deployment.md](docs/deployment.md).
+
+### Security
+
+- Raise fastify to 5.12.7, @grpc/grpc-js to 1.14.6 and nodemailer to 10.1, and
+  refresh fast-uri, shell-quote, nanoid, brace-expansion and source-map-js past
+  their high and critical advisories.
+- Verify worker CSR self-signatures with `node:crypto` instead of node-forge,
+  whose PKCS#1 v1.5 verification has an advisory with no fixed release
+  (GHSA-86w9-cpqp-85rv). Only sha256WithRSAEncryption is accepted, which is what
+  workers send.
+
 ## [0.2.0] — 2026-07-31
 
 Deployment and the write path. `0.1.1` could be installed but not really

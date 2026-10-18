@@ -45,3 +45,14 @@ onlyBuiltDependencies:
 # That is what lets deploy/Dockerfile drop python3 and build-essential. If a
 # real native dependency is ever added, it goes on the list above and the
 # toolchain comes back with it.
+
+# Advisories accepted after review. Each entry needs a reason that still holds,
+# and should be removed as soon as a fixed release exists.
+auditConfig:
+  ignoreGhsas:
+    # node-forge <=1.4.0: RSA PKCS#1 v1.5 signature verification accepts extra
+    # nested DigestAlgorithm elements. No fixed release exists. The only forge
+    # verification in this repository was the CSR self-signature check in
+    # packages/server/src/worker-auth/ca.ts, which now verifies with
+    # node:crypto (OpenSSL) instead; forge is left parsing and signing only.
+    - GHSA-86w9-cpqp-85rv

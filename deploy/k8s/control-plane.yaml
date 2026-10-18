@@ -149,11 +149,13 @@ spec:
             # addresses. This string is what every install one-liner hands out.
             - name: RSAGENT_HUB_ADVERTISED_ADDRESS
               value: rsagent-hub.example.com:8443
-            # The Ingress controller is one hop. Higher than the number of
-            # proxies actually in front lets a caller choose their own client
-            # IP, which forges the audit trail and sidesteps rate limiting.
-            - name: RSAGENT_TRUSTED_PROXY_HOPS
-              value: '1'
+            # CHANGE ME to the range your Ingress controller's pods connect from
+            # (usually the cluster's pod CIDR). Only addresses on this list may
+            # set X-Forwarded-For; listing anything that is not a proxy lets a
+            # caller choose their own client IP, which forges the audit trail
+            # and sidesteps rate limiting.
+            - name: RSAGENT_TRUSTED_PROXIES
+              value: '10.244.0.0/16'
             - name: RSAGENT_GRPC_TLS_CERT
               value: /etc/rsagent/tls/tls.crt
             - name: RSAGENT_GRPC_TLS_KEY
