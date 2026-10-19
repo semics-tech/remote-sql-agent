@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ROLES, type Role } from '@remote-sql-agent/protocol';
+import { parseTrustedProxies } from './trusted-proxies.js';
 
 /**
  * Control-plane configuration. Everything is environment-driven so the Docker
@@ -71,24 +72,12 @@ const configSchema = z.object({
   hubAdvertisedAddress: z.string().optional(),
 
   /**
-   * How many reverse proxies sit in front of the HTTP server.
-   *
-   * This decides where `request.ip` comes from, and `request.ip` is what
-   * @fastify/rate-limit counts against and what lands in `remoteAddress` on
-   * every audit row and every session. Anything the client can choose is
-   * therefore both a rate-limit bypass and a forged audit trail.
-   *
-   * 0 (the default) ignores X-Forwarded-For entirely and uses the socket
-   * address, which is correct when the control plane is exposed directly and is
-   * the only setting a client cannot influence. Set it to the number of proxies
-   * you actually run — 1 for the Caddy profile, for Container Apps, or for a
-   * Kubernetes ingress — and the address is taken that many hops back from the
-   * socket, i.e. from the proxy nearest us rather than from the request.
-   *
-   * Overshooting is the dangerous direction: each hop beyond the real count is
-   * one entry of attacker-controlled header that gets believed.
+   * Reverse proxies allowed to report the client address in X-Forwarded-For:
+   * addresses, CIDR ranges, or loopback/linklocal/uniquelocal. Empty (the
+   * default) ignores the header, which is correct when nothing is in front.
+   * See src/trusted-proxies.ts.
    */
-  trustedProxyHops: z.coerce.number().int().min(0).max(8),
+  trustedProxies: z.array(z.string()),
 
   /**
    * Bearer token required on `/metrics`. Unset leaves it open, which is the
@@ -303,6 +292,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const tenantId = env.RSAGENT_ENTRA_TENANT_ID;
   const clientId = env.RSAGENT_ENTRA_CLIENT_ID;
 
+  if (env.RSAGENT_TRUSTED_PROXY_HOPS !== undefined) {
+    throw new Error(
+      'RSAGENT_TRUSTED_PROXY_HOPS has been replaced by RSAGENT_TRUSTED_PROXIES, a list of the proxy addresses or ranges allowed to set X-Forwarded-For. Remove it and see docs/deployment.md.',
+    );
+  }
+
   if ((authMode === 'entra' || authMode === 'both') && (!tenantId || !clientId)) {
     throw new Error(
       'RSAGENT_AUTH_MODE requires Entra but RSAGENT_ENTRA_TENANT_ID / RSAGENT_ENTRA_CLIENT_ID are not set.',
@@ -322,7 +317,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     workerPackageDir: env.RSAGENT_WORKER_PACKAGE_DIR,
     publicUrl: env.RSAGENT_PUBLIC_URL ?? 'http://localhost:8080',
     hubAdvertisedAddress: hubAdvertisedAddress(env.RSAGENT_HUB_ADVERTISED_ADDRESS),
-    trustedProxyHops: env.RSAGENT_TRUSTED_PROXY_HOPS ?? 0,
+    trustedProxies: parseTrustedProxies(env.RSAGENT_TRUSTED_PROXIES),
     metricsToken: env.RSAGENT_METRICS_TOKEN,
 
     auth: {

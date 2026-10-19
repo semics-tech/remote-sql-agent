@@ -189,5 +189,5 @@ Things worth confirming for a specific deployment, not just the product:
 - [ ] `maxCapability` is set to the minimum each host actually needs (default `readOnly`)
 - [ ] Postgres is on an encrypted volume with encrypted backups (job definitions are unencrypted `jsonb` by design — see connection 5)
 - [ ] SQL credentials use integrated auth wherever the host supports it; SQL-auth passwords are the only credential class this architecture cannot avoid storing per-host
-- [ ] `RSAGENT_TRUSTED_PROXY_HOPS` matches the actual number of reverse proxies in front of the HTTP port (wrong values forge `remoteAddress` on every audit row)
+- [ ] `RSAGENT_TRUSTED_PROXIES` lists exactly the reverse proxies in front of the HTTP port, and nothing else (a non-proxy on the list can forge `remoteAddress` on every audit row)
 - [ ] Audit export (connection 7) is configured to a destination outside this deployment, per the deployment checklist in `security.md`

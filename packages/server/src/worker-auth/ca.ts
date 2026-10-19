@@ -1,3 +1,4 @@
+import { verify } from 'node:crypto';
 import forge from 'node-forge';
 import { eq } from 'drizzle-orm';
 import type { Database } from '../db/client.js';
@@ -91,11 +92,11 @@ export function issueClientCertificate(
   validityDays: number,
 ): IssuedCertificate {
   const csr = forge.pki.certificationRequestFromPem(csrPem);
-  if (!csr.verify()) {
-    throw new Error('Certificate signing request failed its own signature check.');
-  }
   if (!csr.publicKey) {
     throw new Error('Certificate signing request carries no public key.');
+  }
+  if (!csrSignatureIsValid(csr)) {
+    throw new Error('Certificate signing request failed its own signature check.');
   }
 
   const caCert = forge.pki.certificateFromPem(ca.certificatePem);
@@ -128,6 +129,33 @@ export function issueClientCertificate(
     fingerprint: fingerprintOf(certificatePem),
     notAfter: cert.validity.notAfter,
   };
+}
+
+const SHA256_WITH_RSA = '1.2.840.113549.1.1.11';
+
+/**
+ * Check a CSR's self-signature with OpenSSL rather than node-forge.
+ *
+ * forge's own `csr.verify()` accepts PKCS#1 v1.5 signatures with extra nested
+ * DigestAlgorithm elements (GHSA-86w9-cpqp-85rv), and no fixed forge release
+ * exists. forge is still used to parse the request and to author certificates;
+ * only the verification moves. Workers always sign with sha256WithRSAEncryption
+ * (`packages/worker/src/csr.ts`), so any other algorithm is refused outright
+ * rather than mapped.
+ */
+function csrSignatureIsValid(csr: forge.pki.CertificateSigningRequest): boolean {
+  if (csr.signatureOid !== SHA256_WITH_RSA || !csr.publicKey) return false;
+  const info = (csr as unknown as { certificationRequestInfo?: forge.asn1.Asn1 })
+    .certificationRequestInfo;
+  if (!info) return false;
+  const signed = Buffer.from(forge.asn1.toDer(info).getBytes(), 'binary');
+  const signature = Buffer.from(csr.signature as string, 'binary');
+  const publicKey = forge.pki.publicKeyToPem(csr.publicKey);
+  try {
+    return verify('sha256', signed, publicKey, signature);
+  } catch {
+    return false;
+  }
 }
 
 /** SHA-256 fingerprint of a certificate, lowercase hex, colon-free. */
