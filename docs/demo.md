@@ -16,8 +16,8 @@ docker compose -f deploy/docker-compose.demo.yml up
 
 Wait for `[demo] worker starting.` in the log, then open
 <http://localhost:8080> and sign in as `admin` / `rsagent-demo`. The estate is
-already there: one instance (`DEMO-SQLHOST01`) with about ten Agent jobs,
-including one that fails on purpose, a disabled job, multi-step jobs, and one
+already there: one instance (`DEMO-SQLHOST01`) with about eleven Agent jobs,
+including one that fails on purpose, one that is always running, a disabled job, multi-step jobs, and one
 that mentions `LEGACYFIN01` in a step so you can try cross-estate search.
 
 ## Requirements
@@ -44,6 +44,20 @@ Memory limits, so you can see where it goes:
 SQL Server is amd64 only. On Apple Silicon it runs under emulation and takes
 60 to 90 seconds to become healthy; the other services wait for it, so the log
 is quiet for a minute. That is normal.
+
+## Notes for screenshots
+
+- **A running job is always there.** `RSAgent Fixture - Long Running Report` is
+  started by the seed and rescheduled every 10 minutes. Its single step waits in
+  a loop for about 12 minutes, so a run is always in progress (Agent skips a
+  start while one is running). It sleeps, so it costs no CPU and almost no
+  memory. Shoot the job list or the job's detail page for the **running** state.
+- The job list has about eleven jobs; `Known Failure` shows the failed state and
+  the disabled job shows the disabled state, so one frame can carry all three.
+- Wait for `[demo] worker starting.` and about 15 seconds after that so the
+  first poll has landed before you capture.
+- For the **drift** badge, run the drift command below first and wait about 15
+  seconds.
 
 ## See drift detection work
 
