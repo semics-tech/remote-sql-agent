@@ -1,0 +1,91 @@
+name: Compose smoke
+
+# Brings up the one-command demo stack (deploy/docker-compose.demo.yml) on a
+# clean runner and checks it works end to end: the dashboard answers and the
+# pre-enrolled worker is online. Guards the demo against rot.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  demo-stack:
+    name: Demo compose stack starts and enrols
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      COMPOSE: docker compose -f deploy/docker-compose.demo.yml
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Start the stack
+        run: |
+          echo "STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+          # Not `up --wait`: the stack has one-shot services (certs, seed)
+          # that exit by design, which --wait can treat as a failure.
+          $COMPOSE up -d
+
+      - name: Wait for the dashboard
+        run: |
+          for i in $(seq 1 120); do
+            if curl -fsS -o /dev/null http://localhost:8080/api/auth/config; then
+              echo "Dashboard answered after ~$((i * 5))s of polling"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Dashboard did not answer on http://localhost:8080 in 10 minutes" >&2
+          exit 1
+
+      - name: Dashboard serves HTML
+        run: |
+          curl -fsS http://localhost:8080/ | grep -qi '<html'
+
+      - name: Wait for the worker to enrol and come online
+        run: |
+          jar="$RUNNER_TEMP/cookies.txt"
+          api() { curl -fsS -b "$jar" -c "$jar" -H 'content-type: application/json' \
+            -H "x-rsagent-csrf: $(awk '$6=="rsagent_csrf"{print $7}' "$jar")" "$@"; }
+          api http://localhost:8080/api/auth/config > /dev/null
+          api -X POST http://localhost:8080/api/auth/login \
+            -d '{"username":"admin","password":"rsagent-demo"}' > /dev/null
+          for i in $(seq 1 90); do
+            if api http://localhost:8080/api/workers \
+              | jq -e '.workers | any(.hostName == "DEMO-SQLHOST01" and .online == true)' > /dev/null; then
+              echo "Worker DEMO-SQLHOST01 is online"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Worker DEMO-SQLHOST01 never came online" >&2
+          api http://localhost:8080/api/workers | jq . >&2 || true
+          exit 1
+
+      - name: Record startup duration
+        if: success()
+        run: |
+          secs=$(( $(date +%s) - STARTED_AT ))
+          {
+            echo "### Demo stack startup"
+            echo
+            echo "Dashboard reachable and worker enrolled in **${secs}s** from \`compose up\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Logs and container state
+        if: failure()
+        run: |
+          $COMPOSE ps -a
+          $COMPOSE logs --no-color --tail=200
+
+      - name: Tear down
+        if: always()
+        run: $COMPOSE down -v
