@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
+  <rect width="1280" height="640" fill="#0f172a"/>
+  <rect x="0" y="0" width="16" height="640" fill="#38bdf8"/>
+  <!-- hub-and-spoke motif: servers connect outbound to one hub -->
+  <g stroke="#38bdf8" stroke-width="4" fill="none" opacity="0.55">
+    <path d="M1010 320 L1140 190"/>
+    <path d="M1010 320 L1170 320"/>
+    <path d="M1010 320 L1140 450"/>
+  </g>
+  <circle cx="1010" cy="320" r="44" fill="#38bdf8"/>
+  <g fill="#1e293b" stroke="#38bdf8" stroke-width="4">
+    <rect x="1115" y="160" width="100" height="64" rx="10"/>
+    <rect x="1145" y="288" width="100" height="64" rx="10"/>
+    <rect x="1115" y="416" width="100" height="64" rx="10"/>
+  </g>
+  <g font-family="DejaVu Sans">
+    <text x="80" y="260" font-size="72" font-weight="bold" fill="#f8fafc">Remote SQL Agent</text>
+    <text x="80" y="340" font-size="32" fill="#cbd5e1">Manage SQL Server Agent jobs across</text>
+    <text x="80" y="388" font-size="32" fill="#cbd5e1">every server you own, without opening</text>
+    <text x="80" y="436" font-size="32" fill="#cbd5e1">a single inbound port.</text>
+    <text x="80" y="570" font-size="26" fill="#38bdf8">github.com/semics-tech/remote-sql-agent</text>
+  </g>
+</svg>
