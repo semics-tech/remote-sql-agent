@@ -12,6 +12,8 @@ export default tseslint.config(
       'packages/protocol/src/gen/**',
       // Plain scripts that run inside the demo containers, outside any tsconfig.
       'deploy/demo/**',
+      // Standalone Playwright capture script for the README screenshots.
+      'docs/screenshots/**',
     ],
   },
   js.configs.recommended,

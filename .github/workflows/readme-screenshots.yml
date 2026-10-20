@@ -1,0 +1,92 @@
+name: README screenshots
+
+# Manual only. Starts the one-command demo stack (deploy/docker-compose.demo.yml),
+# drives the dashboard with Playwright and uploads the README screenshots
+# (docs/demo.md "Notes for screenshots") as a workflow artifact.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  screenshots:
+    name: Capture README screenshots
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      COMPOSE: docker compose -f deploy/docker-compose.demo.yml
+      NODE_VERSION: '24'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile --filter @remote-sql-agent/dashboard...
+
+      - name: Install Playwright browser
+        run: pnpm --filter @remote-sql-agent/dashboard exec playwright install --with-deps chromium
+
+      - name: Start the stack
+        run: $COMPOSE up -d
+
+      - name: Wait for the dashboard
+        run: |
+          for i in $(seq 1 120); do
+            if curl -fsS -o /dev/null http://localhost:8080/api/auth/config; then
+              echo "Dashboard answered after ~$((i * 5))s of polling"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Dashboard did not answer on http://localhost:8080 in 10 minutes" >&2
+          exit 1
+
+      - name: Wait for the worker to come online
+        run: |
+          jar="$RUNNER_TEMP/cookies.txt"
+          api() { curl -fsS -b "$jar" -c "$jar" -H 'content-type: application/json' \
+            -H "x-rsagent-csrf: $(awk '$6=="rsagent_csrf"{print $7}' "$jar")" "$@"; }
+          api http://localhost:8080/api/auth/config > /dev/null
+          api -X POST http://localhost:8080/api/auth/login \
+            -d '{"username":"admin","password":"rsagent-demo"}' > /dev/null
+          for i in $(seq 1 90); do
+            if api http://localhost:8080/api/workers \
+              | jq -e '.workers | any(.hostName == "DEMO-SQLHOST01" and .online == true)' > /dev/null; then
+              echo "Worker DEMO-SQLHOST01 is online"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Worker DEMO-SQLHOST01 never came online" >&2
+          exit 1
+
+      # Edits the Heartbeat Log step in msdb; the capture script waits for the badge.
+      - name: Run the drift profile
+        run: $COMPOSE run --rm drift
+
+      - name: Capture screenshots
+        run: pnpm --filter @remote-sql-agent/dashboard exec node ../../docs/screenshots/capture.mjs
+        env:
+          BASE_URL: http://localhost:8080
+          OUT_DIR: ${{ github.workspace }}/docs/screenshots/out
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: readme-screenshots
+          path: docs/screenshots/out/*.png
+          if-no-files-found: error
+
+      - name: Logs and container state
+        if: failure()
+        run: |
+          $COMPOSE ps -a
+          $COMPOSE logs --no-color --tail=200
+
+      - name: Tear down
+        if: always()
+        run: $COMPOSE down -v
