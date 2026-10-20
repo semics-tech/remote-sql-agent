@@ -1,0 +1,259 @@
+# Remote SQL Agent: one-command DEMO.
+#
+#   docker compose -f deploy/docker-compose.demo.yml up
+#   open http://localhost:8080          # admin / rsagent-demo
+#   docker compose -f deploy/docker-compose.demo.yml run --rm drift
+#
+# ############################################################################
+# #  DEMO ONLY. NOT FOR PRODUCTION.                                          #
+# #  - the SQL Server SA password and the admin password below are           #
+# #    throwaway values published in this repository                         #
+# #  - the hub certificate is self-signed and generated on first start       #
+# #  - the worker signs in as SA and its enrolment is automated              #
+# #  Everything is bound to 127.0.0.1. For a real deployment use            #
+# #  deploy/docker-compose.yml and docs/quick-start.md.                      #
+# ############################################################################
+#
+# Memory: the whole stack is sized to run in 4 GB of Docker Desktop memory
+# (Settings > Resources). Limits below add up to about 3.2 GB. SQL Server is
+# capped at 2 GB, which is the least it will run in. Below 4 GB expect
+# `Exited (137)`: the kernel OOM-killed a container.
+#
+# SQL Server is amd64 only. On Apple Silicon it runs under emulation and takes
+# 60-90 seconds to become healthy; everything else waits for it.
+#
+# The control plane is pinned to a release, not `latest`. Override with
+# RSAGENT_VERSION=x.y.z. The worker runs from the same image (it carries the
+# matching worker bundle), so server and worker versions cannot drift apart.
+#
+# Reset to a clean slate: docker compose -f deploy/docker-compose.demo.yml down -v
+
+name: rsagent-demo
+
+x-demo-sa-password: &sa_password 'RsAgent_Demo_Pass123'
+
+services:
+  # One-shot: writes a self-signed hub certificate into the shared volume. The
+  # control plane refuses to start without one, and we would rather demo with
+  # TLS on than switch the check off.
+  certs:
+    image: alpine/openssl:latest
+    entrypoint: ['/bin/sh', '-c']
+    command:
+      - |
+        set -e
+        if [ ! -f /tls/server.crt ]; then
+          openssl req -x509 -newkey rsa:2048 -nodes -days 30 \
+            -keyout /tls/server.key -out /tls/server.crt \
+            -subj "/CN=server" \
+            -addext "subjectAltName=DNS:server,DNS:localhost,IP:127.0.0.1"
+        fi
+        # Demo only: the control plane runs as a different user and must read it.
+        chmod 644 /tls/server.crt /tls/server.key
+    volumes:
+      - tls:/tls
+    mem_limit: 64m
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: rsagent
+      POSTGRES_PASSWORD: rsagent_demo_password
+      POSTGRES_DB: rsagent
+    # Lean: a demo estate is a handful of jobs. Not published to the host.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=32MB
+      - -c
+      - max_connections=30
+      - -c
+      - work_mem=2MB
+      - -c
+      - maintenance_work_mem=16MB
+      - -c
+      - fsync=off
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U rsagent -d rsagent']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    mem_limit: 256m
+
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    platform: linux/amd64
+    environment:
+      ACCEPT_EULA: 'Y'
+      MSSQL_SA_PASSWORD: *sa_password
+      MSSQL_PID: 'Developer'
+      # SQL Server Agent must be explicitly enabled in the Linux container.
+      MSSQL_AGENT_ENABLED: 'true'
+      # Buffer pool ceiling. Below the 2 GB container cap so the rest of the
+      # process (threads, plan cache, emulation overhead) has room.
+      MSSQL_MEMORY_LIMIT_MB: '1536'
+    volumes:
+      - mssqldata:/var/opt/mssql
+    # mem_limit, not deploy.resources: the latter is swarm-only and Compose
+    # silently ignores it.
+    mem_limit: 2g
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          '/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$$MSSQL_SA_PASSWORD" -C -Q "SELECT 1" || exit 1',
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 60s
+
+  # One-shot: applies the fixture Agent jobs (idempotent).
+  seed:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    platform: linux/amd64
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    entrypoint:
+      - /opt/mssql-tools18/bin/sqlcmd
+      - -S
+      - sqlserver
+      - -U
+      - sa
+      - -P
+      - *sa_password
+      - -C
+      - -b
+      - -i
+      - /seed/seed.sql
+    volumes:
+      - ./sql-seed/seed.sql:/seed/seed.sql:ro
+    restart: 'no'
+    mem_limit: 128m
+
+  server:
+    image: ${RSAGENT_IMAGE:-techsemics/remote-sql-agent}:${RSAGENT_VERSION:-0.2.0}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      certs:
+        condition: service_completed_successfully
+    environment:
+      RSAGENT_DATABASE_URL: postgres://rsagent:rsagent_demo_password@postgres:5432/rsagent
+      RSAGENT_PUBLIC_URL: http://localhost:8080
+      RSAGENT_LOG_LEVEL: info
+      RSAGENT_AUTH_MODE: local
+      RSAGENT_BOOTSTRAP_ADMIN: admin
+      RSAGENT_BOOTSTRAP_ADMIN_PASSWORD: rsagent-demo
+      RSAGENT_WORKER_AUTH_MODES: token
+      RSAGENT_GRPC_TLS_CERT: /etc/rsagent/tls/server.crt
+      RSAGENT_GRPC_TLS_KEY: /etc/rsagent/tls/server.key
+      # Demo estate: keep the worker's polling light, history short.
+      RSAGENT_HISTORY_RETENTION_DAYS: '7'
+      NODE_OPTIONS: --max-old-space-size=384
+    volumes:
+      - tls:/etc/rsagent/tls:ro
+    ports:
+      - '127.0.0.1:8080:8080'
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    mem_limit: 640m
+
+  # Pre-enrolled worker. Same image as the server; see worker-entry.sh.
+  worker:
+    image: ${RSAGENT_IMAGE:-techsemics/remote-sql-agent}:${RSAGENT_VERSION:-0.2.0}
+    depends_on:
+      server:
+        condition: service_healthy
+      seed:
+        condition: service_completed_successfully
+    entrypoint: ['/bin/sh', '/demo/worker-entry.sh']
+    working_dir: /run/rsagent
+    environment:
+      RSAGENT_CONTROL_PLANE_URL: http://server:8080
+      RSAGENT_ADMIN_USER: admin
+      RSAGENT_ADMIN_PASSWORD: rsagent-demo
+      RSAGENT_WORKER_HOST: DEMO-SQLHOST01
+      RSAGENT_SQL_PASSWORD: *sa_password
+      NODE_OPTIONS: --max-old-space-size=128
+    volumes:
+      - ./demo:/demo:ro
+      - tls:/tls:ro
+    tmpfs:
+      - /tmp
+      - /run/rsagent:uid=1000,gid=1000,mode=0700,size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    restart: on-failure
+    mem_limit: 256m
+
+  # --- Drift scenario --------------------------------------------------------
+  # Not started by `up`. Edits a job the way a DBA would in SSMS, directly in
+  # msdb; a drift badge and a diff appear within about 15 seconds.
+  #
+  #   docker compose -f deploy/docker-compose.demo.yml run --rm drift
+  #   docker compose -f deploy/docker-compose.demo.yml run --rm drift-revert
+  drift:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    platform: linux/amd64
+    profiles: ['drift']
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    entrypoint:
+      - /opt/mssql-tools18/bin/sqlcmd
+      - -S
+      - sqlserver
+      - -U
+      - sa
+      - -P
+      - *sa_password
+      - -C
+      - -b
+      - -Q
+      - >-
+        EXEC msdb.dbo.sp_update_jobstep
+        @job_name = N'RSAgent Fixture - Heartbeat Log', @step_id = 1,
+        @command = N'EXEC dbo.usp_LogMaintenance @Source = N''Heartbeat'', @Message = N''Edited in SSMS'';';
+    mem_limit: 128m
+
+  # Puts the original step body back, for a retake.
+  drift-revert:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    platform: linux/amd64
+    profiles: ['drift']
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    entrypoint:
+      - /opt/mssql-tools18/bin/sqlcmd
+      - -S
+      - sqlserver
+      - -U
+      - sa
+      - -P
+      - *sa_password
+      - -C
+      - -b
+      - -Q
+      - >-
+        EXEC msdb.dbo.sp_update_jobstep
+        @job_name = N'RSAgent Fixture - Heartbeat Log', @step_id = 1,
+        @command = N'EXEC dbo.usp_LogMaintenance @Source = N''Heartbeat'', @Message = N''Still alive'';';
+    mem_limit: 128m
+
+volumes:
+  pgdata:
+  mssqldata:
+  tls:

@@ -1,0 +1,48 @@
+# DEMO ONLY. Worker config for deploy/docker-compose.demo.yml.
+#
+# readOnly ceiling: the demo watches, it does not change anything. The SA login
+# is the SQL Server container's throwaway password, supplied through
+# RSAGENT_SQL_PASSWORD. Neither belongs on a real host.
+
+hostName: DEMO-SQLHOST01
+
+controlPlane:
+  address: server:8443
+  auth:
+    mode: token
+    keyFile: /run/rsagent/worker.key
+  tls:
+    enabled: true
+    caCertPath: /tls/server.crt # the demo's self-signed hub certificate
+  reconnect:
+    initialDelayMs: 1000
+    maxDelayMs: 30000
+    jitterRatio: 0.3
+
+maxCapability: readOnly
+
+credentialKeyFile: /run/rsagent/credential.key
+
+instances:
+  - name: MSSQLSERVER
+    server: sqlserver
+    port: 1433
+    database: msdb
+    user: sa
+    encrypt: true
+    trustServerCertificate: true # container uses a self-signed cert
+
+outbox:
+  path: /run/rsagent/outbox.sqlite
+  maxRows: 100000
+
+polling:
+  definitionSeconds: 15
+  historySeconds: 5
+  activitySeconds: 5
+  agentLogSeconds: 60
+  heartbeatSeconds: 15
+  historyBatchSize: 500
+
+logLevel: info
+healthFilePath: /run/rsagent/health

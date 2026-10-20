@@ -108,7 +108,8 @@ INSERT @scheduleNames VALUES
     (N'RSAgent Fixture - Last weekday of quarter'),
     (N'RSAgent Fixture - On agent start'),
     (N'RSAgent Fixture - When CPU idle'),
-    (N'RSAgent Fixture - One time only');
+    (N'RSAgent Fixture - One time only'),
+    (N'RSAgent Fixture - Every 10 min all day');
 
 DECLARE @sname sysname;
 DECLARE sched_cur CURSOR LOCAL FAST_FORWARD FOR SELECT name FROM @scheduleNames;
@@ -450,10 +451,56 @@ EXEC msdb.dbo.sp_add_jobserver @job_name = N'RSAgent Fixture - Legacy Feed Impor
 GO
 
 -------------------------------------------------------------------------------
--- Give the estate some history immediately: run the two fast, safe jobs.
+-- Job 11: long-running, so the estate always has a job in the "running" state
+-- (the demo's README screenshot). The step is one WAITFOR loop of 30 s sleeps,
+-- 24 times (~12 min), which holds a session but uses no CPU and almost no
+-- memory. The schedule fires every 10 min; Agent skips a start while the job is
+-- still running, so one run begins as the next is due and the job stays
+-- running. It is also started once below, so it is running as soon as seeding
+-- finishes.
+-------------------------------------------------------------------------------
+EXEC msdb.dbo.sp_add_schedule
+    @schedule_name = N'RSAgent Fixture - Every 10 min all day',
+    @freq_type = 4, @freq_interval = 1,
+    @freq_subday_type = 4, @freq_subday_interval = 10,
+    @active_start_date = 20240101, @active_start_time = 0;
+
+EXEC msdb.dbo.sp_add_job
+    @job_name = N'RSAgent Fixture - Long Running Report',
+    @description = N'Slow report that waits in a loop (about 12 minutes) so the dashboard has a running job to show.',
+    @category_name = N'RSAgent Fixtures',
+    @enabled = 1, @owner_login_name = N'sa';
+
+EXEC msdb.dbo.sp_add_jobstep
+    @job_name = N'RSAgent Fixture - Long Running Report',
+    @step_name = N'Build report (waits)',
+    @subsystem = N'TSQL', @database_name = N'RSAgentDemo',
+    @command = N'SET NOCOUNT ON;
+
+DECLARE @pass INT = 1;
+WHILE @pass <= 24
+BEGIN
+    WAITFOR DELAY ''00:00:30'';
+    SET @pass += 1;
+END
+
+EXEC dbo.usp_LogMaintenance @Source = N''Long Running Report'', @Message = N''Report built'';',
+    @on_success_action = 1, @on_fail_action = 2;
+
+EXEC msdb.dbo.sp_attach_schedule
+    @job_name = N'RSAgent Fixture - Long Running Report',
+    @schedule_name = N'RSAgent Fixture - Every 10 min all day';
+
+EXEC msdb.dbo.sp_add_jobserver @job_name = N'RSAgent Fixture - Long Running Report';
+GO
+
+-------------------------------------------------------------------------------
+-- Give the estate some history immediately: run the two fast, safe jobs, and
+-- start the long-running one so it is already in the "running" state.
 -------------------------------------------------------------------------------
 EXEC msdb.dbo.sp_start_job @job_name = N'RSAgent Fixture - Heartbeat Log';
 EXEC msdb.dbo.sp_start_job @job_name = N'RSAgent Fixture - Known Failure';
+EXEC msdb.dbo.sp_start_job @job_name = N'RSAgent Fixture - Long Running Report';
 GO
 
 SELECT CONCAT(N'Seeded ', COUNT(*), N' fixture jobs.')
