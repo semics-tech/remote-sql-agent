@@ -7,7 +7,7 @@
 [![CI](https://github.com/semics-tech/remote-sql-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/semics-tech/remote-sql-agent/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![npm](https://img.shields.io/npm/v/@remote-sql-agent/worker.svg)](https://www.npmjs.com/package/@remote-sql-agent/worker)
-[![Node](https://img.shields.io/badge/node-%E2%89%A522-brightgreen.svg)](https://nodejs.org)
+[![Node](https://img.shields.io/badge/node-%E2%89%A524-brightgreen.svg)](https://nodejs.org)
 
 [Quick start](docs/quick-start.md) ·
 [Capabilities](docs/capabilities.md) ·
@@ -18,6 +18,11 @@
 </div>
 
 ---
+
+## Why this exists
+
+rsagent exists because our team runs multiple on-premise SQL Server Agent
+instances, and managing them one by one is very difficult.
 
 ## The problem
 
@@ -110,8 +115,19 @@ mkdir -p rsagent && cd rsagent
 BASE=https://raw.githubusercontent.com/semics-tech/remote-sql-agent/main/deploy
 curl -fsSLO $BASE/docker-compose.yml
 curl -fsSLO $BASE/Caddyfile
-curl -fsSL  $BASE/.env.example -o .env    # then edit it
+curl -fsSL  $BASE/.env.example -o .env
+```
 
+Edit that new `.env` file before starting: at minimum set `RSAGENT_PUBLIC_URL`
+(the `https://` address workers will dial) and `POSTGRES_PASSWORD`.
+
+Put a TLS certificate for the hub in `./tls` **before** the first start. The
+control plane refuses to start without one: mTLS needs it to exist at all, and
+in token mode it is the only thing keeping a worker's API key off the wire in
+clear. From a checkout, `pnpm dev:cert <hostname>` writes a self-signed one for
+a lab.
+
+```bash
 docker compose --profile tls up -d        # with automatic HTTPS
 ```
 
@@ -124,11 +140,6 @@ The image is published to both registries, same digest:
 docker pull techsemics/remote-sql-agent:latest
 docker pull ghcr.io/semics-tech/remote-sql-agent/control-plane:latest
 ```
-
-Put a TLS certificate for the hub in `./tls`. The control plane refuses to start
-without one: mTLS needs it to exist at all, and in token mode it is the only
-thing keeping a worker's API key off the wire in clear. From a checkout,
-`pnpm dev:cert <hostname>` writes a self-signed one for a lab.
 
 On first boot it creates an administrator and prints a generated password
 **once** — copy it from the log.
@@ -265,8 +276,8 @@ Setup: [docs/authentication.md](docs/authentication.md).
 
 ## Status
 
-All six milestones of the architecture spec are implemented. **204 tests**,
-including an integration suite that drives a real worker against a real SQL
+All six milestones of the architecture spec are implemented, with a test suite
+that includes an integration suite that drives a real worker against a real SQL
 Server: starting jobs and waiting for their step-level history, editing a job the
 way SSMS would and asserting drift attribution, and proving round-trip
 fidelity — a definition sent from the dashboard is byte-for-byte identical when
