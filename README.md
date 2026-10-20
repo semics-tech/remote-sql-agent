@@ -100,6 +100,32 @@ worker write.
 
 ---
 
+## Try it in one command
+
+> **Demo only, not for production.** Throwaway passwords, a self-signed
+> certificate, and everything bound to `127.0.0.1`.
+
+With Docker Desktop set to **4 GB of memory or more**:
+
+```bash
+git clone https://github.com/semics-tech/remote-sql-agent && cd remote-sql-agent
+docker compose -f deploy/docker-compose.demo.yml up
+```
+
+Open <http://localhost:8080> and sign in as `admin` / `rsagent-demo`. SQL Server
+(with Agent and fixture jobs), the control plane and a pre-enrolled worker are
+already running. Then edit a job behind its back and watch the drift badge
+appear:
+
+```bash
+docker compose -f deploy/docker-compose.demo.yml run --rm drift
+```
+
+SQL Server is amd64 only, so on Apple Silicon allow 60 to 90 seconds for the
+first start. Details, memory budget and troubleshooting: **[docs/demo.md](docs/demo.md)**.
+
+---
+
 ## Install
 
 Full walkthrough: **[docs/quick-start.md](docs/quick-start.md)** — about 30

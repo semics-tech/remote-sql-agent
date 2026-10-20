@@ -10,6 +10,8 @@ export default tseslint.config(
       '**/.turbo/**',
       // Generated from .proto; regenerate rather than edit.
       'packages/protocol/src/gen/**',
+      // Plain scripts that run inside the demo containers, outside any tsconfig.
+      'deploy/demo/**',
     ],
   },
   js.configs.recommended,
