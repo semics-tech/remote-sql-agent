@@ -459,6 +459,12 @@ and say what you need. It shapes what gets built next.
 
 ---
 
+## From the same team
+
+[tsqltap](https://github.com/semics-tech/tsqltap) — unit tests for T-SQL (`pip install tsqltap`).
+
+---
+
 ## Licence
 
 [Apache 2.0](LICENSE). Fully open source, no open-core split.
