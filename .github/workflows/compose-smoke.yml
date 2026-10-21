@@ -32,7 +32,17 @@ jobs:
           echo "STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
           # Not `up --wait`: the stack has one-shot services (certs, seed)
           # that exit by design, which --wait can treat as a failure.
-          $COMPOSE up -d
+          # `up -d` still waits on depends_on conditions (server healthy, seed
+          # completed) and exits non-zero if one is not met in time, e.g. while
+          # SQL Server warms up or a service restarts. The polling steps below
+          # are the real gate, so record the exit code and state, then go on.
+          rc=0
+          $COMPOSE up -d || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "::warning::compose up exited $rc; continuing to the readiness checks"
+            $COMPOSE ps -a
+            $COMPOSE logs --no-color --tail=50 worker server seed certs || true
+          fi
 
       - name: Wait for the dashboard
         run: |
@@ -84,6 +94,9 @@ jobs:
         if: failure()
         run: |
           $COMPOSE ps -a
+          echo "::group::worker logs"
+          $COMPOSE logs --no-color --tail=200 worker || true
+          echo "::endgroup::"
           $COMPOSE logs --no-color --tail=200
 
       - name: Tear down
