@@ -121,8 +121,12 @@ appear:
 docker compose -f deploy/docker-compose.demo.yml run --rm drift
 ```
 
-SQL Server is amd64 only, so on Apple Silicon allow 60 to 90 seconds for the
-first start. Details, memory budget and troubleshooting: **[docs/demo.md](docs/demo.md)**.
+SQL Server 2022 is amd64 only. On Apple Silicon, turn on **Use Rosetta for
+x86_64/amd64 emulation on Apple Silicon** in Docker Desktop (Settings >
+General), and allow 60 to 90 seconds for the first start. Under plain QEMU
+emulation `sqlservr` fails with `Invalid mapping of address ... in reserved
+address space below 0x400000000000` and exits 1. `Exited (137)` means not
+enough memory. Details, memory budget and troubleshooting: **[docs/demo.md](docs/demo.md)**.
 
 ---
 
