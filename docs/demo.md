@@ -45,6 +45,11 @@ SQL Server is amd64 only. On Apple Silicon it runs under emulation and takes
 60 to 90 seconds to become healthy; the other services wait for it, so the log
 is quiet for a minute. That is normal.
 
+**Apple Silicon:** SQL Server 2022 is amd64 only. In Docker Desktop, turn on
+**Use Rosetta for x86_64/amd64 emulation on Apple Silicon** (Settings >
+General) before running `up`. Under plain QEMU emulation `sqlservr` fails; see
+Troubleshooting.
+
 ## Notes for screenshots
 
 - **A running job is always there.** `RSAgent Fixture - Long Running Report` is
@@ -98,6 +103,11 @@ To try a different release: `RSAGENT_VERSION=0.2.1 docker compose -f deploy/dock
 ## Troubleshooting
 
 - **`Exited (137)`**: out of memory. See Requirements.
+- **`sqlserver` exits 1 with `Invalid mapping of address ... in reserved address
+  space below 0x400000000000`**: SQL Server is running under plain QEMU
+  emulation on an arm64 host (seen on an arm64 QEMU VM). On Apple Silicon, turn
+  on **Use Rosetta for x86_64/amd64 emulation on Apple Silicon** in Docker
+  Desktop (Settings > General), then run `up` again.
 - **Dashboard shows the instance as offline**: give it a minute after SQL Server
   turns healthy, then check `docker compose -f deploy/docker-compose.demo.yml logs worker`.
 - **Run only one worker.** Two workers sharing a credential knock each other off
