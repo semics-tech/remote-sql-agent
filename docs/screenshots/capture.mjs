@@ -8,7 +8,11 @@
 // The credentials are the throwaway demo admin published in the compose file.
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { chromium } from '@playwright/test';
+import { createRequire } from 'node:module';
+
+// This script lives outside any workspace package, so resolve Playwright from
+// the dashboard package (the current directory when run via pnpm exec).
+const { chromium } = createRequire(join(process.cwd(), 'package.json'))('@playwright/test');
 
 const BASE = process.env.BASE_URL ?? 'http://localhost:8080';
 const OUT = process.env.OUT_DIR ?? 'docs/screenshots/out';
@@ -19,6 +23,7 @@ mkdirSync(OUT, { recursive: true });
 
 const browser = await chromium.launch();
 const context = await browser.newContext({
+  baseURL: BASE,
   viewport: { width: 1440, height: 900 },
   deviceScaleFactor: 2,
   colorScheme: 'light',
