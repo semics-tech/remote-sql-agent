@@ -19,6 +19,19 @@
 
 ---
 
+## Screenshots
+
+Captured from the [one-command demo stack](docs/demo.md).
+
+| | |
+|---|---|
+| ![Estate grid: every instance, worker state and failures at a glance](docs/screenshots/1-estate-grid.png) | ![Job history with step-level failure detail](docs/screenshots/2-failed-job-history.png) |
+| **Estate grid.** Every instance, worker state and running jobs. | **Failed job history.** Run and step detail, including retries. |
+| ![Cross-server search by text inside job step bodies](docs/screenshots/3-cross-server-search.png) | ![Version history with a step diff](docs/screenshots/4-drift-diff.png) |
+| **Cross-server search.** Find a job by text inside any step. | **Drift diff.** An on-server edit shown against the previous version. |
+| ![Workers and their capability ceilings](docs/screenshots/5-workers-capabilities.png) | |
+| **Workers.** What each worker can actually do. | |
+
 ## Why this exists
 
 rsagent exists because our team runs multiple on-premise SQL Server Agent

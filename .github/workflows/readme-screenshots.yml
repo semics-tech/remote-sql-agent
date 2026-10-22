@@ -6,11 +6,6 @@ name: README screenshots
 
 on:
   workflow_dispatch:
-  # TEMPORARY: remove before merge. Lets the capture run on this PR.
-  pull_request:
-    paths:
-      - .github/workflows/readme-screenshots.yml
-      - docs/screenshots/**
 
 permissions:
   contents: read
