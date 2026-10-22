@@ -90,7 +90,10 @@ jobs:
 
       # Edits the Heartbeat Log step in msdb; the capture script waits for the badge.
       - name: Run the drift profile
-        run: $COMPOSE run --rm drift
+        # --no-deps: the drift service depends on seed, and `run` would start the
+        # seed container again, which recreates every fixture job and discards
+        # the original definition the edit is meant to be compared against.
+        run: $COMPOSE run --no-deps --rm drift
 
       - name: Capture screenshots
         run: pnpm --filter @remote-sql-agent/dashboard exec node ../../docs/screenshots/capture.mjs
