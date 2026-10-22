@@ -195,7 +195,7 @@ services:
     cap_drop:
       - ALL
     read_only: true
-    restart: on-failure
+    restart: on-failure:5
     mem_limit: 256m
 
   # --- Drift scenario --------------------------------------------------------

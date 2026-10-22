@@ -36,18 +36,33 @@ async function call(path, init = {}) {
   });
   remember(response);
   if (!response.ok) {
-    throw new Error(`${init.method ?? 'GET'} ${path} -> ${response.status} ${await response.text()}`);
+    const error = new Error(`${init.method ?? 'GET'} ${path} -> ${response.status} ${await response.text()}`);
+    error.status = response.status;
+    throw error;
   }
   return response.json();
 }
 
-await call('/api/auth/config');
-await call('/api/auth/login', {
-  method: 'POST',
-  body: JSON.stringify({ username, password: adminPassword }),
-});
-const minted = await call('/api/enrolment-tokens', {
-  method: 'POST',
-  body: JSON.stringify({ hostName, credentialMode: 'token', capabilities: ['readOnly'] }),
-});
-process.stdout.write(minted.token);
+async function mint() {
+  await call('/api/auth/config');
+  await call('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ username, password: adminPassword }),
+  });
+  const minted = await call('/api/enrolment-tokens', {
+    method: 'POST',
+    body: JSON.stringify({ hostName, credentialMode: 'token', capabilities: ['observe'] }),
+  });
+  return minted.token;
+}
+
+// Exit 78 (EX_CONFIG) means the server rejected the request (4xx: bad
+// credentials, bad capability, rate limited). Retrying cannot fix that, so
+// worker-entry.sh stops instead of hammering /api/auth/login. Anything else
+// (server still starting, network) exits 1 and is retried by compose.
+try {
+  process.stdout.write(await mint());
+} catch (error) {
+  console.error(`[demo] ${error.message}`);
+  process.exit(error.status >= 400 && error.status < 500 ? 78 : 1);
+}
