@@ -56,9 +56,9 @@
     "@vitest/coverage-v8": "^4.1.10",
     "eslint": "^10.13.0",
     "eslint-plugin-react-hooks": "^7.1.1",
-    "ts-proto": "^2.15.3",
+    "ts-proto": "^2.17.0",
     "tsx": "^4.23.15",
-    "turbo": "^2.11.8",
+    "turbo": "^2.11.9",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.71.2",
     "vitest": "^4.1.10"
