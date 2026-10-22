@@ -97,10 +97,10 @@ for (let attempt = 0; attempt < 12 && !drifted; attempt++) {
   if (!drifted) await page.waitForTimeout(10_000);
 }
 if (!drifted) {
-  // Diagnostics for the workflow log and artifact.
+  // Diagnostics ride in the error message so they show in the failure summary.
   await page.screenshot({ path: join(OUT, 'debug-versions.png') });
-  console.log('Versions tab text:', (await page.locator('main, .page').first().innerText()).slice(0, 2000));
-  throw new Error('No drift diff appeared on the Versions tab');
+  const text = (await page.locator('main, .page').first().innerText()).replace(/\s+/g, ' ');
+  throw new Error(`No drift diff appeared on the Versions tab. Page text: ${text.slice(0, 900)}`);
 }
 await page.waitForTimeout(2000);
 await shot('4-drift-diff');
