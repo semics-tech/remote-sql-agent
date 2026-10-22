@@ -96,7 +96,12 @@ for (let attempt = 0; attempt < 12 && !drifted; attempt++) {
     .then(() => true, () => false);
   if (!drifted) await page.waitForTimeout(10_000);
 }
-if (!drifted) throw new Error('No drift diff appeared on the Versions tab');
+if (!drifted) {
+  // Diagnostics for the workflow log and artifact.
+  await page.screenshot({ path: join(OUT, 'debug-versions.png') });
+  console.log('Versions tab text:', (await page.locator('main, .page').first().innerText()).slice(0, 2000));
+  throw new Error('No drift diff appeared on the Versions tab');
+}
 await page.waitForTimeout(2000);
 await shot('4-drift-diff');
 
