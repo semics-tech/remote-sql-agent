@@ -70,6 +70,24 @@ jobs:
           echo "Worker DEMO-SQLHOST01 never came online" >&2
           exit 1
 
+      # The drift edit only shows as a second version if the worker has already
+      # mirrored the job's original definition, so wait for that first.
+      - name: Wait for the fixture jobs to be mirrored
+        run: |
+          jar="$RUNNER_TEMP/cookies.txt"
+          api() { curl -fsS -b "$jar" -c "$jar" -H 'content-type: application/json' \
+            -H "x-rsagent-csrf: $(awk '$6=="rsagent_csrf"{print $7}' "$jar")" "$@"; }
+          for i in $(seq 1 60); do
+            if api 'http://localhost:8080/api/jobs/groups?by=name' \
+              | jq -e '.groups | any(.label == "RSAgent Fixture - Heartbeat Log")' > /dev/null; then
+              echo "Heartbeat Log mirrored"
+              break
+            fi
+            sleep 5
+          done
+          # Let the first sync settle so the original definition is stored as version 1.
+          sleep 45
+
       # Edits the Heartbeat Log step in msdb; the capture script waits for the badge.
       - name: Run the drift profile
         run: $COMPOSE run --rm drift
