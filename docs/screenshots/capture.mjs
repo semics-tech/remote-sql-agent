@@ -40,8 +40,17 @@ async function shot(name) {
 }
 
 async function openJob(name) {
+  // The Jobs page groups by job name: one panel per name, collapsed unless it
+  // has a failing member, with the instances as links inside.
   await page.goto('/jobs');
-  await page.getByRole('link', { name, exact: true }).first().click();
+  await page.getByLabel('Filter jobs').fill(name);
+  const panel = page.locator('section.panel', {
+    has: page.locator('header.panel-head > span', { hasText: new RegExp(`^${name}$`) }),
+  });
+  await panel.waitFor();
+  const show = panel.getByRole('button', { name: 'Show', exact: true });
+  if (await show.count()) await show.click();
+  await panel.locator('a.mono').first().click();
   await page.getByRole('button', { name: 'History', exact: true }).waitFor();
 }
 
@@ -71,19 +80,24 @@ await shot('2-failed-job-history');
 await page.goto(`${BASE}/search`);
 await page.getByLabel('Search job names and step bodies').fill('LEGACYFIN01');
 await page.getByRole('button', { name: /search/i }).click();
-await page.getByText('LEGACYFIN01').nth(1).waitFor();
+await page.getByText('LEGACYFIN01').first().waitFor();
 await shot('3-cross-server-search');
 
-// 4. Drift diff. The workflow runs the drift profile before this script; wait
-// for the badge, then open the job's Versions tab and its newest diff.
-await page.goto(`${BASE}/jobs`);
-await page.getByText(/drift/i).first().waitFor({ timeout: 120_000 });
-await openJob(DRIFT_JOB);
-await page.getByRole('button', { name: 'Versions', exact: true }).click();
-const edit = page.getByText(/on-premise edit/i).first();
-await edit.waitFor();
-await edit.click();
-await page.locator('.monaco-diff-editor').waitFor({ timeout: 60_000 });
+// 4. Drift diff. The workflow runs the drift profile before this script. The
+// Versions tab picks the newest two versions by default, so once the worker has
+// reported the edit ("on the server") the step diff is already on screen.
+let drifted = false;
+for (let attempt = 0; attempt < 12 && !drifted; attempt++) {
+  await openJob(DRIFT_JOB);
+  await page.getByRole('button', { name: 'Versions', exact: true }).click();
+  drifted = await page
+    .locator('.monaco-diff-editor')
+    .waitFor({ timeout: 15_000 })
+    .then(() => true, () => false);
+  if (!drifted) await page.waitForTimeout(10_000);
+}
+if (!drifted) throw new Error('No drift diff appeared on the Versions tab');
+await page.waitForTimeout(2000);
 await shot('4-drift-diff');
 
 // 5. Workers and capabilities.
