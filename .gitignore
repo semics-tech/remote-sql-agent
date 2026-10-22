@@ -26,3 +26,4 @@ test-results/
 playwright-report/
 blob-report/
 .playwright/
+docs/screenshots/out/
