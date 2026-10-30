@@ -55,7 +55,7 @@
     "@bufbuild/buf": "^1.75.0",
     "@eslint/js": "^10.0.1",
     "@types/node": "^24.19.2",
-    "@vitest/coverage-v8": "^4.1.10",
+    "@vitest/coverage-v8": "^4.1.11",
     "eslint": "^10.13.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "ts-proto": "^2.18.3",
@@ -63,7 +63,7 @@
     "turbo": "^2.11.10",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.72.0",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   },
   "repository": {
     "type": "git",
