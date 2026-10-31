@@ -3,10 +3,10 @@ import { pino } from 'pino';
 import { generateKeyPairSync } from 'node:crypto';
 import { trace, SpanStatusCode } from '@opentelemetry/api';
 import {
-  NodeTracerProvider,
+  TracerProvider,
   InMemorySpanExporter,
   SimpleSpanProcessor,
-} from '@opentelemetry/sdk-trace-node';
+} from '@opentelemetry/sdk-trace';
 import type { Database } from '../src/db/client.js';
 import { loadConfig } from '../src/config.js';
 import { createApp } from '../src/api/app.js';
@@ -34,10 +34,10 @@ const signingKeyPem = privateKey.export({ type: 'pkcs8', format: 'pem' }).toStri
 
 beforeAll(async () => {
   ({ db, close } = await setupTestDatabase('request_tracing'));
-  const provider = new NodeTracerProvider({
-    spanProcessors: [new SimpleSpanProcessor(exporter)],
+  const provider = new TracerProvider({
+    spanProcessors: [new SimpleSpanProcessor({ exporter })],
   });
-  provider.register();
+  trace.setGlobalTracerProvider(provider);
 });
 
 afterAll(async () => {
