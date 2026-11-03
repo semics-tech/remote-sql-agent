@@ -4,11 +4,11 @@ import { eq } from 'drizzle-orm';
 import { generateCommandSigningKeyPair } from '@remote-sql-agent/protocol';
 import { trace, SpanStatusCode } from '@opentelemetry/api';
 import {
-  NodeTracerProvider,
+  TracerProvider,
   InMemorySpanExporter,
   SimpleSpanProcessor,
-} from '@opentelemetry/sdk-trace-node';
-import type { ReadableSpan } from '@opentelemetry/sdk-trace-base';
+} from '@opentelemetry/sdk-trace';
+import type { ReadableSpan } from '@opentelemetry/sdk-trace';
 import type { Database } from '../src/db/client.js';
 import { loadConfig } from '../src/config.js';
 import { CommandService } from '../src/domain/commands.js';
@@ -40,10 +40,10 @@ const signingKeyPem = generateCommandSigningKeyPair().privateKeyPem;
 
 beforeAll(async () => {
   ({ db, close } = await setupTestDatabase('command_tracing'));
-  const provider = new NodeTracerProvider({
-    spanProcessors: [new SimpleSpanProcessor(exporter)],
+  const provider = new TracerProvider({
+    spanProcessors: [new SimpleSpanProcessor({ exporter })],
   });
-  provider.register();
+  trace.setGlobalTracerProvider(provider);
 });
 
 afterAll(async () => {
