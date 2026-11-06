@@ -115,6 +115,19 @@ To try a different release: `RSAGENT_VERSION=0.2.1 docker compose -f deploy/dock
 - **Port 8080 in use**: stop whatever holds it. The dashboard's public URL is
   fixed at `http://localhost:8080` in the demo.
 
+## Measure start-up time and memory
+
+```bash
+scripts/time-demo.sh
+```
+
+Starts the demo from cold volumes, then prints a markdown table of seconds to
+all healthy, seconds to worker enrolled and peak memory (total and per
+container, from `docker stats`), and tears the stack down with `down -v`. Image
+pulls happen first and are not timed. Run it on amd64 or Apple Silicon with
+Rosetta; set `TIMEOUT` (default 300 s) or `SAMPLE_INTERVAL` (default 5 s) to
+change the limits. It stops any demo stack you already have running.
+
 ## Clean up
 
 ```bash
