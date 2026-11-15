@@ -391,16 +391,6 @@ stream meant to stay open for months. The hub needs to be reached as raw TCP.
 on every SQL host. A wrong value does not fail loudly: workers retry on backoff
 forever and simply never appear.
 
-**The Windows one-liner needs `-PackageUrl` for now.** The container image
-builds only the Linux worker package, so
-`/downloads/rsagent-worker-windows.zip` is a 404. Point it at the release asset
-until that is fixed:
-
-```powershell
-Install-RsAgentWorker -ControlPlane rsagent.corp.example.com:8443 -Token rsen_... `
-  -PackageUrl https://github.com/semics-tech/remote-sql-agent/releases/latest/download/rsagent-worker-0.1.1-win-x64.zip
-```
-
 ---
 
 ## Operating it
