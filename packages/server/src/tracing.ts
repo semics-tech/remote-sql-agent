@@ -1,6 +1,10 @@
-import { trace, type Tracer } from '@opentelemetry/api';
-import { NodeTracerProvider, BatchSpanProcessor } from '@opentelemetry/sdk-trace-node';
-import { TraceIdRatioBasedSampler } from '@opentelemetry/sdk-trace-base';
+import { context, trace, type Tracer } from '@opentelemetry/api';
+import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
+import {
+  BatchSpanProcessor,
+  TraceIdRatioBasedSampler,
+  TracerProvider,
+} from '@opentelemetry/sdk-trace';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions';
@@ -32,7 +36,8 @@ import type { ServerConfig } from './config.js';
 const SERVICE_VERSION = '0.2.0';
 const TRACER_NAME = 'rsagent.server';
 
-let provider: NodeTracerProvider | null = null;
+let provider: TracerProvider | null = null;
+let contextManager: AsyncLocalStorageContextManager | null = null;
 
 export function tracingEnabled(config: ServerConfig): boolean {
   return config.trace.otlpEnabled && Boolean(config.trace.otlpEndpoint);
@@ -58,12 +63,12 @@ export function startTracing(config: ServerConfig, logger: Logger): void {
     headers: config.trace.otlpHeaders,
   });
 
-  provider = new NodeTracerProvider({
+  provider = new TracerProvider({
     resource: resourceFromAttributes({
       [ATTR_SERVICE_NAME]: config.trace.serviceName,
       [ATTR_SERVICE_VERSION]: SERVICE_VERSION,
     }),
-    spanProcessors: [new BatchSpanProcessor(exporter)],
+    spanProcessors: [new BatchSpanProcessor({ exporter })],
     // Below 1 lets a large estate cap trace volume without touching the
     // collector; the default of 1 (every request and command traced) is right
     // for the traffic this product actually sees — a handful of operators,
@@ -73,7 +78,12 @@ export function startTracing(config: ServerConfig, logger: Logger): void {
         ? new TraceIdRatioBasedSampler(config.trace.sampleRatio)
         : undefined,
   });
-  provider.register();
+  // sdk-trace 3.x dropped NodeTracerProvider.register(): the provider no longer
+  // wires itself into the API, so the global provider and the async-local
+  // context manager (which keeps the active span across awaits) are set here.
+  contextManager = new AsyncLocalStorageContextManager().enable();
+  context.setGlobalContextManager(contextManager);
+  trace.setGlobalTracerProvider(provider);
 
   logger.info(
     { endpoint: config.trace.otlpEndpoint, sampleRatio: config.trace.sampleRatio },
@@ -85,6 +95,10 @@ export async function stopTracing(): Promise<void> {
   await provider?.forceFlush().catch(() => undefined);
   await provider?.shutdown().catch(() => undefined);
   provider = null;
+  contextManager?.disable();
+  contextManager = null;
+  trace.disable();
+  context.disable();
 }
 
 export function getTracer(): Tracer {
