@@ -10,6 +10,13 @@ ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 RUN corepack enable
 
+# curl, unzip and zip assemble the Windows worker package further down. They
+# live in this stage only, so the runtime image is unchanged; installed this
+# early so the layer survives every source change.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates unzip zip \
+ && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /build
 
 # Manifests first so a dependency layer survives source-only changes.
@@ -46,8 +53,17 @@ RUN pnpm --filter @remote-sql-agent/dashboard build
 # /install.sh, /install.ps1 and /downloads/. Serving them from here rather than
 # the internet is what makes the one-line install work on a segmented network:
 # a SQL host can always reach the control plane, and usually cannot reach GitHub.
-RUN pnpm --filter @remote-sql-agent/worker bundle \
+#
+# Both packages are built here, the Windows one included. It is the same zip
+# the release attaches: the bundle, install.ps1, a pinned and checksummed Node
+# runtime and WinSW, assembled by the same script release.yml runs. Nothing in
+# it is a single-file executable, so a Linux stage can build it; only
+# `build:sea` needs the target OS. Without it the Windows one-liner the
+# dashboard hands out was a 404 (#114).
+RUN pnpm --filter @remote-sql-agent/worker package -- --no-runtime \
+ && deploy/worker/fetch-windows-runtime.sh packages/worker/dist/package \
  && mkdir -p /packages \
+ && (cd packages/worker/dist/package && zip -qr /packages/rsagent-worker-windows.zip .) \
  && cp deploy/worker/bootstrap.ps1 deploy/worker/bootstrap.sh /packages/ \
  && cp deploy/sql/*.sql /packages/ \
  && mkdir -p /staging/linux \

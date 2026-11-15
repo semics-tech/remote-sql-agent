@@ -307,40 +307,12 @@ jobs:
       - name: Assemble
         run: pnpm --filter @remote-sql-agent/worker package -- --no-runtime
 
-      # Verified against nodejs.org's own SHASUMS256.txt rather than trusted
-      # because it arrived over TLS. This binary is installed as a service on a
-      # database server; "the download succeeded" is not the same claim as "the
-      # download is what Node published".
-      - name: Fetch and verify the pinned Node runtime for Windows
-        run: |
-          NODE_FULL="v24.18.1"
-          ARCHIVE="node-${NODE_FULL}-win-x64.zip"
-          curl -fsSL "https://nodejs.org/dist/${NODE_FULL}/${ARCHIVE}" -o "$ARCHIVE"
-          curl -fsSL "https://nodejs.org/dist/${NODE_FULL}/SHASUMS256.txt" -o SHASUMS256.txt
-          grep " ${ARCHIVE}\$" SHASUMS256.txt | sha256sum -c -
-          unzip -q "$ARCHIVE"
-          mkdir -p packages/worker/dist/package/node
-          cp "node-${NODE_FULL}-win-x64/node.exe" packages/worker/dist/package/node/
-          cp "node-${NODE_FULL}-win-x64/LICENSE"  packages/worker/dist/package/node/
-
-      # Pinned by digest for the same reason as the Node runtime ten lines
-      # above: this is installed as a service on a database server, and "the
-      # download succeeded" is not the same claim as "the download is what was
-      # released". It was the sharpest inconsistency in this pipeline — the
-      # runtime verified, the service wrapper next to it not.
-      #
-      # Trust-on-first-use, stated plainly: WinSW publishes no checksum of its
-      # own, so this digest was taken from the asset itself (size 18,243,033,
-      # matching the GitHub API's record for the tag). It does not prove the
-      # original is honest. What it does do is freeze it — a re-tagged release,
-      # a substituted asset or a compromised CDN all fail the build instead of
-      # shipping quietly to every Windows SQL host.
-      - name: Fetch and verify WinSW
-        run: |
-          WINSW_SHA256="05b82d46ad331cc16bdc00de5c6332c1ef818df8ceefcd49c726553209b3a0da"
-          curl -fsSL https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe \
-            -o packages/worker/dist/package/rsagent-worker.exe
-          echo "${WINSW_SHA256}  packages/worker/dist/package/rsagent-worker.exe" | sha256sum -c -
+      # Node runtime and WinSW, each verified against a pinned digest. The pins
+      # live in the script so the image build (deploy/Dockerfile) ships the
+      # same Windows zip as this release does; see the script for why each is
+      # verified the way it is.
+      - name: Fetch and verify the Windows runtime and WinSW
+        run: deploy/worker/fetch-windows-runtime.sh packages/worker/dist/package
 
       - name: Package for Windows
         run: |
