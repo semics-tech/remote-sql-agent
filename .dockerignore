@@ -1,0 +1,28 @@
+# The build context is the repository root (see ci.yml / release.yml). Host
+# build output and installed modules must not leak in: a copied node_modules
+# shadows the image's own install and breaks the dashboard build (TS2688).
+**/node_modules
+**/dist
+**/.turbo
+**/*.tsbuildinfo
+**/coverage
+
+.git
+.github
+
+# Secrets and local state never belong in an image layer.
+.env
+.env.*
+**/*.pem
+**/*.key
+**/*.crt
+**/*.sqlite
+**/*.sqlite-*
+run/
+packages/worker/run/
+
+# Test and screenshot output
+test-results/
+playwright-report/
+blob-report/
+.playwright/
