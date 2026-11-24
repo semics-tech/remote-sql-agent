@@ -23,7 +23,7 @@
     "@fastify/cookie": "^11.1.5",
     "@fastify/cors": "^11.4.3",
     "@fastify/csrf-protection": "^8.0.2",
-    "@fastify/rate-limit": "^11.2.2",
+    "@fastify/rate-limit": "^11.3.0",
     "@fastify/static": "^10.1.12",
     "@grpc/grpc-js": "^1.14.7",
     "@opentelemetry/api": "^1.10.0",
